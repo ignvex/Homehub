@@ -82,12 +82,12 @@ type UpdateConfigRequest struct {
 		Port *int    `json:"port"`
 	} `json:"server,omitempty"`
 	Database *struct {
-		Host     *string `json:"host"`
-		Port     *int    `json:"port"`
-		User     *string `json:"user"`
+		Host    *string `json:"host"`
+		Port    *int    `json:"port"`
+		User    *string `json:"user"`
 		Password *string `json:"password"`
-		DBName   *string `json:"dbname"`
-		SSLMode  *string `json:"sslmode"`
+		DBName  *string `json:"dbname"`
+		SSLMode *string `json:"sslmode"`
 	} `json:"database,omitempty"`
 	Auth *struct {
 		Username      *string `json:"username"`

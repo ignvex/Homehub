@@ -39,8 +39,8 @@ const (
 )
 
 var (
-	gDB     *gorm.DB  // 全局数据库实例
-	gDBOnce sync.Once // 确保 Init 只执行一次
+	gDB     *gorm.DB   // 全局数据库实例
+	gDBOnce sync.Once  // 确保 Init 只执行一次
 )
 
 // DB 返回全局 *gorm.DB 实例。
