@@ -69,7 +69,13 @@ func main() {
 	// ============================================================
 	// 5. 自动迁移（GORM AutoMigrate）
 	// ============================================================
-	if err := db.AutoMigrate(); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Session{},
+		&model.BookmarkGroup{},
+		&model.Bookmark{},
+		&model.LogEntry{},
+	); err != nil {
 		logger.Error("数据库迁移失败", "error", err)
 		os.Exit(1)
 	}
