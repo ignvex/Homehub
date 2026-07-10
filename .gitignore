@@ -1,0 +1,23 @@
+# HomeHub .gitignore
+
+# 二进制输出
+bin/
+*.exe
+*.exe~
+
+# 数据目录
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+*.out
