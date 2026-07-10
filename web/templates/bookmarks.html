@@ -1,0 +1,34 @@
+{{ define "bookmarks.html" }}
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    {{ template "head" . }}
+</head>
+<body>
+    <div class="app-container">
+        {{ template "header" . }}
+        <main id="main-content" class="bookmarks-main">
+            <div class="toolbar">
+                <h2>书签管理</h2>
+                {{ if .LoggedIn }}
+                <button class="btn-primary"
+                    hx-post="/api/v1/bookmark-groups"
+                    hx-include="#new-group-name"
+                    hx-target="#group-list"
+                    hx-swap="outerHTML">新建分组</button>
+                <input type="text" id="new-group-name" placeholder="分组名称">
+                {{ else }}
+                <p class="login-hint">请<a href="/login">登录</a>后管理书签</p>
+                {{ end }}
+            </div>
+            <div id="group-list"
+                hx-get="/api/v1/bookmarks"
+                hx-trigger="load"
+                hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
+{{ end }}

@@ -1,0 +1,30 @@
+{{ define "head" }}
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ .title }}</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<script src="/static/js/htmx.min.js"></script>
+<script src="/static/js/app.js" defer></script>
+{{ end }}
+
+{{ define "header" }}
+<header class="app-header">
+    <a href="/" class="logo">HomeHub</a>
+    <nav class="app-nav">
+        <a href="/" hx-get="/" hx-target="#main-content" hx-push-url="true">首页</a>
+        <a href="/bookmarks" hx-get="/bookmarks" hx-target="#main-content" hx-push-url="true">书签</a>
+        <a href="/settings" hx-get="/settings" hx-target="#main-content" hx-push-url="true">设置</a>
+    </nav>
+    <div class="header-actions">
+        <button id="theme-toggle" class="icon-btn" aria-label="切换暗色模式">🌓</button>
+        {{ if .LoggedIn }}
+        <span class="user-name">{{ .Username }}</span>
+        <button id="logout-btn" class="btn-text"
+            hx-post="/api/v1/auth/logout"
+            hx-target="body">登出</button>
+        {{ else }}
+        <a href="/login" class="btn-text">登录</a>
+        {{ end }}
+    </div>
+</header>
+{{ end }}
