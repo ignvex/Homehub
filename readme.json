@@ -12,8 +12,8 @@
         {"item": "用户认证细节", "note": "session 管理、中间件实现待实现时设计"},
         {"item": "日志策略", "note": "日志级别、输出目标、存储周期待实现时设计"},
         {"item": "爬虫功能", "note": "方案待重新设计"},
-        {"item": "前端交互细节", "note": "HTMX 用法、模板划分、静态资源管理待实现时设计"},
-        {"item": "数据可视化", "note": "Chart.js 集成方式、仪表盘指标定义待实现时设计"}
+        {"item": "前端交互细节", "note": "开发环境已搭建，页面实现进行中"},
+        {"item": "数据可视化", "note": "Chart.js 已集成，仪表盘指标定义待实现时设计"}
     ],
     "constraints": {
         "explicitly_excluded": {
@@ -33,11 +33,11 @@
             "http_framework": "Gin",
             "orm": "GORM + pgx",
             "database": "PostgreSQL（已部署）",
-            "frontend": "Go html/template + HTMX",
+            "frontend": "Vite + React + TypeScript + HTMX",
             "charts": "Chart.js",
             "rss_parser": "gofeed",
             "password_hash": "bcrypt",
-            "css": "原生 CSS（CSS 变量暗色模式）"
+            "css": "CSS3 + CSS 变量暗色模式 + CSS Modules"
         },
         "configuration": {
             "file": "config.json",
@@ -54,14 +54,14 @@
     "project_structure": {
         "entry": "main.go（根目录）",
         "source": "internal/（config、server、handler、middleware、model、service、rss、search、logger）",
-        "web": "web/（templates + static）",
+        "web": "web/（Vite + React 前端项目）",
         "config": "config.json（根目录）"
     },
     "development_conventions": {
         "golang_standard": "阿里巴巴 Golang 编码规范",
         "layering": "handler → service → model",
         "database": "GORM 为主，复杂查询可用原生 SQL",
-        "frontend": "HTMX 局部刷新，无整页刷新，零 CSS 依赖",
+        "frontend": "Vite + React + HTMX 群岛架构，HMR 热更新",
         "dark_mode": "CSS 变量，[data-theme='dark']",
         "config": "sync.RWMutex 保护热加载"
     }
