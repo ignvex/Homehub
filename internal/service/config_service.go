@@ -19,18 +19,19 @@ func NewConfigService() *ConfigService {
 	return &ConfigService{}
 }
 
-// SafeConfig 对外暴露的安全配置视图，不含敏感字段。
+// SafeConfig 对外暴露的安全配置视图，不含数据库密码、session_secret 等敏感字段。
 type SafeConfig struct {
-	Server   SafeServerConfig   `json:"server"`
-	Database SafeDatabaseConfig `json:"database"`
-	Auth     SafeAuthConfig     `json:"auth"`
-	Log      config.LogConfig   `json:"log"`
-}
-
-// SafeServerConfig 不含敏感信息的服务端配置。
-type SafeServerConfig struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Server       config.ServerConfig      `json:"server"`
+	Database     SafeDatabaseConfig       `json:"database"`
+	Auth         SafeAuthConfig           `json:"auth"`
+	Log          config.LogConfig         `json:"log"`
+	Background   config.BackgroundConfig  `json:"background"`
+	ProxyEnabled bool                     `json:"proxy_enabled"`
+	Proxy        []config.ProxyEntry      `json:"proxy"`
+	Gravatar     config.GravatarConfig    `json:"gravatar"`
+	Bookmark     config.BookmarkConfig    `json:"bookmark"`
+	RSS          config.RSSConfig         `json:"rss"`
+	Bilibili     SafeBilibiliConfig       `json:"bilibili"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。
@@ -47,6 +48,15 @@ type SafeAuthConfig struct {
 	Username string `json:"username"`
 }
 
+// SafeBilibiliConfig 不含 SESSDATA 等敏感字段的 Bilibili 配置视图。
+type SafeBilibiliConfig struct {
+	Enabled        bool   `json:"enabled"`
+	VideoEnabled   bool   `json:"video_enabled"`
+	ArticleEnabled bool   `json:"article_enabled"`
+	UserEnabled    bool   `json:"user_enabled"`
+	UserAgent      string `json:"user_agent"`
+}
+
 // GetSafe 返回过滤敏感字段后的安全配置视图。
 func (s *ConfigService) GetSafe() SafeConfig {
 	cfg := config.Get()
@@ -55,10 +65,7 @@ func (s *ConfigService) GetSafe() SafeConfig {
 	}
 
 	return SafeConfig{
-		Server: SafeServerConfig{
-			Host: cfg.Server.Host,
-			Port: cfg.Server.Port,
-		},
+		Server: cfg.Server,
 		Database: SafeDatabaseConfig{
 			Host:    cfg.Database.Host,
 			Port:    cfg.Database.Port,
@@ -69,41 +76,72 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		Auth: SafeAuthConfig{
 			Username: cfg.Auth.Username,
 		},
-		Log: cfg.Log,
+		Log:          cfg.Log,
+		Background:   cfg.Background,
+		ProxyEnabled: cfg.ProxyEnabled,
+		Proxy:        cfg.Proxy,
+		Gravatar:     cfg.Gravatar,
+		Bookmark:     cfg.Bookmark,
+		RSS:          cfg.RSS,
+		Bilibili: SafeBilibiliConfig{
+			Enabled:        cfg.Bilibili.Enabled,
+			VideoEnabled:   cfg.Bilibili.VideoEnabled,
+			ArticleEnabled: cfg.Bilibili.ArticleEnabled,
+			UserEnabled:    cfg.Bilibili.UserEnabled,
+			UserAgent:      cfg.Bilibili.UserAgent,
+		},
 	}
 }
 
 // UpdateConfigRequest Web 端更新配置的请求体。
 //
-// 仅允许更新部分字段，Password 用于首次设置或修改密码。
+// 所有顶级字段均为可选（指针类型），nil 表示不修改该部分。
 type UpdateConfigRequest struct {
-	Server *struct {
-		Host *string `json:"host"`
-		Port *int    `json:"port"`
-	} `json:"server,omitempty"`
-	Database *struct {
-		Host    *string `json:"host"`
-		Port    *int    `json:"port"`
-		User    *string `json:"user"`
-		Password *string `json:"password"`
-		DBName  *string `json:"dbname"`
-		SSLMode *string `json:"sslmode"`
-	} `json:"database,omitempty"`
-	Auth *struct {
-		Username      *string `json:"username"`
-		Password      *string `json:"password"`
-		SessionSecret *string `json:"session_secret"`
-	} `json:"auth,omitempty"`
-	Log *struct {
-		Level    *string `json:"level"`
-		Format   *string `json:"format"`
-		DBWriter *bool   `json:"db_writer"`
-	} `json:"log,omitempty"`
+	Server       *ServerUpdate            `json:"server,omitempty"`
+	Database     *DatabaseUpdate          `json:"database,omitempty"`
+	Auth         *AuthUpdate              `json:"auth,omitempty"`
+	Log          *LogUpdate               `json:"log,omitempty"`
+	Background   *config.BackgroundConfig `json:"background,omitempty"`
+	ProxyEnabled *bool                    `json:"proxy_enabled,omitempty"`
+	Proxy        *[]config.ProxyEntry     `json:"proxy,omitempty"`
+	Gravatar     *config.GravatarConfig   `json:"gravatar,omitempty"`
+	Bookmark     *config.BookmarkConfig   `json:"bookmark,omitempty"`
+	RSS          *config.RSSConfig        `json:"rss,omitempty"`
+}
+
+// ServerUpdate 服务器配置更新字段。
+type ServerUpdate struct {
+	Host *string `json:"host,omitempty"`
+	Port *int    `json:"port,omitempty"`
+}
+
+// DatabaseUpdate 数据库配置更新字段。
+type DatabaseUpdate struct {
+	Host     *string `json:"host,omitempty"`
+	Port     *int    `json:"port,omitempty"`
+	User     *string `json:"user,omitempty"`
+	Password *string `json:"password,omitempty"`
+	DBName   *string `json:"dbname,omitempty"`
+	SSLMode  *string `json:"sslmode,omitempty"`
+}
+
+// AuthUpdate 认证配置更新字段。
+type AuthUpdate struct {
+	Username      *string `json:"username,omitempty"`
+	Password      *string `json:"password,omitempty"`
+	SessionSecret *string `json:"session_secret,omitempty"`
+}
+
+// LogUpdate 日志配置更新字段。
+type LogUpdate struct {
+	Level    *string `json:"level,omitempty"`
+	Format   *string `json:"format,omitempty"`
+	DBWriter *bool   `json:"db_writer,omitempty"`
 }
 
 // Update 将 Web 端的部分更新应用到 config.json。
 //
-// 实现为"读取-合并-写回"模式，合并期间持有 RWMutex 写锁。
+// 实现为"读取-合并-写回"模式。
 // 写回成功后调用 config.Load 重新加载，触发热重载。
 func (s *ConfigService) Update(req UpdateConfigRequest) error {
 	cfg := config.Get()
@@ -111,7 +149,7 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 		return fmt.Errorf("配置未加载")
 	}
 
-	// 合并更新
+	// 合并更新（浅拷贝后按字段覆盖）
 	merged := *cfg
 
 	if req.Server != nil {
@@ -163,6 +201,24 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 		if req.Log.DBWriter != nil {
 			merged.Log.DBWriter = *req.Log.DBWriter
 		}
+	}
+	if req.Background != nil {
+		merged.Background = *req.Background
+	}
+	if req.ProxyEnabled != nil {
+		merged.ProxyEnabled = *req.ProxyEnabled
+	}
+	if req.Proxy != nil {
+		merged.Proxy = *req.Proxy
+	}
+	if req.Gravatar != nil {
+		merged.Gravatar = *req.Gravatar
+	}
+	if req.Bookmark != nil {
+		merged.Bookmark = *req.Bookmark
+	}
+	if req.RSS != nil {
+		merged.RSS = *req.RSS
 	}
 
 	// 写回 config.json

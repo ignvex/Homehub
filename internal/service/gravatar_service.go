@@ -216,9 +216,9 @@ func (s *GravatarService) downloadAndCache(user *model.User) (*model.AvatarCache
 // buildGravatarHTTPClient 根据代理配置构建 HTTP 客户端。
 //
 // 支持 HTTP 代理（通过 Transport.Proxy）和 SOCKS5 代理（通过 DialContext）。
-// 配置的解析逻辑由 resolveProxyConfig 提供。
+// 配置的解析逻辑由 config.ResolveProxy 提供。
 func buildGravatarHTTPClient() *req.Client {
-	proxyType, proxyAddr := resolveProxyConfig()
+	proxyType, proxyAddr := resolveGravatarProxy()
 
 	transport := &http.Transport{}
 
@@ -246,16 +246,11 @@ func buildGravatarHTTPClient() *req.Client {
 	return client
 }
 
-// resolveProxyConfig 解析当前代理配置，返回 (type, address)。
+// resolveGravatarProxy 解析 Gravatar 代理配置，返回 (type, address)。
 //
-// 检查顺序：
-//  1. 自定义 proxy URL（GravatarConfig.CustomProxyURL）→ 强制使用 http 类型
-//  2. 全局代理开关关闭（ProxyEnabled=false）→ 直连
-//  3. Gravatar 未启用代理（UseProxy=false）→ 直连
-//  4. 在 Proxy 列表中按 ProxyName 查找，且该条目 Enabled=true
-//
+// 兼容旧的 ProxyName 单代理字段，优先使用 custom_proxy_url。
 // 返回空字符串表示不使用代理（直连）。
-func resolveProxyConfig() (string, string) {
+func resolveGravatarProxy() (string, string) {
 	cfg := config.Get()
 	if cfg == nil {
 		return "", ""
