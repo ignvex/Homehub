@@ -22,7 +22,7 @@ func SearchAll(c *gin.Context) {
 
 	result, err := svc.Search.Search(q, scope)
 	if err != nil {
-		FailInternal(c, "搜索失败: "+err.Error())
+		FailInternal(c, "搜索失败")
 		return
 	}
 

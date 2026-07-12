@@ -27,7 +27,7 @@ type SafeConfig struct {
 	Log          config.LogConfig        `json:"log"`
 	Background   config.BackgroundConfig `json:"background"`
 	ProxyEnabled bool                    `json:"proxy_enabled"`
-	Proxy        []config.ProxyEntry     `json:"proxy"`
+	Proxy        []SafeProxyEntry        `json:"proxy"`
 	Gravatar     config.GravatarConfig   `json:"gravatar"`
 	Bookmark     config.BookmarkConfig   `json:"bookmark"`
 	RSS          config.RSSConfig        `json:"rss"`
@@ -57,6 +57,37 @@ type SafeBilibiliConfig struct {
 	UserAgent      string `json:"user_agent"`
 }
 
+// SafeProxyEntry 脱敏后的代理配置，不暴露完整的代理 URL。
+type SafeProxyEntry struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+}
+
+// maskProxyList 将代理列表脱敏。
+func maskProxyList(proxies []config.ProxyEntry) []SafeProxyEntry {
+	result := make([]SafeProxyEntry, len(proxies))
+	for i, p := range proxies {
+		result[i] = maskProxyEntry(p)
+	}
+	return result
+}
+
+// maskGravatarConfig 脱敏 Gravatar 配置中的自定义代理 URL。
+func maskGravatarConfig(cfg config.GravatarConfig) config.GravatarConfig {
+	cfg.CustomProxyURL = ""
+	return cfg
+}
+
+// maskProxyEntry 将 ProxyEntry 脱敏为 SafeProxyEntry。
+func maskProxyEntry(p config.ProxyEntry) SafeProxyEntry {
+	return SafeProxyEntry{
+		Name:    p.Name,
+		Type:    p.Type,
+		Enabled: p.Enabled,
+	}
+}
+
 // GetSafe 返回过滤敏感字段后的安全配置视图。
 func (s *ConfigService) GetSafe() SafeConfig {
 	cfg := config.Get()
@@ -79,8 +110,8 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		Log:          cfg.Log,
 		Background:   cfg.Background,
 		ProxyEnabled: cfg.ProxyEnabled,
-		Proxy:        cfg.Proxy,
-		Gravatar:     cfg.Gravatar,
+		Proxy:        maskProxyList(cfg.Proxy),
+		Gravatar:     maskGravatarConfig(cfg.Gravatar),
 		Bookmark:     cfg.Bookmark,
 		RSS:          cfg.RSS,
 		Bilibili: SafeBilibiliConfig{

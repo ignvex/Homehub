@@ -3,8 +3,10 @@ package service
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
@@ -54,6 +56,11 @@ func NewRSSService(db *gorm.DB) *RSSService {
 func (s *RSSService) CreateFeed(urlStr string) (*model.RSSFeed, error) {
 	if urlStr == "" {
 		return nil, errors.New("订阅源 URL 不能为空")
+	}
+
+	// SSRF 防护：校验 URL 合法性
+	if err := validateFeedURL(urlStr); err != nil {
+		return nil, err
 	}
 
 	// 检查是否已存在
@@ -411,6 +418,59 @@ func (s *RSSService) enforceRetention(feedID uint64) error {
 				Limit(excess),
 		).Delete(&model.RSSEntry{}).Error; err != nil {
 		return fmt.Errorf("清理旧条目失败: %w", err)
+	}
+
+	return nil
+}
+
+// ============================================================
+// URL 校验（SSRF 防护）
+// ============================================================
+
+// validateFeedURL 校验 RSS 订阅源 URL 的合法性，防止 SSRF 攻击。
+//
+// 规则：
+//   - 仅允许 http/https 协议
+//   - 禁止回环地址（127.0.0.0/8、::1）
+//   - 禁止内网地址（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16）
+//   - 禁止云元数据端点（169.254.169.254）
+func validateFeedURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("无效的 URL: %w", err)
+	}
+
+	// 仅允许 http/https
+	scheme := parsed.Scheme
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("不支持的协议: %s（仅允许 http/https）", scheme)
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return errors.New("URL 中缺少主机名")
+	}
+
+	// 解析 IP
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("禁止访问内部地址: %s", host)
+		}
+		if ip.IsPrivate() {
+			return fmt.Errorf("禁止访问内网地址: %s", host)
+		}
+		// 云元数据端点
+		if ip.Equal(net.IPv4(169, 254, 169, 254)) {
+			return fmt.Errorf("禁止访问云元数据端点: %s", host)
+		}
+		return nil
+	}
+
+	// 主机名黑名单
+	lowerHost := strings.ToLower(host)
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".local") {
+		return fmt.Errorf("禁止访问本地主机名: %s", host)
 	}
 
 	return nil

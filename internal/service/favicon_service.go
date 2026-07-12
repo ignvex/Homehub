@@ -2,8 +2,10 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
@@ -37,10 +39,9 @@ func NewFaviconService(db *gorm.DB) *FaviconService {
 
 // FetchFavicon 根据书签 URL 获取网站图标 URL。
 //
-// 先从 URL 中提取域名，构造 Google S2 favicon 请求地址，
-// 然后发起 HEAD 请求验证图标是否存在（状态码 200），
-// 存在则返回 favicon URL，否则返回空字符串。
-// 单次请求超时 5 秒。
+// 先从 URL 中提取域名，校验域名合法性（防 SSRF），
+// 构造 Google S2 favicon 请求地址，然后发起 HEAD 请求验证图标是否存在。
+// 返回 favicon URL 或空字符串。
 func (s *FaviconService) FetchFavicon(bookmarkURL string) (string, error) {
 	if bookmarkURL == "" {
 		return "", nil
@@ -49,10 +50,15 @@ func (s *FaviconService) FetchFavicon(bookmarkURL string) (string, error) {
 	// 提取域名
 	parsed, err := url.Parse(bookmarkURL)
 	if err != nil {
-		return "", fmt.Errorf("解析 URL 失败: %w", err)
+		return "", nil
 	}
 	domain := parsed.Host
 	if domain == "" {
+		return "", nil
+	}
+
+	// SSRF 防护：校验域名合法性
+	if err := validateFaviconDomain(domain); err != nil {
 		return "", nil
 	}
 
@@ -62,7 +68,7 @@ func (s *FaviconService) FetchFavicon(bookmarkURL string) (string, error) {
 	// HEAD 请求验证图标是否存在
 	resp, err := s.httpClient.R().Head(faviconURL)
 	if err != nil {
-		return "", nil // 网络不可达，返回空
+		return "", nil
 	}
 	defer resp.Body.Close()
 
@@ -77,10 +83,41 @@ func (s *FaviconService) FetchFavicon(bookmarkURL string) (string, error) {
 // 内部方法
 // ============================================================
 
-// buildFaviconHTTPClient 根据书签代理配置构建 HTTP 客户端。
+// validateFaviconDomain 校验域名合法性，防止 SSRF 攻击。
 //
-// 通过 config.ResolveProxy 解析书签模块的代理配置，
-// 支持 HTTP 代理。配置为空时直连。
+// 禁止内网 IP、回环地址、云元数据端点及 localhost 域名。
+func validateFaviconDomain(host string) error {
+	// 提取主机名（去掉端口）
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+
+	// 解析 IP
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("禁止访问内部地址: %s", hostname)
+		}
+		if ip.IsPrivate() {
+			return fmt.Errorf("禁止访问内网地址: %s", hostname)
+		}
+		if ip.Equal(net.IPv4(169, 254, 169, 254)) {
+			return fmt.Errorf("禁止访问云元数据端点")
+		}
+		return nil
+	}
+
+	// 主机名黑名单
+	lowerHost := strings.ToLower(hostname)
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".local") {
+		return fmt.Errorf("禁止访问本地主机名")
+	}
+
+	return nil
+}
+
+// buildFaviconHTTPClient 根据书签代理配置构建 HTTP 客户端。
 func buildFaviconHTTPClient() *req.Client {
 	transport := &http.Transport{}
 

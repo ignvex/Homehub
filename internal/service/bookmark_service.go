@@ -3,6 +3,8 @@ package service
 import (
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/ignvex/HomeHub/internal/model"
 	"gorm.io/gorm"
@@ -133,6 +135,11 @@ func (s *BookmarkService) CreateBookmark(groupID uint64, title, url, icon string
 		return nil, errors.New("书签 URL 不能为空")
 	}
 
+	// URL scheme 校验（防 XSS：禁止 javascript:/data:/file: 等危险协议）
+	if err := validateBookmarkURL(url); err != nil {
+		return nil, err
+	}
+
 	// 验证分组存在
 	var count int64
 	s.db.Model(&model.BookmarkGroup{}).Where("id = ?", groupID).Count(&count)
@@ -254,6 +261,22 @@ func (s *BookmarkService) ReorderBookmarks(groupID uint64, ids []uint64) error {
 		}
 		return nil
 	})
+}
+
+// validateBookmarkURL 校验书签 URL 的协议安全性。
+//
+// 仅允许 http/https 协议，禁止 javascript:/data:/file: 等危险协议，
+// 防止存储型 XSS 攻击。
+func validateBookmarkURL(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return errors.New("无效的 URL 格式")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("不支持的 URL 协议: %s（仅允许 http/https）", scheme)
+	}
+	return nil
 }
 
 // 书签相关业务错误。

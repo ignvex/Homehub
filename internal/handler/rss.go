@@ -130,7 +130,7 @@ func RSSFetchFeed(c *gin.Context) {
 	}
 
 	if err := svc.RSS.FetchFeed(id); err != nil {
-		FailInternal(c, "抓取失败: "+err.Error())
+		FailInternal(c, "抓取失败")
 		return
 	}
 	Success(c, nil)
@@ -141,7 +141,7 @@ func RSSFetchFeed(c *gin.Context) {
 // POST /api/v1/rss/fetch-all
 func RSSFetchAll(c *gin.Context) {
 	if err := svc.RSS.FetchAll(); err != nil {
-		FailInternal(c, "抓取失败: "+err.Error())
+		FailInternal(c, "抓取失败")
 		return
 	}
 	Success(c, nil)

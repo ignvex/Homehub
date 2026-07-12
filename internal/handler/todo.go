@@ -129,7 +129,7 @@ func TodoUpdate(c *gin.Context) {
 	}
 
 	if err := svc.Todo.UpdateTodo(id, title, desc, status, req.Priority, req.DueDate); err != nil {
-		FailInternal(c, "更新待办失败: "+err.Error())
+		FailInternal(c, "更新待办失败")
 		return
 	}
 	Success(c, nil)
