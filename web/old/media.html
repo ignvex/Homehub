@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>媒体资源 - HomeHub</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/htmx.min.js"></script>
+    <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <a href="/" class="logo">HomeHub</a>
+            <div class="header-actions">
+                <button id="theme-toggle" class="icon-btn" aria-label="切换暗色模式">🌓</button>
+                <span id="header-guest"><a href="/login" class="btn-text">登录</a></span>
+                <div class="user-menu" id="header-user" style="display:none">
+                    <button class="user-name" type="button"><span id="header-username"></span> <span class="caret">▾</span></button>
+                    <div class="user-dropdown">
+                        <a href="/bookmarks">书签管理</a>
+                        <a href="/media">媒体资源</a>
+                        <a href="/settings">设置</a>
+                        <button id="logout-btn" type="button" hx-post="/api/v1/auth/logout" hx-target="body">登出</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+        <main id="main-content" class="media-main">
+            <h2>媒体资源管理</h2>
+
+            <!-- 未登录提示（默认可见） -->
+            <p class="login-hint auth-guest-content">请<a href="/login">登录</a>后管理媒体资源</p>
+
+            <!-- 管理内容（默认隐藏） -->
+            <div class="auth-user-content" style="display:none">
+
+            <!-- 上传区域 -->
+            <section class="media-section">
+                <h3>上传新资源</h3>
+                <form id="upload-form" class="upload-form"
+                    hx-encoding="multipart/form-data"
+                    hx-post="/api/v1/media-assets"
+                    hx-target="#media-list"
+                    hx-swap="innerHTML">
+                    <div class="upload-area" id="drop-zone">
+                        <input type="file" id="file-input" name="file"
+                            accept="image/*,video/*" required>
+                        <label for="file-input" class="upload-label">
+                            <span class="upload-icon">📁</span>
+                            <span>点击选择文件或拖拽到此处</span>
+                            <span class="upload-hint">支持 JPG/PNG/GIF/WebP/MP4/WebM，最大 50MB</span>
+                        </label>
+                        <div id="upload-preview" class="upload-preview" style="display:none"></div>
+                    </div>
+                    <div id="upload-error" class="error-message"></div>
+                    <button type="submit" class="btn-primary" id="upload-btn" style="display:none">上传</button>
+                </form>
+            </section>
+
+            <!-- 资源列表 -->
+            <section class="media-section">
+                <h3>已上传资源</h3>
+                <div id="media-list"
+                    hx-get="/api/v1/media-assets"
+                    hx-trigger="load"
+                    hx-swap="innerHTML">
+                    <p class="loading">加载中...</p>
+                </div>
+            </section>
+
+            </div>
+
+        </main>
+    </div>
+</body>
+</html>

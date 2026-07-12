@@ -1,16 +1,39 @@
-{{ define "settings.html" }}
 <!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
 <head>
-    {{ template "head" . }}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设置 - HomeHub</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/htmx.min.js"></script>
+    <script src="/static/js/app.js" defer></script>
 </head>
 <body>
     <div class="app-container">
-        {{ template "header" . }}
+        <header class="app-header">
+            <a href="/" class="logo">HomeHub</a>
+            <div class="header-actions">
+                <button id="theme-toggle" class="icon-btn" aria-label="切换暗色模式">🌓</button>
+                <span id="header-guest"><a href="/login" class="btn-text">登录</a></span>
+                <div class="user-menu" id="header-user" style="display:none">
+                    <button class="user-name" type="button"><span id="header-username"></span> <span class="caret">▾</span></button>
+                    <div class="user-dropdown">
+                        <a href="/bookmarks">书签管理</a>
+                        <a href="/media">媒体资源</a>
+                        <a href="/settings">设置</a>
+                        <button id="logout-btn" type="button" hx-post="/api/v1/auth/logout" hx-target="body">登出</button>
+                    </div>
+                </div>
+            </div>
+        </header>
         <main id="main-content" class="settings-main">
             <h2>系统设置</h2>
 
-            {{ if .LoggedIn }}
+            <!-- 未登录提示（默认可见） -->
+            <p class="login-hint auth-guest-content">请<a href="/login">登录</a>后修改设置</p>
+
+            <!-- 设置表单（默认隐藏） -->
+            <div class="auth-user-content" style="display:none">
 
             <!-- 修改密码 -->
             <section class="settings-section">
@@ -61,30 +84,25 @@
                 </form>
             </section>
 
-            {{ else }}
-
-            <p class="login-hint">请<a href="/login">登录</a>后修改设置</p>
-
-            {{ end }}
+            </div>
 
         </main>
     </div>
 
-    {{ if .LoggedIn }}
     <script>
-        // 页面加载时获取当前配置
-        fetch('/api/v1/config')
-            .then(r => r.json())
-            .then(resp => {
-                if (resp.code === 0 && resp.data) {
-                    var c = resp.data;
-                    document.getElementById('cfg-server-host').value = c.server?.host || '';
-                    document.getElementById('cfg-server-port').value = c.server?.port || 8080;
-                    document.getElementById('cfg-log-level').value = c.log?.level || 'info';
-                }
-            });
+        // 页面加载时获取当前配置（已登录后由 initAuth 触发显示表单）
+        (function () {
+            fetch('/api/v1/config')
+                .then(function (r) { return r.json(); })
+                .then(function (resp) {
+                    if (resp.code === 0 && resp.data) {
+                        var c = resp.data;
+                        document.getElementById('cfg-server-host').value = c.server && c.server.host || '';
+                        document.getElementById('cfg-server-port').value = c.server && c.server.port || 8080;
+                        document.getElementById('cfg-log-level').value = c.log && c.log.level || 'info';
+                    }
+                });
+        })();
     </script>
-    {{ end }}
 </body>
 </html>
-{{ end }}
