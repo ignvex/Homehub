@@ -4,6 +4,13 @@
 //
 //	config.Load → logger.Init → database.Init → AutoMigrate
 //	→ seed user → handler.Init → server.Run
+//
+// @title           HomeHub API
+// @version         1.0
+// @description     个人中枢项目 API 接口文档，包含认证、书签管理、配置管理等功能。
+// @contact.name    HomeHub
+// @host            localhost:8080
+// @BasePath        /api/v1
 package main
 
 import (
@@ -75,6 +82,16 @@ func main() {
 		&model.BookmarkGroup{},
 		&model.Bookmark{},
 		&model.LogEntry{},
+		&model.MediaAsset{},
+		&model.AvatarCache{},
+		&model.Video{},
+		&model.VideoPage{},
+		&model.CrawlerState{},
+		&model.Article{},
+		&model.BiliUser{},
+		&model.RSSFeed{},
+		&model.RSSEntry{},
+		&model.Todo{},
 	); err != nil {
 		logger.Error("数据库迁移失败", "error", err)
 		os.Exit(1)
@@ -87,13 +104,28 @@ func main() {
 	svc := service.NewServices(db)
 
 	if cfg.Auth.Password != "" {
-		if err := svc.Auth.CreateInitialUser(cfg.Auth.Username, cfg.Auth.Password); err != nil {
+		if err := svc.Auth.CreateInitialUser(cfg.Auth.Username, cfg.Auth.Password, "admin"); err != nil {
 			logger.Error("创建初始用户失败", "error", err)
 			os.Exit(1)
 		}
 	} else {
 		logger.Warn("auth.password 为空，跳过初始用户创建（请通过 Web 端或 config.json 设置密码）")
 	}
+
+	// 创建 Bilibili 客户端（与爬虫和按需抓取共享）
+	biliClient := service.NewBiliClientFromConfig(cfg.Bilibili)
+
+	// 初始化 Bilibili 爬虫
+	stopBilibiliCrawlers, err := service.StartBilibiliCrawlers(db, cfg.Bilibili, biliClient)
+	if err != nil {
+		logger.Error("Bilibili 爬虫初始化失败", "error", err)
+		os.Exit(1)
+	}
+	defer stopBilibiliCrawlers()
+
+	// 初始化爬虫统计和按需抓取服务
+	svc.CrawlerStats = service.NewCrawlerStatsService(db)
+	svc.OnDemand = service.NewOnDemandService(db, biliClient)
 
 	// ============================================================
 	// 7. 注入 Handler
