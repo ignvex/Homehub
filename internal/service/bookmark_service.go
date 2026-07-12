@@ -25,7 +25,7 @@ func NewBookmarkService(db *gorm.DB) *BookmarkService {
 // ListGroups 返回所有分组，按 sort_order 升序排列。
 func (s *BookmarkService) ListGroups() ([]model.BookmarkGroup, error) {
 	var groups []model.BookmarkGroup
-	if err := s.db.Order("sort_order ASC").Find(&groups).Error; err != nil {
+	if err := s.db.Order("priority DESC, sort_order ASC").Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("查询分组列表失败: %w", err)
 	}
 	return groups, nil
@@ -109,14 +109,14 @@ func (s *BookmarkService) ReorderGroups(ids []uint64) error {
 // 返回所有分组，每个分组包含其下的书签，按 sort_order 排序。
 func (s *BookmarkService) ListBookmarks() ([]model.BookmarkGroup, error) {
 	var groups []model.BookmarkGroup
-	if err := s.db.Order("sort_order ASC").Find(&groups).Error; err != nil {
+	if err := s.db.Order("priority DESC, sort_order ASC").Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("查询分组列表失败: %w", err)
 	}
 
 	for i := range groups {
 		var bookmarks []model.Bookmark
 		if err := s.db.Where("group_id = ?", groups[i].ID).
-			Order("sort_order ASC").Find(&bookmarks).Error; err != nil {
+			Order("priority DESC, sort_order ASC").Find(&bookmarks).Error; err != nil {
 			return nil, fmt.Errorf("查询书签列表失败: %w", err)
 		}
 		groups[i].Bookmarks = bookmarks
@@ -180,6 +180,53 @@ func (s *BookmarkService) UpdateBookmark(id uint64, title, url, icon string) err
 	}
 	if result.RowsAffected == 0 {
 		return ErrBookmarkNotFound
+	}
+	return nil
+}
+
+// UpdateBookmarkWithPriority 更新书签信息（含优先级）。
+func (s *BookmarkService) UpdateBookmarkWithPriority(id uint64, title, url, icon string, priority *int) error {
+	updates := map[string]interface{}{}
+	if title != "" {
+		updates["title"] = title
+	}
+	if url != "" {
+		updates["url"] = url
+	}
+	updates["icon"] = icon
+	if priority != nil {
+		updates["priority"] = *priority
+	}
+
+	if len(updates) == 0 {
+		return nil
+	}
+
+	result := s.db.Model(&model.Bookmark{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新书签失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrBookmarkNotFound
+	}
+	return nil
+}
+
+// UpdateGroup 更新分组名称和优先级。
+func (s *BookmarkService) UpdateGroupWithPriority(id uint64, name string, priority *int) error {
+	if name == "" {
+		return errors.New("分组名称不能为空")
+	}
+	updates := map[string]interface{}{"name": name}
+	if priority != nil {
+		updates["priority"] = *priority
+	}
+	result := s.db.Model(&model.BookmarkGroup{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新分组失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrGroupNotFound
 	}
 	return nil
 }
