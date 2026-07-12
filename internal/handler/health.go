@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,7 @@ func HealthCheck(c *gin.Context) {
 		dbStatus = "unreachable"
 	}
 
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"status":         "ok",
 		"db":             dbStatus,
 		"uptime_seconds": int(time.Since(startTime).Seconds()),

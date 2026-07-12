@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"gorm.io/gorm"
@@ -35,6 +36,18 @@ func NewSearchService(db *gorm.DB) *SearchService {
 
 const searchLimitPerSource = 10
 
+// safeGo 带 panic recovery 启动 goroutine。
+func safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[search] goroutine %s panic: %v", name, r)
+			}
+		}()
+		fn()
+	}()
+}
+
 // Search 执行跨源搜索，scope 可选：all/bookmarks/videos/articles/users。
 func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 	result := &SearchResult{}
@@ -62,7 +75,7 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 
 	dispatch := map[string]func(){
 		"all":       func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
-		"bookmarks": func() { wg.Add(1); go searchBookmarks() },
+		"bookmarks": func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
 	}
 
 	fn, ok := dispatch[scope]
