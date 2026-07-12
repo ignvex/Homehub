@@ -91,7 +91,9 @@ type BookmarkConfig struct {
 // RSSConfig RSS 订阅模块配置。
 type RSSConfig struct {
 	ProxyServiceConfig
-	RetentionCount int `json:"retention_count"` // 每个订阅源保留条目数，默认 5000
+	RetentionCount          int  `json:"retention_count"`           // 每个订阅源保留条目数，默认 5000
+	BackgroundFetchEnabled  bool `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
+	BackgroundFetchInterval int  `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
 }
 
 // BilibiliConfig B 站 API 认证配置。

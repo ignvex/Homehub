@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -322,6 +324,39 @@ func (s *RSSService) FetchAll() error {
 	}
 
 	return lastErr
+}
+
+// StartBackgroundFetcher 启动 RSS 后台定时抓取 goroutine。
+//
+// 定期读取当前配置，根据 background_fetch_enabled 和 background_fetch_interval
+// 决定是否抓取。配置热更新后下一轮自动生效，无需重启服务。
+// ctx 用于优雅退出。
+func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
+	defaultInterval := 300
+
+	go func() {
+		for {
+			cfg := config.Get()
+			enabled := cfg != nil && cfg.RSS.BackgroundFetchEnabled
+			interval := defaultInterval
+			if cfg != nil && cfg.RSS.BackgroundFetchInterval > 0 {
+				interval = cfg.RSS.BackgroundFetchInterval
+			}
+
+			if enabled {
+				if err := s.FetchAll(); err != nil {
+					log.Printf("[rss] 后台定时抓取出错: %v", err)
+				}
+			}
+
+			select {
+			case <-ctx.Done():
+				log.Println("[rss] 后台定时抓取已停止")
+				return
+			case <-time.After(time.Duration(interval) * time.Second):
+			}
+		}
+	}()
 }
 
 // ============================================================

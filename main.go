@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -104,6 +105,11 @@ func main() {
 	} else {
 		logger.Warn("auth.password 为空，跳过初始用户创建（请通过 Web 端或 config.json 设置密码）")
 	}
+
+	// 启动 RSS 后台定时抓取（通过 context 控制生命周期，defer 在程序退出时停止）
+	rssCtx, rssCancel := context.WithCancel(context.Background())
+	defer rssCancel()
+	svc.RSS.StartBackgroundFetcher(rssCtx)
 
 	// ============================================================
 	// 7. 注入 Handler
