@@ -13,40 +13,54 @@ import (
 //   - API 路由（/api/v1/...）：JSON 接口，多数需要认证
 func registerRoutes(r *gin.Engine) {
 	// ============================================================
-	// 页面路由（公开，可选认证以便模板知晓登录状态）
+	// 页面路由（由 Vite 前端接管，Go 提供入口文件重定向）
 	// ============================================================
-	r.GET("/login", handler.LoginPage)
-	r.GET("/", middleware.AuthOptional(), handler.HomePage)
-	r.GET("/bookmarks", middleware.AuthOptional(), handler.BookmarksPage)
-	r.GET("/settings", middleware.AuthOptional(), handler.SettingsPage)
+	r.GET("/", func(c *gin.Context) { c.File("web/dist/index.html") })
 
 	// ============================================================
 	// API v1
 	// ============================================================
 	api := r.Group("/api/v1")
 
-	// --- 认证（无需登录） ---
+	// --- 健康检查（公开） ---
+	api.GET("/health", handler.HealthCheck)
+
+	// --- 认证（无需登录，AuthOptional 使 status 接口可获得用户信息） ---
 	auth := api.Group("/auth")
+	auth.Use(middleware.AuthOptional())
 	{
 		auth.POST("/login", handler.AuthLogin)
 		auth.GET("/status", handler.AuthStatus)
 	}
 
-	// --- 只读 API（公开，可选认证） ---
+	// --- 公开 API ---
 	publicAPI := api.Group("")
 	publicAPI.Use(middleware.AuthOptional())
 	{
+		publicAPI.GET("/avatar/:id", handler.AvatarGet)
+
+		// 书签（只读）
 		publicAPI.GET("/bookmarks", handler.BookmarkList)
 		publicAPI.GET("/bookmark-groups", handler.BookmarkGroupList)
+
+		// 搜索（只读）
+		publicAPI.GET("/search", handler.SearchAll)
 	}
 
 	// --- 以下路由需要认证 ---
 	authRequired := api.Group("")
 	authRequired.Use(middleware.AuthRequired())
 	{
-		// 登出
+		// 头像（当前用户）
+		authRequired.GET("/avatar/me", handler.AvatarGetMe)
+
+		// 认证
 		authRequired.POST("/auth/logout", handler.AuthLogout)
 		authRequired.POST("/auth/change-password", handler.AuthChangePassword)
+
+		// 用户 Profile
+		authRequired.GET("/auth/profile", handler.AuthGetProfile)
+		authRequired.PUT("/auth/profile", handler.AuthUpdateProfile)
 
 		// 书签分组（写操作）
 		bg := authRequired.Group("/bookmark-groups")
@@ -71,6 +85,68 @@ func registerRoutes(r *gin.Engine) {
 		{
 			cfg.GET("", handler.ConfigGet)
 			cfg.PUT("", handler.ConfigUpdate)
+		}
+
+		// 媒体资源
+		media := authRequired.Group("/media-assets")
+		{
+			media.GET("", handler.MediaList)
+			media.POST("", handler.MediaUpload)
+			media.DELETE("/:id", handler.MediaDelete)
+		}
+
+		// 背景设置
+		bgCfg := authRequired.Group("/background")
+		{
+			bgCfg.GET("", handler.BackgroundGet)
+			bgCfg.PUT("", handler.BackgroundUpdate)
+		}
+
+		// RSS 订阅
+		rssGroup := authRequired.Group("/rss")
+		{
+			rssGroup.GET("/feeds", handler.RSSListFeeds)
+			rssGroup.GET("/feeds/:id", handler.RSSGetFeed)
+			rssGroup.POST("/feeds", handler.RSSCreateFeed)
+			rssGroup.PUT("/feeds/:id", handler.RSSUpdateFeed)
+			rssGroup.DELETE("/feeds/:id", handler.RSSDeleteFeed)
+			rssGroup.POST("/feeds/:id/fetch", handler.RSSFetchFeed)
+			rssGroup.POST("/fetch-all", handler.RSSFetchAll)
+			rssGroup.GET("/entries", handler.RSSListEntries)
+		}
+
+		// TODO 待办
+		todoGroup := authRequired.Group("/todos")
+		{
+			todoGroup.GET("", handler.TodoList)
+			todoGroup.GET("/:id", handler.TodoGet)
+			todoGroup.POST("", handler.TodoCreate)
+			todoGroup.PUT("/:id", handler.TodoUpdate)
+			todoGroup.DELETE("/:id", handler.TodoDelete)
+			todoGroup.PATCH("/:id/status", handler.TodoUpdateStatus)
+			todoGroup.POST("/reorder", handler.TodoReorder)
+		}
+
+		// 用户管理（管理员）
+		admin := authRequired.Group("/admin")
+		admin.Use(middleware.AuthAdminRequired())
+		{
+			adminUsers := admin.Group("/users")
+			{
+				adminUsers.GET("", handler.AdminListUsers)
+				adminUsers.POST("", handler.AdminCreateUser)
+				adminUsers.GET("/:id", handler.AdminGetUser)
+				adminUsers.PUT("/:id", handler.AdminUpdateUser)
+				adminUsers.DELETE("/:id", handler.AdminDeleteUser)
+				adminUsers.PUT("/:id/reset-password", handler.AdminResetPassword)
+				adminUsers.POST("/:id/refresh-avatar", handler.AvatarRefresh)
+			}
+
+			// 系统日志（管理员）
+			adminLogs := admin.Group("/logs")
+			{
+				adminLogs.GET("", handler.LogList)
+			}
 		}
 	}
 }
