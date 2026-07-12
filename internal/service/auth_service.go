@@ -16,9 +16,9 @@ import (
 
 // 会话相关常量。
 const (
-	sessionTokenLength = 32                        // session token 原始字节数（hex 编码后 ×2）
-	sessionDuration    = 7 * 24 * time.Hour        // 会话有效期
-	bcryptCost         = bcrypt.DefaultCost        // bcrypt 哈希强度
+	sessionTokenLength = 32                 // session token 原始字节数（hex 编码后 ×2）
+	sessionDuration    = 7 * 24 * time.Hour // 会话有效期
+	bcryptCost         = bcrypt.DefaultCost // bcrypt 哈希强度
 )
 
 // AuthService 认证业务服务。

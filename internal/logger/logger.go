@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	lg      *slog.Logger
-	dbh     *dbHandler // 保留引用，用于优雅关闭
+	lg  *slog.Logger
+	dbh *dbHandler // 保留引用，用于优雅关闭
 )
 
 // Init 初始化全局 slog.Logger，使用控制台 handler。

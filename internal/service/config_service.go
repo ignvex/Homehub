@@ -21,17 +21,17 @@ func NewConfigService() *ConfigService {
 
 // SafeConfig 对外暴露的安全配置视图，不含数据库密码、session_secret 等敏感字段。
 type SafeConfig struct {
-	Server       config.ServerConfig      `json:"server"`
-	Database     SafeDatabaseConfig       `json:"database"`
-	Auth         SafeAuthConfig           `json:"auth"`
-	Log          config.LogConfig         `json:"log"`
-	Background   config.BackgroundConfig  `json:"background"`
-	ProxyEnabled bool                     `json:"proxy_enabled"`
-	Proxy        []config.ProxyEntry      `json:"proxy"`
-	Gravatar     config.GravatarConfig    `json:"gravatar"`
-	Bookmark     config.BookmarkConfig    `json:"bookmark"`
-	RSS          config.RSSConfig         `json:"rss"`
-	Bilibili     SafeBilibiliConfig       `json:"bilibili"`
+	Server       config.ServerConfig     `json:"server"`
+	Database     SafeDatabaseConfig      `json:"database"`
+	Auth         SafeAuthConfig          `json:"auth"`
+	Log          config.LogConfig        `json:"log"`
+	Background   config.BackgroundConfig `json:"background"`
+	ProxyEnabled bool                    `json:"proxy_enabled"`
+	Proxy        []config.ProxyEntry     `json:"proxy"`
+	Gravatar     config.GravatarConfig   `json:"gravatar"`
+	Bookmark     config.BookmarkConfig   `json:"bookmark"`
+	RSS          config.RSSConfig        `json:"rss"`
+	Bilibili     SafeBilibiliConfig      `json:"bilibili"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。

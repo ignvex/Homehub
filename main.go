@@ -82,13 +82,6 @@ func main() {
 		&model.BookmarkGroup{},
 		&model.Bookmark{},
 		&model.LogEntry{},
-		&model.MediaAsset{},
-		&model.AvatarCache{},
-		&model.Video{},
-		&model.VideoPage{},
-		&model.CrawlerState{},
-		&model.Article{},
-		&model.BiliUser{},
 		&model.RSSFeed{},
 		&model.RSSEntry{},
 		&model.Todo{},
@@ -111,21 +104,6 @@ func main() {
 	} else {
 		logger.Warn("auth.password 为空，跳过初始用户创建（请通过 Web 端或 config.json 设置密码）")
 	}
-
-	// 创建 Bilibili 客户端（与爬虫和按需抓取共享）
-	biliClient := service.NewBiliClientFromConfig(cfg.Bilibili)
-
-	// 初始化 Bilibili 爬虫
-	stopBilibiliCrawlers, err := service.StartBilibiliCrawlers(db, cfg.Bilibili, biliClient)
-	if err != nil {
-		logger.Error("Bilibili 爬虫初始化失败", "error", err)
-		os.Exit(1)
-	}
-	defer stopBilibiliCrawlers()
-
-	// 初始化爬虫统计和按需抓取服务
-	svc.CrawlerStats = service.NewCrawlerStatsService(db)
-	svc.OnDemand = service.NewOnDemandService(db, biliClient)
 
 	// ============================================================
 	// 7. 注入 Handler

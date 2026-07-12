@@ -37,10 +37,10 @@ type AuthConfig struct {
 //
 // 控制首页背景的展示模式与素材选择。
 type BackgroundConfig struct {
-	Mode             string   `json:"mode"`              // 背景模式：single / carousel / random，默认 "single"
-	IntervalSeconds  int      `json:"interval_seconds"`  // 轮播间隔（秒），默认 30
-	TransitionEffect string   `json:"transition_effect"` // 过渡效果：fade / slide，默认 "fade"
-	FadeDurationMs   int      `json:"fade_duration_ms"`  // 淡入淡出时长（毫秒），默认 1000
+	Mode             string   `json:"mode"`               // 背景模式：single / carousel / random，默认 "single"
+	IntervalSeconds  int      `json:"interval_seconds"`   // 轮播间隔（秒），默认 30
+	TransitionEffect string   `json:"transition_effect"`  // 过渡效果：fade / slide，默认 "fade"
+	FadeDurationMs   int      `json:"fade_duration_ms"`   // 淡入淡出时长（毫秒），默认 1000
 	SelectedAssetIDs []uint64 `json:"selected_asset_ids"` // 选中的媒体资源 ID 列表
 }
 
@@ -74,12 +74,12 @@ type ProxyServiceConfig struct {
 
 // GravatarConfig Gravatar 头像配置。
 type GravatarConfig struct {
-	Enabled        bool   `json:"enabled"`         // 是否启用以 Gravatar 生成头像
-	DefaultStyle   string `json:"default_style"`   // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
-	DefaultSize    int    `json:"default_size"`    // 头像尺寸（像素），默认 200
-	Rating         string `json:"rating"`          // 内容分级：g / pg / r / x
-	UseProxy       bool   `json:"use_proxy"`       // 是否通过代理下载 Gravatar
-	ProxyName      string `json:"proxy_name"`      // 引用的代理名称（对应 proxy 列表中的 name）
+	Enabled        bool   `json:"enabled"`          // 是否启用以 Gravatar 生成头像
+	DefaultStyle   string `json:"default_style"`    // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
+	DefaultSize    int    `json:"default_size"`     // 头像尺寸（像素），默认 200
+	Rating         string `json:"rating"`           // 内容分级：g / pg / r / x
+	UseProxy       bool   `json:"use_proxy"`        // 是否通过代理下载 Gravatar
+	ProxyName      string `json:"proxy_name"`       // 引用的代理名称（对应 proxy 列表中的 name）
 	CustomProxyURL string `json:"custom_proxy_url"` // 自定义代理 URL（优先级高于 proxy_name）
 }
 
@@ -124,7 +124,7 @@ type Config struct {
 	Auth         AuthConfig       `json:"auth"`
 	Log          LogConfig        `json:"log"`
 	Background   BackgroundConfig `json:"background"`
-	ProxyEnabled bool             `json:"proxy_enabled"`  // 全局代理总开关（关闭时所有代理均无效）
+	ProxyEnabled bool             `json:"proxy_enabled"` // 全局代理总开关（关闭时所有代理均无效）
 	Proxy        []ProxyEntry     `json:"proxy,omitempty"`
 	Gravatar     GravatarConfig   `json:"gravatar"`
 	Bookmark     BookmarkConfig   `json:"bookmark"`

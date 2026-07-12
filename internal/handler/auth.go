@@ -16,16 +16,25 @@ import (
 
 // loginRequest 登录请求体。
 type loginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username string `json:"username" form:"username" binding:"required"`
+	Password string `json:"password" form:"password" binding:"required"`
 }
 
 // AuthLogin 处理用户登录。
 //
-// POST /api/v1/auth/login
+//	@Summary		用户登录
+//	@Description	验证用户名和密码，成功时设置 session cookie 并返回 token
+//	@Tags			认证
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		loginRequest	true	"登录请求"
+//	@Success		200		{object}	Response{data=object}	"登录成功，返回 token"
+//	@Failure		400		{object}	Response	"请求参数错误"
+//	@Failure		401		{object}	Response	"用户名或密码错误"
+//	@Router			/auth/login [post]
 func AuthLogin(c *gin.Context) {
 	var req loginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		FailBadRequest(c, "请提供用户名和密码")
 		return
 	}
@@ -34,6 +43,10 @@ func AuthLogin(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, service.ErrAuthFailed) {
 			Fail(c, http.StatusUnauthorized, CodeAuthFailed, "用户名或密码错误")
+			return
+		}
+		if errors.Is(err, service.ErrUserDisabled) {
+			Fail(c, http.StatusForbidden, CodeUserDisabled, "账号已被禁用，请联系管理员")
 			return
 		}
 		FailInternal(c, "登录失败")
@@ -51,12 +64,20 @@ func AuthLogin(c *gin.Context) {
 		true,  // HttpOnly
 	)
 
+	// 通知 htmx 客户端跳转到首页（非 htmx 调用者照常解析 JSON body）
+	c.Header("HX-Redirect", "/")
+
 	Success(c, gin.H{"token": token})
 }
 
 // AuthLogout 处理用户登出。
 //
-// POST /api/v1/auth/logout
+//	@Summary	用户登出
+//	@Description	清除 session cookie 并注销
+//	@Tags		认证
+//	@Produce	json
+//	@Success	200	{object}	Response	"登出成功"
+//	@Router		/auth/logout [post]
 func AuthLogout(c *gin.Context) {
 	token, _ := c.Get("session_token")
 	if tokenStr, ok := token.(string); ok {
@@ -79,7 +100,12 @@ func AuthLogout(c *gin.Context) {
 
 // AuthStatus 返回当前登录状态。
 //
-// GET /api/v1/auth/status
+//	@Summary	获取登录状态
+//	@Description	返回当前用户是否已登录
+//	@Tags		认证
+//	@Produce	json
+//	@Success	200	{object}	Response{data=object}	"返回登录状态"
+//	@Router		/auth/status [get]
 func AuthStatus(c *gin.Context) {
 	// 从 Cookie 获取 token 并尝试验证
 	token, err := c.Cookie(middleware.SessionCookieName)
@@ -90,13 +116,16 @@ func AuthStatus(c *gin.Context) {
 		return
 	}
 
-	// 简单判断：如果有 cookie 就视为已登录（完整校验由中间件完成）
+	// 完整校验由中间件完成
 	u, exists := c.Get("user")
 	if exists {
 		user := u.(*model.User)
 		c.JSON(http.StatusOK, gin.H{
-			"logged_in": true,
-			"username":  user.Username,
+			"logged_in":  true,
+			"username":   user.Username,
+			"role":       user.Role,
+			"email":      user.Email,
+			"avatar_url": buildAvatarURL(user.ID),
 		})
 		return
 	}
@@ -111,13 +140,22 @@ func AuthStatus(c *gin.Context) {
 
 // changePasswordRequest 修改密码请求体。
 type changePasswordRequest struct {
-	OldPassword string `json:"old_password" binding:"required"`
-	NewPassword string `json:"new_password" binding:"required"`
+	OldPassword string `json:"old_password" form:"old_password" binding:"required"`
+	NewPassword string `json:"new_password" form:"new_password" binding:"required"`
 }
 
 // AuthChangePassword 修改密码。
 //
-// POST /api/v1/auth/change-password
+//	@Summary		修改密码
+//	@Description	验证旧密码后修改为新密码，成功后清除所有会话
+//	@Tags			认证
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		changePasswordRequest	true	"修改密码请求"
+//	@Success		200		{object}	Response	"修改成功"
+//	@Failure		400		{object}	Response	"请求参数错误或旧密码错误"
+//	@Failure		401		{object}	Response	"未登录"
+//	@Router			/auth/change-password [post]
 func AuthChangePassword(c *gin.Context) {
 	u, exists := c.Get("user")
 	if !exists {
@@ -127,7 +165,7 @@ func AuthChangePassword(c *gin.Context) {
 	user := u.(*model.User)
 
 	var req changePasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		FailBadRequest(c, "请提供旧密码和新密码")
 		return
 	}
@@ -157,4 +195,75 @@ func AuthChangePassword(c *gin.Context) {
 	)
 
 	Success(c, nil)
+}
+
+// ============================================================
+// Profile API
+// ============================================================
+
+// updateProfileRequest 更新个人资料请求体。
+type updateProfileRequest struct {
+	Username *string `json:"username,omitempty"`
+	Email    *string `json:"email,omitempty"`
+}
+
+// AuthGetProfile 获取当前登录用户的个人信息。
+//
+// GET /api/v1/auth/profile
+func AuthGetProfile(c *gin.Context) {
+	u, exists := c.Get("user")
+	if !exists {
+		FailUnauthorized(c, "未登录")
+		return
+	}
+	user := u.(*model.User)
+
+	Success(c, gin.H{
+		"id":         user.ID,
+		"username":   user.Username,
+		"email":      user.Email,
+		"role":       user.Role,
+		"avatar_url": buildAvatarURL(user.ID),
+	})
+}
+
+// AuthUpdateProfile 当前用户更新自己的个人资料。
+//
+// PUT /api/v1/auth/profile
+func AuthUpdateProfile(c *gin.Context) {
+	u, exists := c.Get("user")
+	if !exists {
+		FailUnauthorized(c, "未登录")
+		return
+	}
+	user := u.(*model.User)
+
+	var req updateProfileRequest
+	if err := c.ShouldBind(&req); err != nil {
+		FailBadRequest(c, "无效的参数")
+		return
+	}
+
+	svcReq := service.UpdateUserRequest{
+		Username: req.Username,
+		Email:    req.Email,
+	}
+
+	updated, err := svc.Auth.UpdateUser(user.ID, user.ID, svcReq)
+	if err != nil {
+		if errors.Is(err, service.ErrUsernameExists) {
+			Fail(c, http.StatusConflict, CodeUsernameExists, "用户名已存在")
+			return
+		}
+		FailInternal(c, "更新资料失败")
+		return
+	}
+
+	Success(c, gin.H{
+		"id":         updated.ID,
+		"username":   updated.Username,
+		"email":      updated.Email,
+		"role":       updated.Role,
+		"avatar_url": buildAvatarURL(updated.ID),
+	})
 }

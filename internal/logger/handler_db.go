@@ -19,26 +19,26 @@ import (
 // 缓冲区满时丢弃新日志（不阻塞应用），refreshInterval 到时或 batchSize
 // 达到阈值时执行一次批量 INSERT。
 type dbHandler struct {
-	db      *gorm.DB
-	level   slog.Level
-	ch      chan *model.LogEntry
-	done    chan struct{}
+	db        *gorm.DB
+	level     slog.Level
+	ch        chan *model.LogEntry
+	done      chan struct{}
 	closeOnce sync.Once
 }
 
 const (
-	dbWriterBatchSize      = 100             // 批量插入阈值
-	dbWriterFlushInterval  = 3 * time.Second // 定时刷新间隔
-	dbWriterChannelSize    = 2048            // channel 缓冲区大小
+	dbWriterBatchSize     = 100             // 批量插入阈值
+	dbWriterFlushInterval = 3 * time.Second // 定时刷新间隔
+	dbWriterChannelSize   = 2048            // channel 缓冲区大小
 )
 
 // newDBHandler 创建数据库日志 handler 并启动后台写入 goroutine。
 func newDBHandler(db *gorm.DB, level slog.Level) *dbHandler {
 	h := &dbHandler{
-		db:   db,
+		db:    db,
 		level: level,
-		ch:   make(chan *model.LogEntry, dbWriterChannelSize),
-		done: make(chan struct{}),
+		ch:    make(chan *model.LogEntry, dbWriterChannelSize),
+		done:  make(chan struct{}),
 	}
 
 	go h.run()

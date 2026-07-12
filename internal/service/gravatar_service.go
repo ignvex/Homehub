@@ -10,9 +10,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/imroc/req/v3"
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/model"
+	"github.com/imroc/req/v3"
 	"golang.org/x/net/proxy"
 	"gorm.io/gorm"
 )

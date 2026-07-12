@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -11,16 +12,16 @@ import (
 // ============================================================
 
 const (
-	CodeSuccess       = 0     // 成功
-	CodeBadRequest    = 10001 // 请求参数错误
-	CodeUnauthorized  = 10003 // 未认证
-	CodeNotFound      = 10005 // 资源不存在
-	CodeConflict      = 10006 // 资源冲突
-	CodeInternalError = 10007 // 服务器内部错误
-	CodeAuthFailed    = 20001 // 用户名或密码错误
-	CodeSessionExpired  = 20002 // 会话已过期
-	CodePasswordTooWeak = 20003 // 密码强度不足
-	CodeGroupNotFound   = 50001 // 书签分组不存在
+	CodeSuccess          = 0     // 成功
+	CodeBadRequest       = 10001 // 请求参数错误
+	CodeUnauthorized     = 10003 // 未认证
+	CodeNotFound         = 10005 // 资源不存在
+	CodeConflict         = 10006 // 资源冲突
+	CodeInternalError    = 10007 // 服务器内部错误
+	CodeAuthFailed       = 20001 // 用户名或密码错误
+	CodeSessionExpired   = 20002 // 会话已过期
+	CodePasswordTooWeak  = 20003 // 密码强度不足
+	CodeGroupNotFound    = 50001 // 书签分组不存在
 	CodeBookmarkNotFound = 50002 // 书签不存在
 )
 
@@ -67,4 +68,17 @@ func FailUnauthorized(c *gin.Context, message string) {
 // FailInternal 返回内部错误响应（HTTP 500）。
 func FailInternal(c *gin.Context, message string) {
 	Fail(c, http.StatusInternalServerError, CodeInternalError, message)
+}
+
+// queryInt 读取整形查询参数，缺失或解析失败时返回默认值。
+func queryInt(c *gin.Context, key string, defaultVal int) int {
+	val := c.Query(key)
+	if val == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return n
 }
