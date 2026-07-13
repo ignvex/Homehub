@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -83,7 +85,22 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 		return nil, fmt.Errorf("不支持的搜索范围: %s", scope)
 	}
 	fn()
-	wg.Wait()
+
+	// 带超时的等待，防止 goroutine 永久阻塞
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("搜索超时")
+	}
 
 	return result, nil
 }

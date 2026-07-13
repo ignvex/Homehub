@@ -1,0 +1,30 @@
+# HomeHub 仓库换行符规范
+# Go 源码统一使用 LF（避免 Windows CRLF 导致跨平台工具链兼容问题）
+*.go        text eol=lf
+go.mod      text eol=lf
+go.sum      text eol=lf
+
+# 文档与配置（Git 自动检测，仓库内 LF，工作区跟随系统）
+*.md        text
+*.json      text
+*.yaml      text
+*.yml       text
+Dockerfile  text
+
+# Web 前端（Vite/Node 生态使用 LF）
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.js        text eol=lf
+*.svg       text eol=lf
+
+# 二进制文件（不转换）
+*.exe       binary
+*.dll       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.lock      binary

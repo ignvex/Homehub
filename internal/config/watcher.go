@@ -1,11 +1,11 @@
 package config
 
 import (
-	"log"
 	"os"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/ignvex/HomeHub/internal/logger"
 )
 
 const watchDebounce = 150 * time.Millisecond
@@ -23,7 +23,7 @@ const watchDebounce = 150 * time.Millisecond
 func Watch(path string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("[config] 创建文件监听器失败: %v", err)
+		logger.Error("配置文件监听器创建失败", "error", err)
 		return
 	}
 
@@ -33,7 +33,7 @@ func Watch(path string) {
 		dir = "."
 	}
 	if err := watcher.Add(dir); err != nil {
-		log.Printf("[config] 添加文件监听失败 (%s): %v", path, err)
+		logger.Error("添加配置文件监听失败", "path", path, "error", err)
 		watcher.Close()
 		return
 	}
@@ -60,11 +60,11 @@ func Watch(path string) {
 					timer.Stop()
 				}
 				timer = time.AfterFunc(watchDebounce, func() {
-					log.Printf("[config] 检测到配置文件变更，重新加载: %s", path)
+					logger.Info("检测到配置文件变更，重新加载", "path", path)
 					if err := Load(path); err != nil {
-						log.Printf("[config] 热加载失败 (保留旧配置): %v", err)
+						logger.Error("配置热加载失败，保留旧配置", "error", err)
 					} else {
-						log.Printf("[config] 热加载成功")
+						logger.Info("配置热加载成功")
 					}
 				})
 
@@ -72,7 +72,7 @@ func Watch(path string) {
 				if !ok {
 					return
 				}
-				log.Printf("[config] 文件监听错误: %v", err)
+				logger.Error("配置文件监听错误", "error", err)
 			}
 		}
 	}()

@@ -125,14 +125,62 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs 返回附加属性的新 handler（DB handler 不使用预置属性，直接透传）。
+// WithAttrs 返回带预置属性的新 handler，attrs 会在每条日志 Handle 时自动附加。
 func (h *dbHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return h
+	return &dbHandlerWithAttrs{parent: h, attrs: attrs}
 }
 
-// WithGroup 返回按组组织的新 handler（DB handler 不使用分组，直接透传）。
+// dbHandlerWithAttrs 带预置属性的 DB handler 包装器。
+type dbHandlerWithAttrs struct {
+	parent *dbHandler
+	attrs  []slog.Attr
+}
+
+func (h *dbHandlerWithAttrs) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.parent.Enabled(ctx, level)
+}
+
+func (h *dbHandlerWithAttrs) Handle(ctx context.Context, r slog.Record) error {
+	r.AddAttrs(h.attrs...)
+	return h.parent.Handle(ctx, r)
+}
+
+func (h *dbHandlerWithAttrs) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &dbHandlerWithAttrs{parent: h.parent, attrs: newAttrs}
+}
+
+func (h *dbHandlerWithAttrs) WithGroup(name string) slog.Handler {
+	return h.parent.WithGroup(name)
+}
+
+// WithGroup 返回带分组的新 handler，group 名称存储在日志字段命名中。
 func (h *dbHandler) WithGroup(name string) slog.Handler {
-	return h
+	return &dbHandlerWithGroup{parent: h, group: name}
+}
+
+// dbHandlerWithGroup 带分组的 DB handler 包装器。
+type dbHandlerWithGroup struct {
+	parent *dbHandler
+	group  string
+}
+
+func (h *dbHandlerWithGroup) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.parent.Enabled(ctx, level)
+}
+
+func (h *dbHandlerWithGroup) Handle(ctx context.Context, r slog.Record) error {
+	return h.parent.Handle(ctx, r)
+}
+
+func (h *dbHandlerWithGroup) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &dbHandlerWithGroup{parent: h.parent, group: h.group}
+}
+
+func (h *dbHandlerWithGroup) WithGroup(name string) slog.Handler {
+	return &dbHandlerWithGroup{parent: h.parent, group: name}
 }
 
 // Close 关闭 DB handler，等待后台写入完成。

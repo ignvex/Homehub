@@ -14,11 +14,13 @@ import (
 
 // 登录限速：记录每个用户名的失败尝试次数和时间戳。
 var (
-	loginAttempts   = sync.Map{} // map[string]loginAttempt
+	loginAttemptsMu sync.RWMutex
+	loginAttempts   = make(map[string]*loginAttempt)
 	loginMaxRetries = 5
 	loginCooldown   = 15 * time.Minute
 )
 
+// loginAttempt 登录尝试记录，由 loginAttemptsMu 保护并发访问。
 type loginAttempt struct {
 	count    int
 	lockedAt time.Time
@@ -54,29 +56,35 @@ func AuthLogin(c *gin.Context) {
 	}
 
 	// 登录限速：检查是否被锁定
-	if att, ok := loginAttempts.Load(req.Username); ok {
-		a := att.(loginAttempt)
-		if a.count >= loginMaxRetries {
-			if time.Since(a.lockedAt) < loginCooldown {
-				Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
-				return
-			}
-			// 冷却时间已过，重置
-			loginAttempts.Delete(req.Username)
+	loginAttemptsMu.RLock()
+	att, locked := loginAttempts[req.Username]
+	loginAttemptsMu.RUnlock()
+	if locked && att.count >= loginMaxRetries {
+		if time.Since(att.lockedAt) < loginCooldown {
+			Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
+			return
 		}
+		// 冷却时间已过，重置
+		loginAttemptsMu.Lock()
+		delete(loginAttempts, req.Username)
+		loginAttemptsMu.Unlock()
 	}
 
 	token, err := svc.Auth.Login(req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrAuthFailed) {
-			// 记录失败尝试
-			att, _ := loginAttempts.LoadOrStore(req.Username, loginAttempt{})
-			a := att.(loginAttempt)
+			// 记录失败尝试（加锁保护）
+			loginAttemptsMu.Lock()
+			a := loginAttempts[req.Username]
+			if a == nil {
+				a = &loginAttempt{}
+				loginAttempts[req.Username] = a
+			}
 			a.count++
 			if a.count >= loginMaxRetries {
 				a.lockedAt = time.Now()
 			}
-			loginAttempts.Store(req.Username, a)
+			loginAttemptsMu.Unlock()
 			Fail(c, http.StatusUnauthorized, CodeAuthFailed, "用户名或密码错误")
 			return
 		}
@@ -88,7 +96,9 @@ func AuthLogin(c *gin.Context) {
 		return
 	}
 	// 登录成功，清除限速记录
-	loginAttempts.Delete(req.Username)
+	loginAttemptsMu.Lock()
+	delete(loginAttempts, req.Username)
+	loginAttemptsMu.Unlock()
 
 	// 设置 Cookie
 	c.SetCookie(
@@ -116,9 +126,11 @@ func AuthLogin(c *gin.Context) {
 //	@Success	200	{object}	Response	"登出成功"
 //	@Router		/auth/logout [post]
 func AuthLogout(c *gin.Context) {
-	token, _ := c.Get("session_token")
-	if tokenStr, ok := token.(string); ok {
-		_ = svc.Auth.Logout(tokenStr)
+	token, exists := c.Get("session_token")
+	if exists {
+		if tokenStr, ok := token.(string); ok {
+			_ = svc.Auth.Logout(tokenStr)
+		}
 	}
 
 	// 清除 Cookie
@@ -171,8 +183,6 @@ func AuthStatus(c *gin.Context) {
 		"logged_in": true,
 	})
 
-	// 消除 unused 警告
-	_ = token
 }
 
 // changePasswordRequest 修改密码请求体。

@@ -6,6 +6,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -58,7 +59,9 @@ func AuthRequired() gin.HandlerFunc {
 
 		if time.Now().After(session.ExpiresAt) {
 			// 清理过期 session
-			db.Delete(&session)
+			if delErr := db.Delete(&session).Error; delErr != nil {
+				log.Printf("[auth] 清理过期会话失败: %v", delErr)
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code": 20002, "message": "会话已过期",
 			})
@@ -107,7 +110,9 @@ func AuthOptional() gin.HandlerFunc {
 		}
 
 		if time.Now().After(session.ExpiresAt) {
-			db.Delete(&session)
+			if delErr := db.Delete(&session).Error; delErr != nil {
+				log.Printf("[auth] 清理过期会话失败: %v", delErr)
+			}
 			c.Next()
 			return
 		}
@@ -178,7 +183,9 @@ func AuthPageRequired() gin.HandlerFunc {
 		}
 
 		if time.Now().After(session.ExpiresAt) {
-			db.Delete(&session)
+			if delErr := db.Delete(&session).Error; delErr != nil {
+				log.Printf("[auth] 清理过期会话失败: %v", delErr)
+			}
 			c.Redirect(http.StatusFound, "/login")
 			c.Abort()
 			return

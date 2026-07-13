@@ -1,0 +1,179 @@
+{
+  "document_purpose": "HomeHub 前端重构交接与进度记录。开始后续工作前必须先阅读 required_reading，并以 source_of_truth 的优先级核验当前代码和接口。",
+  "updated_at": "2026-07-13",
+  "required_reading": [
+    {
+      "path": "../README.md",
+      "reason": "了解项目目标、技术栈、开发命令和既有架构约定。"
+    },
+    {
+      "path": "../architecture.json",
+      "reason": "了解页面、组件、接口与前端职责边界；其中部分页面壳描述可能已落后于运行代码。"
+    },
+    {
+      "path": "../docs/swagger.yaml",
+      "reason": "了解已记录的 API 请求、响应和模型；该文档并不完整，不能作为唯一接口事实来源。"
+    }
+  ],
+  "source_of_truth": [
+    "../internal/server/routes.go",
+    "../internal/handler/",
+    "../internal/service/",
+    "../internal/model/"
+  ],
+  "source_priority_note": "发生冲突时，以 internal/server/routes.go 中实际注册的路由和对应 handler、service、model 实现为准，其次参考 architecture.json，最后参考可能滞后的 Swagger 与 README 计划描述。",
+  "current_phase": {
+    "id": 0,
+    "name": "建立页面装载与认证壳",
+    "status": "进行中",
+    "verified": false
+  },
+  "progress": [
+    {
+      "status": "completed",
+      "item": "已审计后端路由、主要 handler、service、model 与现有前端页面能力。"
+    },
+    {
+      "status": "completed",
+      "item": "已确认后端当前通过单入口 SPA fallback 返回 web/dist/index.html，而不是为每个业务页面返回独立 HTML 片段。"
+    },
+    {
+      "status": "completed",
+      "item": "已确定原创设计方向：以对象和任务优先的高密度操作台为主，采用稳定侧栏、紧凑工具栏、可筛选结果、就地详情和克制状态色；不得复制 Palantir 或 Cloudflare 的品牌资产与像素级布局。"
+    },
+    {
+      "status": "written_unverified",
+      "item": "web/src/App.tsx 已改为依据 pathname 选择页面，并为认证页面增加会话检查和管理员页面访问限制。"
+    },
+    {
+      "status": "written_unverified",
+      "item": "web/src/lib/home.ts 的 AuthStatus 已补充 role 与 email 等可选字段。"
+    },
+    {
+      "status": "written_unverified",
+      "item": "web/src/components/AppShell.tsx 已开始给用户、日志、设置导航增加管理员标记。"
+    }
+  ],
+  "known_bugs_and_constraints": [
+    {
+      "severity": "blocking",
+      "area": "frontend-entry",
+      "description": "阶段 0 的三处前端修改尚未运行 pnpm build 和 pnpm lint，可能存在导出类型、组件 props 或路径解析错误。"
+    },
+    {
+      "severity": "high",
+      "area": "navigation",
+      "description": "AppShell 仍需完整核验 HTMX 属性。后端页面请求当前返回完整 SPA 文档，不能把完整 index.html 直接注入 #shell-content；在服务端片段协议建立前应使用可靠的整页导航。"
+    },
+    {
+      "severity": "high",
+      "area": "bilibili",
+      "description": "BilibiliPage 的详情和返回链接仍使用 /admin/bilibili/*，与当前前端 /bilibili/* 页面路径不一致，尚未修正。"
+    },
+    {
+      "severity": "high",
+      "area": "architecture",
+      "description": "architecture.json 中 Go 提供逐页 HTML 壳的描述与 internal/server/routes.go 的实际 SPA fallback 不一致；实现必须以运行代码为准，同时保留未来迁移边界。"
+    },
+    {
+      "severity": "medium",
+      "area": "rss",
+      "description": "RSS 条目查询当前需要具体 feed ID，不能提供真实的“全部订阅源条目”视图。"
+    },
+    {
+      "severity": "medium",
+      "area": "todos",
+      "description": "待办当前是所有认证用户共享数据，不得在界面中称为个人待办；现有更新语义也不能可靠清空描述或截止日期。"
+    },
+    {
+      "severity": "medium",
+      "area": "appearance",
+      "description": "背景设置存在 webui.home/login.background 与旧顶层 background 两套配置来源，统一前不能宣称外观页可控制实际首页和登录页背景。"
+    },
+    {
+      "severity": "medium",
+      "area": "settings",
+      "description": "配置读取会脱敏秘密字段，前端不得整对象回写已脱敏值；秘密字段必须采用留空不修改的增量提交语义。"
+    },
+    {
+      "severity": "medium",
+      "area": "api-contract",
+      "description": "API 响应并非全部使用统一包装：/health 与 /auth/status 等存在裸 JSON，头像及媒体预览属于二进制响应，类型化客户端必须显式区分。"
+    },
+    {
+      "severity": "workspace",
+      "area": "git",
+      "description": "当前工作区同时包含后端、爬虫、数据库、cache.json 删除和多个辅助脚本改动。除非用户另行要求，不得回退、覆盖或整理这些非前端变更。"
+    }
+  ],
+  "todo": [
+    {
+      "priority": 0,
+      "item": "重新读取当前 git status 与 web 目录 diff，确认工作区状态没有在会话切换期间变化。"
+    },
+    {
+      "priority": 0,
+      "item": "运行 pnpm build 和 pnpm lint，依据真实输出修正 App.tsx、AppShell.tsx 与 lib/home.ts；不得在未验证时标记阶段 0 完成。"
+    },
+    {
+      "priority": 0,
+      "item": "完成 AppShell 导航策略：移除会把完整 SPA 文档注入局部容器的 HTMX 页面请求，确保直接访问、刷新和导航均能正确装载页面。"
+    },
+    {
+      "priority": 0,
+      "item": "把 BilibiliPage 的 /admin/bilibili/* 页面链接统一到 /bilibili/*，并验证列表、详情和返回导航。"
+    },
+    {
+      "priority": 1,
+      "item": "统一设计令牌和基础工作台组件，包括紧凑工具栏、数据表、筛选栏、状态标签、抽屉、对话框、加载态、空态和错误态。"
+    },
+    {
+      "priority": 1,
+      "item": "按业务域拆分类型化 API 模块，明确统一包装、裸 JSON 和二进制三类响应。"
+    },
+    {
+      "priority": 2,
+      "item": "依次完成公开入口、日常工作页面、Bilibili 数据探索、个人与管理页面，并严格限制在后端实际支持的能力内。"
+    },
+    {
+      "priority": 2,
+      "item": "逐页使用真实后端联调权限、分页、筛选、空数据、错误状态和危险操作，并检查桌面与移动视口。"
+    }
+  ],
+  "verification": {
+    "not_yet_run_for_current_frontend_changes": [
+      "pnpm build",
+      "pnpm lint"
+    ],
+    "working_directory": "web",
+    "runtime": {
+      "backend": "go run .，默认监听 :8080；若用户已运行则不要重复占用端口。",
+      "frontend": "pnpm run dev，默认监听 :5173；若用户已运行则复用现有服务。"
+    },
+    "browser_checks": [
+      "匿名、普通用户、管理员三种权限",
+      "直接访问、刷新、页面导航和 returnTo 登录回跳",
+      "加载、空数据、错误和权限拒绝状态",
+      "375px、768px、1440px 视口",
+      "键盘焦点、文本适配和无界面重叠"
+    ]
+  },
+  "design_direction": {
+    "primary": "对象与任务优先的操作台",
+    "principles": [
+      "先回答当前对象是什么、状态如何、下一步可执行什么。",
+      "以稳定侧栏和紧凑结果区组织业务域，以表格或结构化列表为主。",
+      "筛选紧贴结果，详情使用就地抽屉或明确详情页，危险操作使用确认对话框。",
+      "统计只作为辅助摘要，不使用巨型数字卡、营销横幅、渐变装饰或卡片套卡片。",
+      "移动端将宽表转换为结构化结果行或全屏详情，不能机械压缩桌面表格。"
+    ]
+  },
+  "do_not_touch_without_explicit_request": [
+    "../cache.json",
+    "../internal/crawler/",
+    "../internal/service/*crawler*.go",
+    "../internal/database/",
+    "../_*.py",
+    "其他与前端任务无关的现有修改或未跟踪文件"
+  ]
+}

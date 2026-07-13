@@ -39,7 +39,7 @@ func main() {
 	if err := config.Load(configPath); err != nil {
 		// 首次启动生成默认配置文件
 		log.Printf("[main] %v", err)
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	cfg := config.Get()

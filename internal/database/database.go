@@ -89,7 +89,7 @@ func Init(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 			Logger: gormlogger.Default.LogMode(gormlogger.Warn),
 		})
 		if err != nil {
-			initErr = fmt.Errorf("database: 连接 PostgreSQL 失败: %w", err)
+			initErr = fmt.Errorf("database: 连接 PostgreSQL 失败 (主机=%s): %w", cfg.Host, err)
 			return
 		}
 
