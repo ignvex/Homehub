@@ -42,7 +42,15 @@ type reorderTodosRequest struct {
 
 // TodoList 获取 TODO 列表。
 //
-// GET /api/v1/todos?status=&sort=
+//	@Summary		获取待办列表
+//	@Description	获取所有待办事项，可按状态筛选和排序
+//	@Tags			待办事项
+//	@Produce		json
+//	@Param			status	query		string	false	"状态筛选：planned/pending/in_progress/completed/paused"
+//	@Param			sort	query		string	false	"排序字段（默认 priority）"
+//	@Success		200		{object}	Response	"待办列表"
+//	@Failure		500		{object}	Response	"服务器内部错误"
+//	@Router			/todos [get]
 func TodoList(c *gin.Context) {
 	status := c.Query("status")
 	sort := c.DefaultQuery("sort", "priority")
@@ -57,7 +65,15 @@ func TodoList(c *gin.Context) {
 
 // TodoGet 获取单个 TODO。
 //
-// GET /api/v1/todos/:id
+//	@Summary		获取待办详情
+//	@Description	根据 ID 获取单个待办事项
+//	@Tags			待办事项
+//	@Produce		json
+//	@Param			id	path		int		true	"待办 ID"
+//	@Success		200	{object}	Response	"待办详情"
+//	@Failure		400	{object}	Response	"无效的待办 ID"
+//	@Failure		404	{object}	Response	"待办不存在"
+//	@Router			/todos/{id} [get]
 func TodoGet(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -75,7 +91,15 @@ func TodoGet(c *gin.Context) {
 
 // TodoCreate 创建 TODO。
 //
-// POST /api/v1/todos
+//	@Summary		创建待办
+//	@Description	创建新的待办事项，可设置标题、描述、优先级和截止日期
+//	@Tags			待办事项
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		createTodoRequest	true	"待办内容"
+//	@Success		200		{object}	Response			"新创建的待办"
+//	@Failure		400		{object}	Response			"缺少标题或参数错误"
+//	@Router			/todos [post]
 func TodoCreate(c *gin.Context) {
 	var req createTodoRequest
 	if err := c.ShouldBind(&req); err != nil {
@@ -93,7 +117,17 @@ func TodoCreate(c *gin.Context) {
 
 // TodoUpdate 更新 TODO。
 //
-// PUT /api/v1/todos/:id
+//	@Summary		更新待办
+//	@Description	更新待办事项的标题、描述、状态、优先级或截止日期
+//	@Tags			待办事项
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		int					true	"待办 ID"
+//	@Param			request	body		updateTodoRequest	true	"更新请求（全部可选）"
+//	@Success		200		{object}	Response			"更新成功"
+//	@Failure		400		{object}	Response			"无效的请求参数"
+//	@Failure		500		{object}	Response			"服务器内部错误"
+//	@Router			/todos/{id} [put]
 func TodoUpdate(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -137,7 +171,15 @@ func TodoUpdate(c *gin.Context) {
 
 // TodoDelete 删除 TODO。
 //
-// DELETE /api/v1/todos/:id
+//	@Summary		删除待办
+//	@Description	删除指定待办事项
+//	@Tags			待办事项
+//	@Produce		json
+//	@Param			id	path		int		true	"待办 ID"
+//	@Success		200	{object}	Response	"删除成功"
+//	@Failure		400	{object}	Response	"无效的待办 ID"
+//	@Failure		404	{object}	Response	"待办不存在"
+//	@Router			/todos/{id} [delete]
 func TodoDelete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -154,7 +196,17 @@ func TodoDelete(c *gin.Context) {
 
 // TodoUpdateStatus 快捷修改 TODO 状态。
 //
-// PATCH /api/v1/todos/:id/status
+//	@Summary		更新待办状态
+//	@Description	快捷修改待办事项的状态（planned/pending/in_progress/completed/paused）
+//	@Tags			待办事项
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		int							true	"待办 ID"
+//	@Param			request	body		updateTodoStatusRequest		true	"新状态"
+//	@Success		200		{object}	Response					"更新成功"
+//	@Failure		400		{object}	Response					"无效的状态值"
+//	@Failure		500		{object}	Response					"服务器内部错误"
+//	@Router			/todos/{id}/status [patch]
 func TodoUpdateStatus(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -182,7 +234,16 @@ func TodoUpdateStatus(c *gin.Context) {
 
 // TodoReorder 调整 TODO 排序。
 //
-// POST /api/v1/todos/reorder
+//	@Summary		调整待办排序
+//	@Description	按 ID 顺序重新排列待办事项的显示顺序
+//	@Tags			待办事项
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		reorderTodosRequest	true	"排序后的 ID 列表"
+//	@Success		200		{object}	Response			"排序成功"
+//	@Failure		400		{object}	Response			"缺少 ids"
+//	@Failure		500		{object}	Response			"服务器内部错误"
+//	@Router			/todos/reorder [post]
 func TodoReorder(c *gin.Context) {
 	var req reorderTodosRequest
 	if err := c.ShouldBind(&req); err != nil {

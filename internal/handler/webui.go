@@ -22,6 +22,15 @@ type publicWebUI struct {
 	Login publicPage `json:"login"`
 }
 
+// WebUIConfig 返回 WebUI 的公开配置信息（首页和登录页背景、布局等）。
+//
+//	@Summary		获取 WebUI 配置
+//	@Description	返回首页和登录页的背景设置、布局方案和已解析的静态资源 URL（无需登录）
+//	@Tags			WebUI
+//	@Produce		json
+//	@Success		200	{object}	Response	"WebUI 配置信息"
+//	@Failure		503	{object}	Response	"配置尚未加载"
+//	@Router			/webui [get]
 func WebUIConfig(c *gin.Context) {
 	cfg := config.Get()
 	if cfg == nil {

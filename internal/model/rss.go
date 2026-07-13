@@ -8,7 +8,7 @@ import "time"
 
 // RSSFeed RSS 订阅源模型。
 //
-// 每个订阅源对应一个 RSS/Atom feed URL，定时抓取条目。
+// 每个订阅源对应一个 RSS/Atom feed URL，定时抓取条目。可归属到分组。
 // 表名：rss_feeds
 type RSSFeed struct {
 	BaseModel
@@ -20,6 +20,7 @@ type RSSFeed struct {
 	FetchInterval int       `gorm:"default:3600" json:"fetch_interval"`        // 抓取间隔（秒），默认 3600
 	LastFetch     time.Time `json:"last_fetch"`                                // 最近一次抓取时间
 	ErrorMsg      string    `gorm:"size:1024" json:"error_msg,omitempty"`      // 最近一次错误信息
+	GroupID       *uint64   `gorm:"index" json:"group_id,omitempty"`           // 所属分组 ID（NULL 表示未分组）
 }
 
 // TableName 指定表名。

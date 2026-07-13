@@ -99,14 +99,17 @@ func (s *RSSService) CreateFeed(urlStr string) (*model.RSSFeed, error) {
 	return &rssFeed, nil
 }
 
-// UpdateFeed 更新订阅源标题和抓取间隔。
-func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int) error {
+// UpdateFeed 更新订阅源标题、抓取间隔和所属分组。
+func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, groupID *uint64) error {
 	updates := map[string]interface{}{}
 	if title != "" {
 		updates["title"] = title
 	}
 	if fetchInterval > 0 {
 		updates["fetch_interval"] = fetchInterval
+	}
+	if groupID != nil {
+		updates["group_id"] = *groupID
 	}
 	if len(updates) == 0 {
 		return nil
@@ -153,10 +156,14 @@ func (s *RSSService) GetFeed(id uint64) (*model.RSSFeed, error) {
 	return &feed, nil
 }
 
-// ListFeeds 返回所有订阅源列表。
-func (s *RSSService) ListFeeds() ([]model.RSSFeed, error) {
+// ListFeeds 返回所有订阅源列表，可按分组筛选。
+func (s *RSSService) ListFeeds(groupID *uint64) ([]model.RSSFeed, error) {
 	var feeds []model.RSSFeed
-	if err := s.db.Order("created_at DESC").Find(&feeds).Error; err != nil {
+	query := s.db.Order("created_at DESC")
+	if groupID != nil {
+		query = query.Where("group_id = ?", *groupID)
+	}
+	if err := query.Find(&feeds).Error; err != nil {
 		return nil, fmt.Errorf("查询订阅源列表失败: %w", err)
 	}
 	return feeds, nil
@@ -514,6 +521,83 @@ func validateFeedURL(rawURL string) error {
 	}
 
 	return nil
+}
+
+// ============================================================
+// 分组 CRUD
+// ============================================================
+
+// ListGroups 返回所有 RSS 分组列表，按排序序号排列。
+func (s *RSSService) ListGroups() ([]model.RSSGroup, error) {
+	var groups []model.RSSGroup
+	if err := s.db.Order("sort_order ASC, id ASC").Find(&groups).Error; err != nil {
+		return nil, fmt.Errorf("查询分组列表失败: %w", err)
+	}
+	return groups, nil
+}
+
+// GetGroup 根据 ID 获取 RSS 分组（含关联订阅源）。
+func (s *RSSService) GetGroup(id uint64) (*model.RSSGroup, error) {
+	var group model.RSSGroup
+	if err := s.db.Preload("Feeds").First(&group, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRSSFeedNotFound
+		}
+		return nil, fmt.Errorf("查询分组失败: %w", err)
+	}
+	return &group, nil
+}
+
+// CreateGroup 创建新的 RSS 分组。
+func (s *RSSService) CreateGroup(name string) (*model.RSSGroup, error) {
+	if name == "" {
+		return nil, errors.New("分组名称不能为空")
+	}
+	group := model.RSSGroup{Name: name}
+	if err := s.db.Create(&group).Error; err != nil {
+		return nil, fmt.Errorf("创建分组失败: %w", err)
+	}
+	return &group, nil
+}
+
+// UpdateGroup 更新 RSS 分组名称和排序。
+func (s *RSSService) UpdateGroup(id uint64, name string, sortOrder *int) error {
+	updates := map[string]interface{}{}
+	if name != "" {
+		updates["name"] = name
+	}
+	if sortOrder != nil {
+		updates["sort_order"] = *sortOrder
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	result := s.db.Model(&model.RSSGroup{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新分组失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrRSSFeedNotFound
+	}
+	return nil
+}
+
+// DeleteGroup 删除 RSS 分组（关联的订阅源移到未分组）。
+func (s *RSSService) DeleteGroup(id uint64) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 将分组下的订阅源移到未分组
+		if err := tx.Model(&model.RSSFeed{}).Where("group_id = ?", id).Update("group_id", nil).Error; err != nil {
+			return fmt.Errorf("移动订阅源失败: %w", err)
+		}
+		result := tx.Delete(&model.RSSGroup{}, id)
+		if result.Error != nil {
+			return fmt.Errorf("删除分组失败: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrRSSFeedNotFound
+		}
+		return nil
+	})
 }
 
 // buildRSSHTTPClient 根据 RSS 代理配置构建 HTTP 客户端。

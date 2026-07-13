@@ -133,6 +133,13 @@ func registerRoutes(r *gin.Engine) {
 			rssGroup.POST("/feeds/:id/fetch", handler.RSSFetchFeed)
 			rssGroup.POST("/fetch-all", handler.RSSFetchAll)
 			rssGroup.GET("/entries", handler.RSSListEntries)
+
+			// RSS 分组管理
+			rssGroup.GET("/groups", handler.RSSListGroups)
+			rssGroup.GET("/groups/:id", handler.RSSGetGroup)
+			rssGroup.POST("/groups", handler.RSSCreateGroup)
+			rssGroup.PUT("/groups/:id", handler.RSSUpdateGroup)
+			rssGroup.DELETE("/groups/:id", handler.RSSDeleteGroup)
 		}
 
 		// TODO 待办

@@ -262,7 +262,13 @@ type updateProfileRequest struct {
 
 // AuthGetProfile 获取当前登录用户的个人信息。
 //
-// GET /api/v1/auth/profile
+//	@Summary		获取个人资料
+//	@Description	返回当前登录用户的用户名、邮箱、角色和头像 URL
+//	@Tags			认证
+//	@Produce		json
+//	@Success		200	{object}	Response	"用户个人信息"
+//	@Failure		401	{object}	Response	"未登录"
+//	@Router			/auth/profile [get]
 func AuthGetProfile(c *gin.Context) {
 	u, exists := c.Get("user")
 	if !exists {
@@ -282,7 +288,17 @@ func AuthGetProfile(c *gin.Context) {
 
 // AuthUpdateProfile 当前用户更新自己的个人资料。
 //
-// PUT /api/v1/auth/profile
+//	@Summary		更新个人资料
+//	@Description	当前登录用户修改自己的用户名或邮箱
+//	@Tags			认证
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		updateProfileRequest	true	"更新请求"
+//	@Success		200		{object}	Response				"更新后的用户信息"
+//	@Failure		400		{object}	Response				"请求参数错误"
+//	@Failure		401		{object}	Response				"未登录"
+//	@Failure		409		{object}	Response				"用户名已存在"
+//	@Router			/auth/profile [put]
 func AuthUpdateProfile(c *gin.Context) {
 	u, exists := c.Get("user")
 	if !exists {

@@ -1,7 +1,7 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "个人中枢项目 API 接口文档，包含认证、书签管理、配置管理等功能。",
+        "description": "个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、Bilibili 爬虫与数据查询、系统日志、配置管理等功能。",
         "title": "HomeHub API",
         "contact": {
             "name": "HomeHub"
@@ -11,6 +11,70 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/admin/logs": {
+            "get": {
+                "description": "分页查看系统运行日志，支持按级别、关键词、时间范围筛选（仅管理员）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "系统日志"
+                ],
+                "summary": "查看系统日志",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 50）",
+                        "name": "per_page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "日志级别筛选：debug/info/warn/error",
+                        "name": "level",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "搜索关键词",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "起始时间（RFC3339 格式）",
+                        "name": "since",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "截止时间（RFC3339 格式）",
+                        "name": "until",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "日志列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/users": {
             "get": {
                 "description": "返回所有注册用户的信息（仅管理员）",
@@ -287,6 +351,59 @@
                 }
             }
         },
+        "/admin/users/{id}/refresh-avatar": {
+            "post": {
+                "description": "检查 Gravatar 是否有更新，若有则重新下载并更新缓存",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "用户管理"
+                ],
+                "summary": "刷新头像缓存",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "刷新结果（updated 表示是否有更新）",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "无效的用户 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "权限不足",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/admin/users/{id}/reset-password": {
             "put": {
                 "description": "管理员重置指定用户的密码，成功后该用户所有会话失效",
@@ -470,6 +587,82 @@
                 }
             }
         },
+        "/auth/profile": {
+            "get": {
+                "description": "返回当前登录用户的用户名、邮箱、角色和头像 URL",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "认证"
+                ],
+                "summary": "获取个人资料",
+                "responses": {
+                    "200": {
+                        "description": "用户个人信息",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未登录",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "当前登录用户修改自己的用户名或邮箱",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "认证"
+                ],
+                "summary": "更新个人资料",
+                "parameters": [
+                    {
+                        "description": "更新请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.updateProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新后的用户信息",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未登录",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "用户名已存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/status": {
             "get": {
                 "description": "返回当前用户是否已登录",
@@ -497,6 +690,73 @@
                                     }
                                 }
                             ]
+                        }
+                    }
+                }
+            }
+        },
+        "/avatar/me": {
+            "get": {
+                "description": "返回当前登录用户的缓存 Gravatar 头像",
+                "produces": [
+                    "image/*"
+                ],
+                "tags": [
+                    "头像"
+                ],
+                "summary": "获取当前用户头像",
+                "responses": {
+                    "200": {
+                        "description": "头像图片",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "401": {
+                        "description": "未登录",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/avatar/{id}": {
+            "get": {
+                "description": "返回缓存的 Gravatar 头像图片",
+                "produces": [
+                    "image/*"
+                ],
+                "tags": [
+                    "头像"
+                ],
+                "summary": "获取用户头像",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "头像图片",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的用户 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "用户不存在或无头像",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
                         }
                     }
                 }
@@ -565,6 +825,557 @@
                     },
                     "400": {
                         "description": "参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/articles": {
+            "get": {
+                "description": "分页查询已抓取的 Bilibili 专栏文章，支持关键词搜索、作者筛选和排序",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "查询专栏列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "搜索关键词（匹配标题）",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "作者 MID 筛选",
+                        "name": "mid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序字段（默认 fetched_at）",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序方向：asc / desc（默认 desc）",
+                        "name": "order",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "专栏列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/articles/{cvid}": {
+            "get": {
+                "description": "根据 CV 号获取单个专栏文章的基本信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取专栏详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "专栏 CV 号",
+                        "name": "cvid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "专栏详情",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "专栏不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/crawlers": {
+            "get": {
+                "description": "返回所有 Bilibili 爬虫（视频/专栏/用户）的启用状态、窗口进度和完成百分比",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "获取爬虫状态列表",
+                "responses": {
+                    "200": {
+                        "description": "爬虫状态列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/fetch/article/:cvid": {
+            "post": {
+                "description": "根据 CV 号即时调用 Bilibili API 抓取单个专栏文章信息，写入数据库。若已存在则更新",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "按需抓取专栏",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "专栏 CV 号",
+                        "name": "cvid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "抓取结果（created / updated / skipped）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 cvid",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "抓取失败",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/fetch/video/:aid": {
+            "post": {
+                "description": "根据 AV 号即时调用 Bilibili API 抓取单个视频及其分 P 信息，写入数据库。若已存在则更新",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "按需抓取视频",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "视频 AV 号",
+                        "name": "aid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "抓取结果（created / updated / skipped）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 aid",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "抓取失败",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/stats": {
+            "get": {
+                "description": "返回 Bilibili 爬虫各板块的存储统计（视频/分P/专栏/用户行数和预估大小）以及各爬虫的进度信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "获取爬虫统计",
+                "responses": {
+                    "200": {
+                        "description": "爬虫统计信息",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/users": {
+            "get": {
+                "description": "分页查询已抓取的 Bilibili 用户，支持关键词搜索、等级/VIP状态筛选和排序",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "查询用户列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "搜索关键词（匹配昵称）",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "用户等级筛选",
+                        "name": "level",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "VIP 状态筛选（0=非VIP, 1=大会员, -1=全部）",
+                        "name": "vip_status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序字段（默认 fetched_at）",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序方向：asc / desc（默认 desc）",
+                        "name": "order",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "用户列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/users/{mid}": {
+            "get": {
+                "description": "根据 MID 获取单个 Bilibili 用户的详细信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取用户详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户 MID",
+                        "name": "mid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "用户详情",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "用户不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/users/{mid}/articles": {
+            "get": {
+                "description": "分页查询指定 Bilibili 用户的所有已抓取专栏文章",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取用户的专栏列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户 MID",
+                        "name": "mid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "用户专栏列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/users/{mid}/videos": {
+            "get": {
+                "description": "分页查询指定 Bilibili 用户的所有已抓取视频",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取用户的视频列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户 MID",
+                        "name": "mid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "用户视频列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/videos": {
+            "get": {
+                "description": "分页查询已抓取的 Bilibili 视频，支持关键词搜索、AV号/BV号/UP主/分区筛选和排序",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "查询视频列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "搜索关键词（匹配标题和简介）",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "精确 AV 号筛选",
+                        "name": "aid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "精确 BV 号筛选",
+                        "name": "bvid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "UP 主 MID 筛选",
+                        "name": "owner_mid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "分区 TID 筛选",
+                        "name": "tid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序字段（默认 fetched_at）",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序方向：asc / desc（默认 desc）",
+                        "name": "order",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "视频列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/videos/{aid}": {
+            "get": {
+                "description": "根据 AV 号获取单个视频的基本信息和所有分 P 列表",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取视频详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "视频 AV 号",
+                        "name": "aid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "视频详情（含分 P 信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "视频不存在",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -1087,6 +1898,26 @@
                 }
             }
         },
+        "/health": {
+            "get": {
+                "description": "返回服务运行状态、数据库连通性和启动时长",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "系统"
+                ],
+                "summary": "健康检查",
+                "responses": {
+                    "200": {
+                        "description": "服务健康状态",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
         "/media-assets": {
             "get": {
                 "description": "返回所有已上传媒体资源的元数据列表",
@@ -1210,9 +2041,984 @@
                     }
                 }
             }
+        },
+        "/rss/entries": {
+            "get": {
+                "description": "分页获取 RSS 订阅条目，可按订阅源筛选",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取 RSS 条目列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "订阅源 ID 筛选",
+                        "name": "feed_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 20）",
+                        "name": "per_page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "条目列表（含分页信息）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 feed_id",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/feeds": {
+            "get": {
+                "description": "返回所有 RSS 订阅源及其最新状态，可按分组筛选",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取订阅源列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "分组 ID 筛选",
+                        "name": "group_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "订阅源列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "添加新的 RSS 订阅源，自动抓取标题和条目",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "添加订阅源",
+                "parameters": [
+                    {
+                        "description": "订阅源 URL",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.createRSSFeedRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "新创建的订阅源",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 URL",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/feeds/{id}": {
+            "get": {
+                "description": "根据 ID 获取单个 RSS 订阅源的详细信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取订阅源详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "订阅源 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "订阅源详情",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的订阅源 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "订阅源不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "修改订阅源的标题、抓取间隔或所属分组",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "更新订阅源",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "订阅源 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.updateRSSFeedRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的请求参数",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "订阅源不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除订阅源及其所有关联条目",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "删除订阅源",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "订阅源 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "删除成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的订阅源 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "订阅源不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/feeds/{id}/fetch": {
+            "post": {
+                "description": "立即触发指定订阅源的抓取更新",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "手动抓取订阅源",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "订阅源 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "抓取成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的订阅源 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "抓取失败",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/fetch-all": {
+            "post": {
+                "description": "立即触发所有到期订阅源的批量抓取",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "抓取全部订阅源",
+                "responses": {
+                    "200": {
+                        "description": "抓取成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "抓取失败",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/groups": {
+            "get": {
+                "description": "返回所有 RSS 订阅分组，按排序序号排列",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取分组列表",
+                "responses": {
+                    "200": {
+                        "description": "分组列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "创建新的 RSS 订阅分组",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "创建分组",
+                "parameters": [
+                    {
+                        "description": "分组名称",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.createRSSGroupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "新创建的分组",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "分组名称不能为空",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/groups/{id}": {
+            "get": {
+                "description": "返回分组信息及其下所有订阅源",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取分组详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "分组 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "分组详情（含订阅源列表）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的分组 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分组不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "修改分组的名称和排序序号",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "更新分组",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "分组 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.updateRSSGroupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的请求参数",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分组不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除分组（其下订阅源将移回未分组）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "删除分组",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "分组 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "删除成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的分组 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分组不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/search": {
+            "get": {
+                "description": "跨书签和 Bilibili 爬虫数据（视频/专栏/用户）进行全文搜索，支持指定数据源范围",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "搜索"
+                ],
+                "summary": "联合搜索",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "搜索关键词",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "搜索范围：all / bookmarks / videos / articles / users（默认 all）",
+                        "name": "scope",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "搜索结果",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "缺少搜索关键词",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/todos": {
+            "get": {
+                "description": "获取所有待办事项，可按状态筛选和排序",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "获取待办列表",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "状态筛选：planned/pending/in_progress/completed/paused",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "排序字段（默认 priority）",
+                        "name": "sort",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "待办列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "创建新的待办事项，可设置标题、描述、优先级和截止日期",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "创建待办",
+                "parameters": [
+                    {
+                        "description": "待办内容",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.createTodoRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "新创建的待办",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "缺少标题或参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/todos/reorder": {
+            "post": {
+                "description": "按 ID 顺序重新排列待办事项的显示顺序",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "调整待办排序",
+                "parameters": [
+                    {
+                        "description": "排序后的 ID 列表",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.reorderTodosRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "排序成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "缺少 ids",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/todos/{id}": {
+            "get": {
+                "description": "根据 ID 获取单个待办事项",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "获取待办详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "待办 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "待办详情",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的待办 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "待办不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "更新待办事项的标题、描述、状态、优先级或截止日期",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "更新待办",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "待办 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新请求（全部可选）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.updateTodoRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的请求参数",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除指定待办事项",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "删除待办",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "待办 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "删除成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的待办 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "待办不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/todos/{id}/status": {
+            "patch": {
+                "description": "快捷修改待办事项的状态（planned/pending/in_progress/completed/paused）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "待办事项"
+                ],
+                "summary": "更新待办状态",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "待办 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "新状态",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.updateTodoStatusRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的状态值",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/webui": {
+            "get": {
+                "description": "返回首页和登录页的背景设置、布局方案和已解析的静态资源 URL（无需登录）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "WebUI"
+                ],
+                "summary": "获取 WebUI 配置",
+                "responses": {
+                    "200": {
+                        "description": "WebUI 配置信息",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "503": {
+                        "description": "配置尚未加载",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
+        "config.BackgroundConfig": {
+            "type": "object",
+            "properties": {
+                "fade_duration_ms": {
+                    "description": "淡入淡出时长（毫秒），默认 1000",
+                    "type": "integer"
+                },
+                "interval_seconds": {
+                    "description": "轮播间隔（秒），默认 30",
+                    "type": "integer"
+                },
+                "mode": {
+                    "description": "背景模式：single / carousel / random，默认 \"single\"",
+                    "type": "string"
+                },
+                "selected_asset_ids": {
+                    "description": "选中的媒体资源 ID 列表",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "transition_effect": {
+                    "description": "过渡效果：fade / slide，默认 \"fade\"",
+                    "type": "string"
+                }
+            }
+        },
+        "config.BookmarkConfig": {
+            "type": "object",
+            "properties": {
+                "proxy_names": {
+                    "description": "代理名称列表（按优先级排列，fallback 链）",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "use_proxy": {
+                    "description": "是否启用代理",
+                    "type": "boolean"
+                }
+            }
+        },
+        "config.GravatarConfig": {
+            "type": "object",
+            "properties": {
+                "custom_proxy_url": {
+                    "description": "自定义代理 URL（优先级高于 proxy_name）",
+                    "type": "string"
+                },
+                "default_size": {
+                    "description": "头像尺寸（像素），默认 200",
+                    "type": "integer"
+                },
+                "default_style": {
+                    "description": "默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "是否启用以 Gravatar 生成头像",
+                    "type": "boolean"
+                },
+                "proxy_name": {
+                    "description": "引用的代理名称（对应 proxy 列表中的 name）",
+                    "type": "string"
+                },
+                "rating": {
+                    "description": "内容分级：g / pg / r / x",
+                    "type": "string"
+                },
+                "use_proxy": {
+                    "description": "是否通过代理下载 Gravatar",
+                    "type": "boolean"
+                }
+            }
+        },
         "config.LogConfig": {
             "type": "object",
             "properties": {
@@ -1227,6 +3033,72 @@
                 "level": {
                     "description": "日志级别：debug / info / warn / error，默认 \"info\"",
                     "type": "string"
+                }
+            }
+        },
+        "config.ProxyEntry": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "是否启用该代理",
+                    "type": "boolean"
+                },
+                "http_url": {
+                    "description": "HTTP 代理地址（如 http://127.0.0.1:7890）",
+                    "type": "string"
+                },
+                "https_url": {
+                    "description": "HTTPS 代理地址（type=http 时用于 https 请求；type=socks5 不使用此字段）",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "代理名称（唯一标识）",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "代理类型：http / socks5，默认 \"http\"",
+                    "type": "string"
+                }
+            }
+        },
+        "config.RSSConfig": {
+            "type": "object",
+            "properties": {
+                "background_fetch_enabled": {
+                    "description": "是否启用后台定时抓取，默认 true",
+                    "type": "boolean"
+                },
+                "background_fetch_interval": {
+                    "description": "后台抓取间隔（秒），默认 300",
+                    "type": "integer"
+                },
+                "proxy_names": {
+                    "description": "代理名称列表（按优先级排列，fallback 链）",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "retention_count": {
+                    "description": "每个订阅源保留条目数，默认 5000",
+                    "type": "integer"
+                },
+                "use_proxy": {
+                    "description": "是否启用代理",
+                    "type": "boolean"
+                }
+            }
+        },
+        "config.ServerConfig": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "description": "监听地址，默认 \"0.0.0.0\"",
+                    "type": "string"
+                },
+                "port": {
+                    "description": "监听端口，默认 8080",
+                    "type": "integer"
                 }
             }
         },
@@ -1283,6 +3155,9 @@
                 "icon": {
                     "type": "string"
                 },
+                "priority": {
+                    "type": "integer"
+                },
                 "title": {
                     "type": "string"
                 },
@@ -1302,6 +3177,51 @@
                 }
             }
         },
+        "handler.createRSSFeedRequest": {
+            "type": "object",
+            "required": [
+                "url"
+            ],
+            "properties": {
+                "group_id": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.createRSSGroupRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.createTodoRequest": {
+            "type": "object",
+            "required": [
+                "title"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.createUserRequest": {
             "type": "object",
             "required": [
@@ -1309,6 +3229,9 @@
                 "username"
             ],
             "properties": {
+                "email": {
+                    "type": "string"
+                },
                 "password": {
                     "type": "string"
                 },
@@ -1367,6 +3290,20 @@
                 }
             }
         },
+        "handler.reorderTodosRequest": {
+            "type": "object",
+            "required": [
+                "ids"
+            ],
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "handler.resetPasswordRequest": {
             "type": "object",
             "required": [
@@ -1384,6 +3321,9 @@
                 "icon": {
                     "type": "string"
                 },
+                "priority": {
+                    "type": "integer"
+                },
                 "title": {
                     "type": "string"
                 },
@@ -1400,12 +3340,85 @@
             "properties": {
                 "name": {
                     "type": "string"
+                },
+                "priority": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handler.updateProfileRequest": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.updateRSSFeedRequest": {
+            "type": "object",
+            "properties": {
+                "fetch_interval": {
+                    "type": "integer"
+                },
+                "group_id": {
+                    "type": "integer"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.updateRSSGroupRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        },
+        "handler.updateTodoRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.updateTodoStatusRequest": {
+            "type": "object",
+            "required": [
+                "status"
+            ],
+            "properties": {
+                "status": {
+                    "type": "string"
                 }
             }
         },
         "handler.updateUserRequest": {
             "type": "object",
             "properties": {
+                "email": {
+                    "type": "string"
+                },
                 "is_active": {
                     "type": "boolean"
                 },
@@ -1433,6 +3446,10 @@
                     "type": "string"
                 },
                 "id": {
+                    "type": "integer"
+                },
+                "priority": {
+                    "description": "展示优先级，值越大越靠前",
                     "type": "integer"
                 },
                 "sort_order": {
@@ -1469,6 +3486,10 @@
                 },
                 "name": {
                     "type": "string"
+                },
+                "priority": {
+                    "description": "展示优先级，值越大越靠前",
+                    "type": "integer"
                 },
                 "sort_order": {
                     "type": "integer"
@@ -1536,6 +3557,9 @@
                 "deleted_at": {
                     "$ref": "#/definitions/gorm.DeletedAt"
                 },
+                "email": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -1548,6 +3572,20 @@
                     "type": "string"
                 },
                 "updated_at": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.AuthUpdate": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "session_secret": {
                     "type": "string"
                 },
                 "username": {
@@ -1578,11 +3616,68 @@
                 }
             }
         },
+        "service.DatabaseUpdate": {
+            "type": "object",
+            "properties": {
+                "dbname": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "sslmode": {
+                    "type": "string"
+                },
+                "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.LogUpdate": {
+            "type": "object",
+            "properties": {
+                "db_writer": {
+                    "type": "boolean"
+                },
+                "format": {
+                    "type": "string"
+                },
+                "level": {
+                    "type": "string"
+                }
+            }
+        },
         "service.SafeAuthConfig": {
             "type": "object",
             "properties": {
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "service.SafeBilibiliConfig": {
+            "type": "object",
+            "properties": {
+                "article_enabled": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "user_agent": {
+                    "type": "string"
+                },
+                "user_enabled": {
+                    "type": "boolean"
+                },
+                "video_enabled": {
+                    "type": "boolean"
                 }
             }
         },
@@ -1592,14 +3687,38 @@
                 "auth": {
                     "$ref": "#/definitions/service.SafeAuthConfig"
                 },
+                "background": {
+                    "$ref": "#/definitions/config.BackgroundConfig"
+                },
+                "bilibili": {
+                    "$ref": "#/definitions/service.SafeBilibiliConfig"
+                },
+                "bookmark": {
+                    "$ref": "#/definitions/config.BookmarkConfig"
+                },
                 "database": {
                     "$ref": "#/definitions/service.SafeDatabaseConfig"
+                },
+                "gravatar": {
+                    "$ref": "#/definitions/config.GravatarConfig"
                 },
                 "log": {
                     "$ref": "#/definitions/config.LogConfig"
                 },
+                "proxy": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.SafeProxyEntry"
+                    }
+                },
+                "proxy_enabled": {
+                    "type": "boolean"
+                },
+                "rss": {
+                    "$ref": "#/definitions/config.RSSConfig"
+                },
                 "server": {
-                    "$ref": "#/definitions/service.SafeServerConfig"
+                    "$ref": "#/definitions/config.ServerConfig"
                 }
             }
         },
@@ -1623,7 +3742,21 @@
                 }
             }
         },
-        "service.SafeServerConfig": {
+        "service.SafeProxyEntry": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.ServerUpdate": {
             "type": "object",
             "properties": {
                 "host": {
@@ -1661,66 +3794,37 @@
             "type": "object",
             "properties": {
                 "auth": {
-                    "type": "object",
-                    "properties": {
-                        "password": {
-                            "type": "string"
-                        },
-                        "session_secret": {
-                            "type": "string"
-                        },
-                        "username": {
-                            "type": "string"
-                        }
-                    }
+                    "$ref": "#/definitions/service.AuthUpdate"
+                },
+                "background": {
+                    "$ref": "#/definitions/config.BackgroundConfig"
+                },
+                "bookmark": {
+                    "$ref": "#/definitions/config.BookmarkConfig"
                 },
                 "database": {
-                    "type": "object",
-                    "properties": {
-                        "dbname": {
-                            "type": "string"
-                        },
-                        "host": {
-                            "type": "string"
-                        },
-                        "password": {
-                            "type": "string"
-                        },
-                        "port": {
-                            "type": "integer"
-                        },
-                        "sslmode": {
-                            "type": "string"
-                        },
-                        "user": {
-                            "type": "string"
-                        }
-                    }
+                    "$ref": "#/definitions/service.DatabaseUpdate"
+                },
+                "gravatar": {
+                    "$ref": "#/definitions/config.GravatarConfig"
                 },
                 "log": {
-                    "type": "object",
-                    "properties": {
-                        "db_writer": {
-                            "type": "boolean"
-                        },
-                        "format": {
-                            "type": "string"
-                        },
-                        "level": {
-                            "type": "string"
-                        }
+                    "$ref": "#/definitions/service.LogUpdate"
+                },
+                "proxy": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.ProxyEntry"
                     }
                 },
+                "proxy_enabled": {
+                    "type": "boolean"
+                },
+                "rss": {
+                    "$ref": "#/definitions/config.RSSConfig"
+                },
                 "server": {
-                    "type": "object",
-                    "properties": {
-                        "host": {
-                            "type": "string"
-                        },
-                        "port": {
-                            "type": "integer"
-                        }
-                    }
+                    "$ref": "#/definitions/service.ServerUpdate"
                 }
             }
         }

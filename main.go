@@ -7,7 +7,7 @@
 //
 // @title           HomeHub API
 // @version         1.0
-// @description     个人中枢项目 API 接口文档，包含认证、书签管理、配置管理等功能。
+// @description     个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、Bilibili 爬虫与数据查询、系统日志、配置管理等功能。
 // @contact.name    HomeHub
 // @host            localhost:8080
 // @BasePath        /api/v1
@@ -85,6 +85,7 @@ func main() {
 		&model.LogEntry{},
 		&model.MediaAsset{},
 		&model.AvatarCache{},
+		&model.RSSGroup{},
 		&model.RSSFeed{},
 		&model.RSSEntry{},
 		&model.Todo{},

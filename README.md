@@ -124,51 +124,56 @@ web/
 
 ### Bilibili
 
-三位一体爬虫架构，覆盖 B 站视频、专栏、用户信息的自动化采集。
+内容生命周期管理系统，通过多入口发现 → 生命周期调度 → TokenBucket 全局限速 → 统一抓取 + 时序快照存储。
 
 #### 架构
 
 ```
-VideoCrawler (AV 号窗口跳跃) ──▶ videos + video_pages
-ArticleCrawler (CV 号窗口跳跃) ──▶ articles
-UserCrawler (种子驱动)        ──▶ bili_users
-        ↑                        ↑
-        └── 种子来自 videos.owner_mid + articles.mid 去重
+DiscoveryWorker (每12h)     Scheduler (每分钟)       FetcherWorker (2s/req)
+  ──────────────────         ────────────────         ─────────────────
+  热门榜 /popular              SELECT WHERE            Take token → GET API
+  排行榜 /ranking/v2           next_update_at          → upsert 主表
+  动态流 /dynamic/feed         <= NOW()                → 条件写入快照
+   UP 主动态 (预留)            ORDER BY priority       → 计算生命周期
+       │                        │                      → UPDATE next_update_at
+       ▼                        ▼                              │
+  BloomFilter 去重           task channel 入队                │
+       │                        │                              │
+       └────────────────────────┼──────────────────────────────┘
+                                ▼
+                         Database
+                    ┌──────────────────┐
+                    │ videos/articles  │  ← 最新状态
+                    │ /bili_users      │     (lifecycle_stage,
+                    │                  │      next_update_at)
+                    ├──────────────────┤
+                    │ *_stats_snapshots│  ← 时序快照
+                    │                  │     (≤30 条/实体,
+                    │                  │      折线压缩清理)
+                    └──────────────────┘
 ```
 
-- **VideoCrawler**：AV 号递增抓取，采用窗口跳跃策略（2000 个 AID 为一个窗口，窗口内随机选取，填充率达 70% 自动前移），打破线性递增的风控信号。数据写入 `videos`（主表）+ `video_pages`（分P子表），保留标题、简介、分区、UP 主、统计、Extra JSONB 等字段
-- **ArticleCrawler**：CV 号递增抓取，同样采用窗口跳跃策略。数据写入 `articles` 表，正文不存（平均 20KB/篇，按需补抓），保留标题、头图、作者、统计、前后篇链表等
-- **UserCrawler**：种子驱动，从已抓取的视频/专栏中收集 UP 主 mid 去重后逐条调用用户信息 API。数据写入 `bili_users` 表，包含昵称、认证、VIP、直播间、Extended JSONB 等
+- **DiscoveryWorker**：每 12h 从热门榜/分区排行榜等入口发现新视频，经 Bloom Filter 去重后写入 DB 占位（lifecycle=newborn），同时触发关联 UP 主发现
+- **Scheduler**：每分钟扫描 next_update_at 到期的任务，按 priority_score 排序入队
+- **FetcherWorker**：从 task channel 取任务 → GlobalTokenBucket（全局限速）→ 调用 B 站 API → UPSERT 主表 → 条件写入快照 → 计算生命周期阶段 → 更新 next_update_at 和 priority_score
+- **生命周期**：newborn (<2h, 30min更新) → growing (<24h, 2h) → mature (<7d, 12h) → archived (7d)
+- **时序快照**：video/article/user 三类统计按时间存为独立快照行，支持播放量增长曲线查询；通过折线简化算法自动清理冗余快照（≤30 条/实体）
+- **反爬防护**：GlobalTokenBucket 全局统一限速（2s/req）避免三爬虫扎堆；25 条多平台多设备 UA 池轮换；独立代理支持；指数退避 + 全抖动重试策略
 
-#### config.json 配置
+#### 配置
 
-```json
-"bilibili": {
-    "enabled": false,           // 总开关
-    "video_enabled": false,     // 视频爬虫子开关
-    "article_enabled": false,   // 专栏爬虫子开关
-    "user_enabled": false,      // 用户爬虫子开关
-    "sessdata": "",             // Cookie SESSDATA（留空=游客态）
-    "bili_jct": "",
-    "dede_user_id": "",
-    "user_agent": ""            // 自定义 UA（为空使用默认 Chrome 桌面端）
-}
-```
-
-- 总开关 `enabled` 关闭时，所有爬虫不启动
-- 子开关 + `crawler_state` 表的 `Enabled` 字段双重控制，避免误启动大规模抓取
-- 配置有效 SESSDATA 可大幅提高 API 请求频率上限，降低风控概率
-- 窗口大小默认 2000，速率默认 2000ms/次，活跃时间窗口默认 0:00–6:00
+完整配置见 `config.json` → `bilibili` 段，包含开关、认证、代理、UA 池、速率、生命周期、发现策略、快照策略。开关以 config.json 为唯一来源。
 
 #### API 端点
 
-所有端点需认证（`/api/v1/bilibili/*`）：
-
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/bilibili/stats` | 存储空间预估 + 抓取进度（video/article/user 三板块） |
-| GET | `/bilibili/crawlers` | 爬虫运行状态列表 |
-| POST | `/bilibili/fetch/video/:aid` | 按 AID 即时抓取单个视频（含全部分 P） |
-| POST | `/bilibili/fetch/article/:cvid` | 按 CVID 即时抓取单个专栏 |
+| GET | `/bilibili/stats` | 存储空间预估 + 调度进度 |
+| GET | `/bilibili/crawlers` | 爬虫运行状态（enabled 从 config 读取） |
+| GET | `/bilibili/stats/lifecycle` | 生命周期阶段分布（newborn/growing/mature/archived） |
+| GET | `/bilibili/videos/:aid/snapshots` | 视频统计快照时序 |
+| GET | `/bilibili/articles/:cvid/snapshots` | 专栏统计快照时序 |
+| POST | `/bilibili/fetch/video/:aid` | 按 AID 即时抓取 |
+| POST | `/bilibili/fetch/article/:cvid` | 按 CVID 即时抓取 |
 
 详细 API 文档见 `docs/swagger.yaml`。

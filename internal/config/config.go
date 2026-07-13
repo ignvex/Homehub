@@ -113,27 +113,67 @@ type RSSConfig struct {
 	BackgroundFetchInterval int  `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
 }
 
-// BilibiliConfig B 站 API 认证配置。
+// BilibiliConfig B 站爬虫完整配置。
 //
-// SESSDATA 为空时爬虫以游客态运行（风控阈值较低）。
-// 填了 SESSDATA 则必须以 bili_jct 和 dede_user_id 配对使用。
-// Cookie 过期或失效时自动降级游客态，日志警告提醒更新。
+// 开关是 config.json 的唯一来源，crawler_state 表仅存储运行时进度。
 type BilibiliConfig struct {
+	// === 开关（唯一来源，不等同于 crawler_state.Enabled） ===
+	Enabled        bool `json:"enabled"`         // 总开关
+	VideoEnabled   bool `json:"video_enabled"`   // 视频子开关
+	ArticleEnabled bool `json:"article_enabled"` // 专栏子开关
+	UserEnabled    bool `json:"user_enabled"`    // 用户子开关
+
+	// === 认证 ===
 	SESSDATA   string `json:"sessdata"`     // Cookie SESSDATA（会话令牌）
 	BiliJCT    string `json:"bili_jct"`     // Cookie bili_jct（CSRF Token）
 	DedeUserID string `json:"dede_user_id"` // Cookie DedeUserID（用户 UID）
-	UserAgent  string `json:"user_agent"`   // 自定义 User-Agent 请求头（为空时使用默认 Chrome 桌面端 UA）
+	UserAgent  string `json:"user_agent"`   // 自定义 UA（空则用默认 Chrome 桌面端）
 
-	// 以下字段预留，暂不使用
-	RefreshToken string `json:"refresh_token,omitempty"` // Cookie 刷新令牌（未来按需）
+	// === 网络 ===
+	ProxyURL string   `json:"proxy_url"` // 代理地址（空=直连），不复用全局 proxy 列表
+	UAPool   []string `json:"ua_pool"`   // UA 轮换池
 
-	// 总开关（控制所有爬虫）
-	Enabled bool `json:"enabled"` // 是否启用 Bilibili 功能
+	// === 全局速率 ===
+	RateMs          int `json:"rate_ms"`           // 请求间隔（毫秒），默认 2000
+	ActiveStartHour int `json:"active_start_hour"` // 活跃时段起点，默认 0
+	ActiveEndHour   int `json:"active_end_hour"`   // 活跃时段终点，默认 6
 
-	// 子开关（在总开关开启的前提下独立控制各爬虫）
-	VideoEnabled   bool `json:"video_enabled"`   // 是否启用视频爬虫
-	ArticleEnabled bool `json:"article_enabled"` // 是否启用专栏爬虫
-	UserEnabled    bool `json:"user_enabled"`    // 是否启用用户爬虫
+	// === 生命周期 ===
+	Lifecycle LifecycleConfig `json:"lifecycle"`
+
+	// === 发现策略 ===
+	Discovery DiscoveryConfig `json:"discovery"`
+
+	// === 快照策略 ===
+	Snapshot SnapshotConfig `json:"snapshot"`
+}
+
+// LifecycleConfig 内容生命周期策略配置。
+type LifecycleConfig struct {
+	NewbornMaxHours         int `json:"newborn_max_hours"`          // newborn 阶段最大时长（h），默认 2
+	NewbornUpdateIntervalM  int `json:"newborn_update_interval_m"`  // newborn 更新间隔（min），默认 30
+	GrowingMaxHours         int `json:"growing_max_hours"`          // growing 阶段最大时长（h），默认 24
+	GrowingUpdateIntervalM  int `json:"growing_update_interval_m"`  // growing 更新间隔（min），默认 120
+	MatureMaxDays           int `json:"mature_max_days"`            // mature 阶段最大天数，默认 7
+	MatureUpdateIntervalM   int `json:"mature_update_interval_m"`   // mature 更新间隔（min），默认 720
+	ArchivedUpdateIntervalM int `json:"archived_update_interval_m"` // archived 更新间隔（min），默认 10080
+}
+
+// DiscoveryConfig 发现策略配置。
+type DiscoveryConfig struct {
+	IntervalHours       int  `json:"interval_hours"`         // 发现轮询间隔（h），默认 12
+	PopularLimit        int  `json:"popular_limit"`          // 热门榜条数，默认 50
+	RankingRidsPerRound int  `json:"ranking_rids_per_round"` // 每轮查询几个分区排行榜，默认 5
+	RankingLimit        int  `json:"ranking_limit"`          // 每个分区排行榜条数，默认 100
+	DynamicEnabled      bool `json:"dynamic_enabled"`        // 是否启用动态流入口
+}
+
+// SnapshotConfig 快照策略配置。
+type SnapshotConfig struct {
+	MinIntervalM       int     `json:"min_interval_m"`       // 快照最小间隔（min），默认 15
+	MinChangePct       float64 `json:"min_change_pct"`       // 触发快照的最小变化百分比，默认 0.05
+	MaxPerEntity       int     `json:"max_per_entity"`       // 每个实体最多保留快照数，默认 30
+	PurgeIntervalHours int     `json:"purge_interval_hours"` // 清理间隔（h），默认 24
 }
 
 // Config 应用顶层配置，对应 config.json 文件结构。
