@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/ignvex/HomeHub/main/architecture.schema.json",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "project": "HomeHub",
-  "description": "前端架构不可违背规则。任何 AI 工具、协作者、自动化脚本在修改前端代码前必须读取并遵守本文件。",
+  "description": "前端架构不可违背规则 + 后端 API 参考。任何 AI 工具、协作者、自动化脚本在修改代码前必须读取并遵守本文件。",
 
   "architecture": {
     "paradigm": "HTMX + React 群岛架构（Component Islands）",
@@ -29,73 +29,195 @@
 
   "forbidden": {
     "dependencies": [
-      "react-router-dom",
-      "react-router",
-      "@reach/router",
-      "@tanstack/react-router",
-      "next",
-      "remix",
-      "任何前端路由库"
+      "react-router-dom", "react-router", "@reach/router", "@tanstack/react-router", "next", "remix"
     ],
     "patterns": [
-      "在 React 组件内使用 <BrowserRouter>、<Routes>、<Route>",
-      "在 React 组件内使用 <Navigate>、useNavigate()、useLocation()、<Link>",
-      "使用 createBrowserRouter 或任何前端路由配置",
+      "在 React 组件内使用 <BrowserRouter>/<Routes>/<Route>",
+      "在 React 组件内使用 <Navigate>/useNavigate()/useLocation()/<Link>",
       "在 App.tsx 中定义页面路由表",
       "将多个无关页面塞入同一个组件文件",
       "在 global.css 中编写页面专属样式"
     ],
     "anti_patterns_explanation": {
-      "react_router": "HTMX 负责导航。React Router 会破坏服务端渲染、HTMX 的局部刷新、以及 Go 后端的路由控制。",
-      "monolithic_app_tsx": "App.tsx 仅作为开发环境入口页面。各业务页面由 Go 后端渲染 HTML 壳，页面中各自的 <script> 标签内通过 createRoot 挂载对应的 React 组件。",
-      "page_styles_in_global_css": "global.css 仅包含跨页面复用的基础样式（.card、.btn、.input 等）。页面专属样式放在 src/styles/<page>.css 中。",
+      "react_router": "HTMX 负责导航。React Router 会破坏服务端渲染、HTMX 局部刷新、以及 Go 后端路由控制。",
+      "monolithic_app_tsx": "App.tsx 仅作为开发环境入口。各页面由 Go 后端渲染 HTML 壳，页面中各自的 <script> 通过 createRoot 挂载 React 组件。",
+      "page_styles_in_global_css": "global.css 仅包含跨页面复用的基础样式。页面专属样式放在 src/styles/<page>.css 中。",
       "multi_page_in_one_file": "每个页面组件应独立为单个 .tsx 文件，保持关注点分离。"
     }
   },
 
   "component_conventions": {
-    "page_component": {
-      "description": "每个页面是一个独立的 React 组件，由 Go 后端渲染的 HTML 页面中的 createRoot() 挂载。",
-      "structure": "src/pages/<PageName>.tsx",
-      "must_not": "不得包含路由逻辑、不得使用 <Route> 或 <Link>",
-      "navigation": "页面间导航使用 HTMX 属性（hx-get/hx-post）或标准 <a> 标签"
-    },
-    "shared_component": {
-      "description": "跨页面复用的 UI 组件。",
-      "structure": "src/components/<ComponentName>.tsx"
-    },
-    "hooks": {
-      "structure": "src/hooks/<hookName>.ts"
-    },
-    "lib": {
-      "description": "API 封装、类型定义、工具函数。",
-      "structure": "src/lib/<module>.ts",
-      "must_never": "不得包含路由导航逻辑"
-    }
+    "page_component": { "structure": "src/pages/<PageName>.tsx", "must_not": "不得包含路由逻辑", "navigation": "使用 HTMX 属性或标准 <a> 标签" },
+    "shared_component": { "structure": "src/components/<ComponentName>.tsx" },
+    "hooks": { "structure": "src/hooks/<hookName>.ts" },
+    "lib": { "structure": "src/lib/<module>.ts", "must_never": "不得包含路由导航逻辑" }
   },
 
   "css_organization": {
-    "global": {
-      "file": "src/styles/global.css",
-      "rule": "仅包含跨页面复用的基础样式（.card、.btn、.input、.app-header 等）",
-      "must_never": "不得包含页面专属样式"
-    },
-    "theme_tokens": {
-      "file": "src/styles/variables.css",
-      "rule": "CSS 变量定义，暗色模式通过 [data-theme='dark'] 驱动"
-    },
-    "page_specific": {
-      "rule": "每个页面专属样式放在 src/styles/<page>.css 中",
-      "example": "src/styles/home.css、src/styles/login.css、src/styles/shell.css"
-    }
+    "global": { "file": "src/styles/global.css", "rule": "仅跨页面复用基础样式", "must_never": "不得包含页面专属样式" },
+    "theme_tokens": { "file": "src/styles/variables.css", "rule": "CSS 变量，暗色模式通过 [data-theme='dark'] 驱动" },
+    "page_specific": { "rule": "每个页面专属样式放在 src/styles/<page>.css 中" }
   },
 
   "api_communication": {
     "base_url": "/api/v1",
     "wrapper": "src/lib/api.ts 中的 api 对象（get/post/put/delete）",
     "auth": "Cookie-based session（homehub_session），credentials: 'include'",
-    "error_handling": "401 自动重定向到 /login；统一响应格式 { code, message, data }",
+    "response_format": {
+      "success": "{ \"code\": 0, \"message\": \"ok\", \"data\": <payload> }",
+      "error": "{ \"code\": <int>, \"message\": \"<描述>\" }",
+      "pagination": "{ \"code\": 0, \"data\": { \"list\": [...], \"total\": <int>, \"page\": <int>, \"per_page\": <int> } }"
+    },
+    "error_handling": "401 → 自动重定向到 /login（api.ts 全局处理）；其他错误 → 由调用方捕获",
     "must_never": "不得在组件中直接使用 fetch()，必须通过 api 封装"
+  },
+
+  "api_reference": {
+    "_note": "所有路径均相对于 /api/v1。标注 [公开] 表示无需登录，其余均需认证。",
+    "_note_admin": "标注 [管理员] 表示需要 admin 角色。",
+
+    "首页 (/)": {
+      "auth_required": false,
+      "endpoints": [
+        { "method": "GET", "path": "/auth/status", "note": "当前登录状态 [公开]", "returns": "{ logged_in: bool, username?: string }" },
+        { "method": "GET", "path": "/webui", "note": "首页+登录页展示配置 [公开]", "returns": "{ home: { background, assets }, login: { background, assets, layout } }" },
+        { "method": "GET", "path": "/bookmark-groups", "note": "书签分组（含嵌套书签）[公开]", "returns": "[{ id, name, bookmarks: [...] }]" },
+        { "method": "GET", "path": "/rss/feeds", "note": "RSS 订阅源列表", "returns": "[{ id, title, url }]" },
+        { "method": "GET", "path": "/rss/entries?page=1&per_page=30", "note": "RSS 条目列表", "returns": "{ list, total }" }
+      ]
+    },
+
+    "登录页 (/login)": {
+      "auth_required": false,
+      "endpoints": [
+        { "method": "GET", "path": "/webui", "note": "登录页背景配置 [公开]" },
+        { "method": "POST", "path": "/auth/login", "note": "登录 [公开]", "body": "{ username, password }", "returns": "{ code:0 } + Set-Cookie" }
+      ]
+    },
+
+    "仪表盘 (/dashboard)": {
+      "endpoints": [
+        { "method": "GET", "path": "/health", "note": "系统健康检查 [公开]", "returns": "{ status, db }" },
+        { "method": "GET", "path": "/bilibili/stats", "note": "Bilibili 爬虫统计", "returns": "{ video, video_page, article, user, total_mb, progress }" }
+      ]
+    },
+
+    "书签管理 (/bookmarks)": {
+      "endpoints": [
+        { "method": "GET", "path": "/bookmark-groups", "note": "分组+书签列表" },
+        { "method": "POST", "path": "/bookmark-groups", "note": "创建分组", "body": "{ name }" },
+        { "method": "PUT", "path": "/bookmark-groups/:id", "note": "更新分组", "body": "{ name, priority }" },
+        { "method": "DELETE", "path": "/bookmark-groups/:id", "note": "删除分组" },
+        { "method": "POST", "path": "/bookmark-groups/reorder", "note": "分组排序", "body": "{ ids: [...] }" },
+        { "method": "POST", "path": "/bookmarks", "note": "创建书签", "body": "{ group_id, title, url, icon }" },
+        { "method": "PUT", "path": "/bookmarks/:id", "note": "更新书签", "body": "{ title, url, icon, priority }" },
+        { "method": "DELETE", "path": "/bookmarks/:id", "note": "删除书签" },
+        { "method": "POST", "path": "/bookmarks/reorder", "note": "书签排序", "body": "{ group_id, ids: [...] }" }
+      ]
+    },
+
+    "媒体资源 (/media)": {
+      "endpoints": [
+        { "method": "GET", "path": "/media-assets", "note": "媒体列表", "returns": "[{ id, filename, media_type, file_path }]" },
+        { "method": "POST", "path": "/media-assets", "note": "上传（multipart/form-data）", "body": "FormData { file }", "returns": "{ id, filename }" },
+        { "method": "DELETE", "path": "/media-assets/:id", "note": "删除媒体" }
+      ]
+    },
+
+    "RSS 管理 (/rss)": {
+      "endpoints": [
+        { "method": "GET", "path": "/rss/feeds", "note": "订阅源列表" },
+        { "method": "GET", "path": "/rss/feeds/:id", "note": "订阅源详情" },
+        { "method": "POST", "path": "/rss/feeds", "note": "添加订阅源", "body": "{ url }" },
+        { "method": "PUT", "path": "/rss/feeds/:id", "note": "更新订阅源", "body": "{ url, title }" },
+        { "method": "DELETE", "path": "/rss/feeds/:id", "note": "删除订阅源" },
+        { "method": "POST", "path": "/rss/feeds/:id/fetch", "note": "抓取单个订阅源" },
+        { "method": "POST", "path": "/rss/fetch-all", "note": "抓取全部订阅源" },
+        { "method": "GET", "path": "/rss/entries?page=&per_page=&feed_id=", "note": "条目列表（分页+按源筛选）" }
+      ]
+    },
+
+    "待办事项 (/todos)": {
+      "endpoints": [
+        { "method": "GET", "path": "/todos", "note": "待办列表" },
+        { "method": "GET", "path": "/todos/:id", "note": "待办详情" },
+        { "method": "POST", "path": "/todos", "note": "创建待办", "body": "{ title, description?, priority? }" },
+        { "method": "PUT", "path": "/todos/:id", "note": "更新待办", "body": "{ title?, description?, status?, priority?, due_date? }" },
+        { "method": "DELETE", "path": "/todos/:id", "note": "删除待办" },
+        { "method": "PATCH", "path": "/todos/:id/status", "note": "切换状态", "body": "{ status }" },
+        { "method": "POST", "path": "/todos/reorder", "note": "排序", "body": "{ ids: [...] }" }
+      ]
+    },
+
+    "数据搜索 (/search)": {
+      "endpoints": [
+        { "method": "GET", "path": "/search?q=<keyword>", "note": "全局搜索", "returns": "{ videos, articles, users, bookmarks }" }
+      ]
+    },
+
+    "Bilibili 数据 (/bilibili)": {
+      "endpoints": [
+        { "method": "GET", "path": "/bilibili/stats", "note": "爬虫统计" },
+        { "method": "GET", "path": "/bilibili/videos?page=&per_page=&q=&aid=&owner_mid=&tid=&sort=&order=", "note": "视频列表", "returns": "{ list, total, page, per_page }" },
+        { "method": "GET", "path": "/bilibili/videos/:aid", "note": "视频详情（含分P）" },
+        { "method": "GET", "path": "/bilibili/articles?page=&per_page=&q=&mid=&sort=&order=", "note": "专栏列表" },
+        { "method": "GET", "path": "/bilibili/articles/:cvid", "note": "专栏详情" },
+        { "method": "GET", "path": "/bilibili/users?page=&per_page=&q=&level=&vip_status=&sort=&order=", "note": "用户列表" },
+        { "method": "GET", "path": "/bilibili/users/:mid", "note": "用户详情" },
+        { "method": "GET", "path": "/bilibili/users/:mid/videos", "note": "用户视频列表" },
+        { "method": "GET", "path": "/bilibili/users/:mid/articles", "note": "用户专栏列表" },
+        { "method": "POST", "path": "/bilibili/fetch/video/:aid", "note": "按需抓取视频" },
+        { "method": "POST", "path": "/bilibili/fetch/article/:cvid", "note": "按需抓取专栏" }
+      ]
+    },
+
+    "个人中心 (/profile)": {
+      "endpoints": [
+        { "method": "GET", "path": "/auth/profile", "note": "当前用户信息", "returns": "{ id, username, email, role, avatar_url }" },
+        { "method": "PUT", "path": "/auth/profile", "note": "更新个人信息", "body": "{ username, email }" },
+        { "method": "GET", "path": "/avatar/me?size=80", "note": "当前用户头像（返回图片二进制）" },
+        { "method": "POST", "path": "/auth/change-password", "note": "修改密码", "body": "{ old_password, new_password }" }
+      ]
+    },
+
+    "用户管理 (/users) [管理员]": {
+      "endpoints": [
+        { "method": "GET", "path": "/admin/users", "note": "用户列表 [管理员]" },
+        { "method": "POST", "path": "/admin/users", "note": "创建用户 [管理员]", "body": "{ username, password, email?, role? }" },
+        { "method": "GET", "path": "/admin/users/:id", "note": "用户详情 [管理员]" },
+        { "method": "PUT", "path": "/admin/users/:id", "note": "更新用户 [管理员]", "body": "{ username?, email?, role?, is_active? }" },
+        { "method": "DELETE", "path": "/admin/users/:id", "note": "删除用户 [管理员]" },
+        { "method": "PUT", "path": "/admin/users/:id/reset-password", "note": "重置密码 [管理员]", "body": "{ password }" },
+        { "method": "POST", "path": "/admin/users/:id/refresh-avatar", "note": "刷新头像 [管理员]" }
+      ]
+    },
+
+    "系统日志 (/logs) [管理员]": {
+      "endpoints": [
+        { "method": "GET", "path": "/admin/logs?page=&per_page=&level=&q=&since=&until=", "note": "日志列表 [管理员]", "returns": "{ list, total }" }
+      ]
+    },
+
+    "系统设置 (/settings)": {
+      "endpoints": [
+        { "method": "GET", "path": "/config", "note": "获取配置（已脱敏）" },
+        { "method": "PUT", "path": "/config", "note": "更新配置", "body": "{ server?, database?, auth?, log?, background?, proxy_enabled?, proxy?, gravatar?, bookmark?, rss? }" }
+      ]
+    },
+
+    "界面外观 (/appearance)": {
+      "endpoints": [
+        { "method": "GET", "path": "/background", "note": "获取背景设置", "returns": "{ mode, interval_seconds, transition_effect, fade_duration_ms, selected_asset_ids }" },
+        { "method": "PUT", "path": "/background", "note": "更新背景设置", "body": "{ mode, interval_seconds, transition_effect, fade_duration_ms, selected_asset_ids }" }
+      ]
+    },
+
+    "头像服务": {
+      "endpoints": [
+        { "method": "GET", "path": "/avatar/:id", "note": "按用户ID获取头像 [公开]", "query": "?size=80" },
+        { "method": "GET", "path": "/avatar/me?size=80", "note": "当前用户头像" }
+      ]
+    }
   },
 
   "page_shell": {
@@ -111,6 +233,18 @@
     }
   },
 
+  "backend_tech_debt": {
+    "_note": "以下问题不影响前端开发，但需要在后续迭代中清理。",
+    "items": [
+      { "severity": "P2", "file": "video_crawler.go, article_crawler.go", "issue": "旧 upsertVideo/upsertArticle 方法体残留（无调用方，dead code）" },
+      { "severity": "P2", "file": "handler/, service/", "issue": "handler/service 层测试覆盖低（仅 auth 有 8 个测试）" },
+      { "severity": "P2", "file": "handler/auth.go", "issue": "登录限速使用内存级 sync.Map，服务重启后计数归零" },
+      { "severity": "P2", "file": "multiple", "issue": "on_demand_service.go 的旧版逐条 Create 分P插入已通过 upsert 统一修复" },
+      { "severity": "P3", "file": "config/loader.go", "issue": "session_secret 字段已校验但从未用于 HMAC 签名" },
+      { "severity": "P3", "file": "service/gravatar_service.go, service/favicon_service.go", "issue": "HTTP Transport 未显式设置 MaxIdleConnsPerHost" }
+    ]
+  },
+
   "build_and_dev": {
     "dev_server": "pnpm dev → http://localhost:5173",
     "proxy": "Vite 自动代理 /api/* 到 Go 后端 :8080",
@@ -124,9 +258,9 @@
       "oxlint 无严重错误",
       "不得引入 forbidden.dependencies 中列出的任何依赖"
     ],
-    "ai_tool_constraint": "任何 AI 编码工具在修改 HomeHub 前端代码前，必须完整读取本文件并逐条对照，违者视为严重架构违规。"
+    "ai_tool_constraint": "任何 AI 编码工具在修改 HomeHub 代码前，必须完整读取本文件并逐条对照，违者视为严重架构违规。"
   },
 
-  "last_updated": "2026-07-12",
-  "reason": "ChatGPT 5.5 引入 react-router-dom 破坏 HTMX 群岛架构，故将此规则固化为不可违背文档。"
+  "last_updated": "2026-07-13",
+  "reason": "ChatGPT 5.5 引入 react-router-dom 破坏 HTMX 群岛架构，故将此规则固化为不可违背文档。2026-07-13 补充 api_reference 全端点映射 + backend_tech_debt。"
 }
