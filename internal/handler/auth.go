@@ -130,6 +130,7 @@ func AuthLogout(c *gin.Context) {
 	if exists {
 		if tokenStr, ok := token.(string); ok {
 			_ = svc.Auth.Logout(tokenStr)
+			middleware.InvalidateSession(tokenStr)
 		}
 	}
 
@@ -230,7 +231,12 @@ func AuthChangePassword(c *gin.Context) {
 		return
 	}
 
-	// 修改密码后清除 Cookie
+	// 修改密码后清除缓存 + Cookie
+	if token, exists := c.Get("session_token"); exists {
+		if tokenStr, ok := token.(string); ok {
+			middleware.InvalidateSession(tokenStr)
+		}
+	}
 	c.SetCookie(
 		middleware.SessionCookieName,
 		"",

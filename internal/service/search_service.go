@@ -11,6 +11,10 @@ import (
 )
 
 // SearchService 跨数据源搜索服务。
+//
+// 使用 ILIKE '%keyword%' 进行模糊匹配。为获得索引加速，需预先执行
+// migrations/001_search_trgm_indexes.sql 创建 pg_trgm GIN 索引。
+// 不使用 pg_trgm 时，全表扫描在大数据量下性能急剧下降。
 type SearchService struct {
 	db *gorm.DB
 }
