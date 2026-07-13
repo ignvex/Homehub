@@ -104,9 +104,16 @@ func main() {
 			logger.Error("创建初始用户失败", "error", err)
 			os.Exit(1)
 		}
+		// 初始用户已创建，清除 config.json 中的明文密码
+		config.ClearPassword(configPath)
 	} else {
 		logger.Warn("auth.password 为空，跳过初始用户创建（请通过 Web 端或 config.json 设置密码）")
 	}
+
+	// 启动 sessions 定期清理（每小时删除过期会话）
+	sessionCleanupCtx, sessionCleanupCancel := context.WithCancel(context.Background())
+	defer sessionCleanupCancel()
+	go service.CleanupExpiredSessions(sessionCleanupCtx, db)
 
 	// 启动 RSS 后台定时抓取（通过 context 控制生命周期，defer 在程序退出时停止）
 	rssCtx, rssCancel := context.WithCancel(context.Background())

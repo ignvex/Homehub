@@ -7,8 +7,8 @@ import type { AuthStatus } from '@/lib/home'
 // ============================================================
 // AppShell — 控制台侧边栏布局
 //
-// 导航使用原生 <a> 标签配合 HTMX（hx-get / hx-boost），
-// 不依赖 React Router。
+// 当前后端为单入口 SPA fallback，因此导航使用原生 <a> 整页装载。
+// 不依赖 React Router，也不将完整 HTML 文档注入局部容器。
 // ============================================================
 
 interface NavItem { href: string; label: string; icon: ReactNode; admin?: boolean }
@@ -58,14 +58,12 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
   const [open, setOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('homehub-shell-collapsed') === '1')
 
-  // 路径变化时关闭移动端侧栏（监听 htmx 的 history 事件或 popstate）
+  // 浏览器前进、后退时关闭移动端侧栏。
   useEffect(() => {
     const close = () => setOpen(false)
     window.addEventListener('popstate', close)
-    document.body.addEventListener('htmx:afterSettle', close)
     return () => {
       window.removeEventListener('popstate', close)
-      document.body.removeEventListener('htmx:afterSettle', close)
     }
   }, [])
 
@@ -79,7 +77,7 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
 
       <aside className={`shell-sidebar ${open ? 'is-open' : ''}`}>
         <div className="shell-brand">
-          <a href="/dashboard" aria-label="打开仪表盘" hx-get="/dashboard" hx-target="#shell-content" hx-push-url="true">
+          <a href="/dashboard" aria-label="打开仪表盘">
             <span className="shell-brand-mark">H</span>
             <span className="shell-brand-name">HomeHub</span>
           </a>
@@ -93,9 +91,6 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
                 <a
                   key={item.href}
                   href={item.href}
-                  hx-get={item.href}
-                  hx-target="#shell-content"
-                  hx-push-url="true"
                   title={collapsed ? item.label : undefined}
                   className={isActivePath(item.href) ? 'is-active' : ''}
                 >
@@ -106,7 +101,7 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             </section>
           ))}
         </nav>
-        <a href="/profile" className="shell-account" hx-get="/profile" hx-target="#shell-content" hx-push-url="true">
+        <a href="/profile" className="shell-account">
           <UserAvatar username={auth.username} size={36} />
           <div>
             <strong>{auth.username || '用户'}</strong>

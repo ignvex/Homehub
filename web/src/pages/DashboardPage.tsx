@@ -51,7 +51,7 @@ export function DashboardPage() {
               <p>DATA INVENTORY</p>
               <h2>数据资产</h2>
             </div>
-            <a href="/bilibili" hx-get="/bilibili" hx-target="#shell-content" hx-push-url="true">打开控制台 →</a>
+            <a href="/bilibili">打开控制台 →</a>
           </header>
           {error ? (
             <div className="panel-error">{error}</div>
@@ -99,7 +99,7 @@ export function DashboardPage() {
         </header>
         <div className="quick-actions">
           {actions.map(([href, title, text]) => (
-            <a key={href} href={href} hx-get={href} hx-target="#shell-content" hx-push-url="true">
+            <a key={href} href={href}>
               <strong>{title}</strong>
               <span>{text}</span>
               <b>↗</b>

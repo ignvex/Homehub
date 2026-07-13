@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -379,6 +380,29 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// CleanupExpiredSessions 后台 goroutine，定期清理过期的数据库会话。
+//
+// 每小时执行一次 DELETE FROM sessions WHERE expires_at < now()，
+// 防止 sessions 表无限增长。通过 ctx 控制生命周期。
+func CleanupExpiredSessions(ctx context.Context, db *gorm.DB) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			result := db.Where("expires_at < ?", time.Now()).Delete(&model.Session{})
+			if result.Error != nil {
+				logger.Warn("定期清理过期会话失败", "error", result.Error)
+			} else if result.RowsAffected > 0 {
+				logger.Info("已清理过期会话", "count", result.RowsAffected)
+			}
+		}
+	}
 }
 
 // 认证与用户管理相关业务错误。
