@@ -134,7 +134,7 @@ func (s *GravatarService) RefreshAvatar(userID uint64) (bool, error) {
 
 		resp, err := r.Head(gravatarURL)
 		if err != nil {
-			return false, fmt.Errorf("Gravatar HEAD 请求失败: %w", err)
+			return false, fmt.Errorf("gravatar HEAD 请求失败: %w", err)
 		}
 		resp.Body.Close()
 
@@ -181,7 +181,7 @@ func (s *GravatarService) downloadAndCache(user *model.User) (*model.AvatarCache
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Gravatar 返回状态码 %d", resp.StatusCode)
+		return nil, fmt.Errorf("gravatar 返回状态码 %d", resp.StatusCode)
 	}
 
 	imageData, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20)) // 限制 5MB

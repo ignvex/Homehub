@@ -124,6 +124,32 @@ func AuthOptional() gin.HandlerFunc {
 	}
 }
 
+// AuthAdminRequired 返回一个 Gin 中间件，校验已登录用户是否为管理员。
+//
+// 需在 AuthRequired 之后使用（即路由需先通过认证中间件）。
+// 若当前用户 role 不是 "admin"，返回 403 Forbidden。
+func AuthAdminRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		u, exists := c.Get("user")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code": 30001, "message": "权限不足，需要管理员权限",
+			})
+			return
+		}
+
+		user := u.(*model.User)
+		if user.Role != "admin" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code": 30001, "message": "权限不足，需要管理员权限",
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // AuthPageRequired 返回一个 Gin 中间件，校验会话 Cookie 是否有效。
 //
 // 与 AuthRequired 共享相同的认证逻辑，但认证失败时执行 302 重定向到

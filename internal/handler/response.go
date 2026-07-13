@@ -23,6 +23,14 @@ const (
 	CodePasswordTooWeak  = 20003 // 密码强度不足
 	CodeGroupNotFound    = 50001 // 书签分组不存在
 	CodeBookmarkNotFound = 50002 // 书签不存在
+	CodeMediaNotFound    = 60001 // 媒体资源不存在
+	CodeFileTooLarge     = 60002 // 上传文件过大
+	CodeInvalidFileType  = 60003 // 不支持的文件类型
+	CodeForbidden        = 30001 // 权限不足
+	CodeUserDisabled     = 20004 // 账号已被禁用
+	CodeUsernameExists   = 30002 // 用户名已存在
+	CodeUserNotFound     = 30003 // 用户不存在
+	CodeSelfOperation    = 30004 // 不能操作自己
 )
 
 // ============================================================

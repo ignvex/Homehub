@@ -13,6 +13,14 @@ import (
 // LogService — 系统日志查询服务
 // ============================================================
 
+// LogQuery 日志列表查询条件。
+type LogQuery struct {
+	Page, PerPage int
+	Level         string
+	Q             string
+	Since, Until  time.Time
+}
+
 // LogService 提供日志条目的查询功能。
 type LogService struct {
 	db *gorm.DB
@@ -32,40 +40,31 @@ var validLogLevels = map[string]bool{
 }
 
 // ListLogs 分页查询日志条目，支持按级别、关键词和时间范围筛选。
-//
-// 参数：
-//   - page, perPage: 分页，perPage 最大 100
-//   - level: 日志级别筛选（ERROR/WARN/INFO/DEBUG），空字符串表示不过滤
-//   - q: 消息内容模糊搜索（ILIKE）
-//   - since: 日志时间范围起点（零值表示不过滤）
-//   - until: 日志时间范围终点（零值表示不过滤）
-//
-// 结果按 log_time DESC 排序。
-func (s *LogService) ListLogs(page, perPage int, level string, q string, since, until time.Time) ([]model.LogEntry, int64, error) {
-	perPage = clampPerPage(perPage)
-	page = normalizePage(page)
+func (s *LogService) ListLogs(q LogQuery) ([]model.LogEntry, int64, error) {
+	q.PerPage = clampPerPage(q.PerPage)
+	q.Page = normalizePage(q.Page)
 
 	query := s.db.Model(&model.LogEntry{})
 
 	// 级别筛选
-	level = strings.TrimSpace(strings.ToUpper(level))
-	if level != "" {
-		if validLogLevels[level] {
-			query = query.Where("level = ?", level)
+	q.Level = strings.TrimSpace(strings.ToUpper(q.Level))
+	if q.Level != "" {
+		if validLogLevels[q.Level] {
+			query = query.Where("level = ?", q.Level)
 		}
 	}
 
 	// 关键词模糊搜索
-	if strings.TrimSpace(q) != "" {
-		query = query.Where("message ILIKE ?", "%"+strings.TrimSpace(q)+"%")
+	if strings.TrimSpace(q.Q) != "" {
+		query = query.Where("message ILIKE ?", "%"+strings.TrimSpace(q.Q)+"%")
 	}
 
 	// 时间范围筛选
-	if !since.IsZero() {
-		query = query.Where("log_time >= ?", since)
+	if !q.Since.IsZero() {
+		query = query.Where("log_time >= ?", q.Since)
 	}
-	if !until.IsZero() {
-		query = query.Where("log_time <= ?", until)
+	if !q.Until.IsZero() {
+		query = query.Where("log_time <= ?", q.Until)
 	}
 
 	var total int64
@@ -74,8 +73,8 @@ func (s *LogService) ListLogs(page, perPage int, level string, q string, since, 
 	}
 
 	var entries []model.LogEntry
-	offset := (page - 1) * perPage
-	if err := query.Order("log_time DESC").Offset(offset).Limit(perPage).Find(&entries).Error; err != nil {
+	offset := (q.Page - 1) * q.PerPage
+	if err := query.Order("log_time DESC").Offset(offset).Limit(q.PerPage).Find(&entries).Error; err != nil {
 		return nil, 0, fmt.Errorf("查询日志列表失败: %w", err)
 	}
 

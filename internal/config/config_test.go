@@ -166,6 +166,41 @@ func TestValidate_InvalidLogFormat(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidWebUI(t *testing.T) {
+	cfg := &Config{
+		Database: DatabaseConfig{Host: "localhost", User: "u", DBName: "d"},
+		Auth:     AuthConfig{SessionSecret: "abcdefghijklmnopqrstuvwxyz012345"},
+		Log:      LogConfig{Level: "info", Format: "text"},
+		WebUI: WebUIConfig{
+			Home:  HomeWebUIConfig{Background: BackgroundConfig{Mode: "invalid", IntervalSeconds: 0, TransitionEffect: "zoom", FadeDurationMs: -1}},
+			Login: LoginWebUIConfig{Background: BackgroundConfig{Mode: "single", IntervalSeconds: 3601, TransitionEffect: "fade", FadeDurationMs: 10001}, Layout: "top"},
+		},
+	}
+	err := validate(cfg)
+	if err == nil {
+		t.Fatal("预期 WebUI 配置校验错误")
+	}
+	for _, field := range []string{"webui.home.background.mode", "webui.home.background.interval_seconds", "webui.home.background.transition_effect", "webui.home.background.fade_duration_ms", "webui.login.background.interval_seconds", "webui.login.background.fade_duration_ms", "webui.login.layout"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("错误信息应包含 %s", field)
+		}
+	}
+}
+
+func TestApplyDefaults_WebUI(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if cfg.WebUI.Home.Background.Mode != "single" || cfg.WebUI.Login.Background.Mode != "single" {
+		t.Fatal("WebUI 页面背景模式默认值应为 single")
+	}
+	if cfg.WebUI.Home.Background.IntervalSeconds != 30 || cfg.WebUI.Login.Background.IntervalSeconds != 30 {
+		t.Fatal("WebUI 页面背景间隔默认值应为 30")
+	}
+	if cfg.WebUI.Login.Layout != "center" {
+		t.Fatalf("登录布局默认值应为 center，实际为 %s", cfg.WebUI.Login.Layout)
+	}
+}
+
 func TestConcurrentReadWrite(t *testing.T) {
 	// 验证 atomic.Pointer 的并发安全性
 	path, _ := tempJSON(t, `{

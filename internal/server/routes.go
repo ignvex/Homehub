@@ -1,10 +1,29 @@
 package server
 
 import (
+	"net/http"
+	"path/filepath"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/handler"
 	"github.com/ignvex/HomeHub/internal/middleware"
 )
+
+func serveSPA(c *gin.Context) {
+	c.File("web/dist/index.html")
+}
+
+func registerSPAFallback(r *gin.Engine) {
+	r.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if c.Request.Method != http.MethodGet || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/swagger/") || filepath.Ext(path) != "" {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		serveSPA(c)
+	})
+}
 
 // registerRoutes 向 Gin 引擎注册所有路由。
 //
@@ -15,7 +34,7 @@ func registerRoutes(r *gin.Engine) {
 	// ============================================================
 	// 页面路由（由 Vite 前端接管，Go 提供入口文件重定向）
 	// ============================================================
-	r.GET("/", func(c *gin.Context) { c.File("web/dist/index.html") })
+	r.GET("/", serveSPA)
 
 	// ============================================================
 	// API v1
@@ -24,6 +43,7 @@ func registerRoutes(r *gin.Engine) {
 
 	// --- 健康检查（公开） ---
 	api.GET("/health", handler.HealthCheck)
+	api.GET("/webui", handler.WebUIConfig)
 
 	// --- 认证（无需登录，AuthOptional 使 status 接口可获得用户信息） ---
 	auth := api.Group("/auth")

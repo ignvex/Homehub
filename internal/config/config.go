@@ -44,6 +44,23 @@ type BackgroundConfig struct {
 	SelectedAssetIDs []uint64 `json:"selected_asset_ids"` // 选中的媒体资源 ID 列表
 }
 
+// HomeWebUIConfig 首页展示配置。
+type HomeWebUIConfig struct {
+	Background BackgroundConfig `json:"background"`
+}
+
+// LoginWebUIConfig 登录页展示配置。
+type LoginWebUIConfig struct {
+	Background BackgroundConfig `json:"background"`
+	Layout     string           `json:"layout"` // left / center / right
+}
+
+// WebUIConfig Web 前端页面配置。
+type WebUIConfig struct {
+	Home  HomeWebUIConfig  `json:"home"`
+	Login LoginWebUIConfig `json:"login"`
+}
+
 // LogConfig 日志配置。
 type LogConfig struct {
 	Level    string `json:"level"`     // 日志级别：debug / info / warn / error，默认 "info"
@@ -125,7 +142,8 @@ type Config struct {
 	Database     DatabaseConfig   `json:"database"`
 	Auth         AuthConfig       `json:"auth"`
 	Log          LogConfig        `json:"log"`
-	Background   BackgroundConfig `json:"background"`
+	Background   BackgroundConfig `json:"background"` // 兼容旧版配置
+	WebUI        WebUIConfig      `json:"webui"`
 	ProxyEnabled bool             `json:"proxy_enabled"` // 全局代理总开关（关闭时所有代理均无效）
 	Proxy        []ProxyEntry     `json:"proxy,omitempty"`
 	Gravatar     GravatarConfig   `json:"gravatar"`
@@ -136,7 +154,7 @@ type Config struct {
 
 var (
 	globalConfig atomic.Pointer[Config] // 当前生效的配置（无锁读取）
-	mu           sync.RWMutex           // 保护热加载期间的临界区（预留）
+	_            sync.RWMutex           // 保护热加载期间的临界区（预留）
 )
 
 // Get 返回当前生效的配置指针。

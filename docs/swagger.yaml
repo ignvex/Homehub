@@ -1,0 +1,1093 @@
+basePath: /api/v1
+definitions:
+  config.LogConfig:
+    properties:
+      db_writer:
+        description: 是否将日志写入数据库，默认 true
+        type: boolean
+      format:
+        description: 日志格式：json / colored，默认 "json"
+        type: string
+      level:
+        description: 日志级别：debug / info / warn / error，默认 "info"
+        type: string
+    type: object
+  gorm.DeletedAt:
+    properties:
+      time:
+        type: string
+      valid:
+        description: Valid is true if Time is not NULL
+        type: boolean
+    type: object
+  handler.Response:
+    properties:
+      code:
+        type: integer
+      data: {}
+      message:
+        type: string
+    type: object
+  handler.changePasswordRequest:
+    properties:
+      new_password:
+        type: string
+      old_password:
+        type: string
+    required:
+    - new_password
+    - old_password
+    type: object
+  handler.createBookmarkRequest:
+    properties:
+      group_id:
+        type: integer
+      icon:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+    required:
+    - group_id
+    - title
+    - url
+    type: object
+  handler.createGroupRequest:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  handler.createUserRequest:
+    properties:
+      password:
+        type: string
+      role:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handler.loginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handler.reorderBookmarksRequest:
+    properties:
+      group_id:
+        type: integer
+      ids:
+        items:
+          type: integer
+        type: array
+    required:
+    - group_id
+    - ids
+    type: object
+  handler.reorderGroupsRequest:
+    properties:
+      ids:
+        items:
+          type: integer
+        type: array
+    required:
+    - ids
+    type: object
+  handler.resetPasswordRequest:
+    properties:
+      new_password:
+        type: string
+    required:
+    - new_password
+    type: object
+  handler.updateBookmarkRequest:
+    properties:
+      icon:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+    type: object
+  handler.updateGroupRequest:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  handler.updateUserRequest:
+    properties:
+      is_active:
+        type: boolean
+      role:
+        type: string
+      username:
+        type: string
+    type: object
+  model.Bookmark:
+    properties:
+      created_at:
+        type: string
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      group_id:
+        type: integer
+      icon:
+        type: string
+      id:
+        type: integer
+      sort_order:
+        type: integer
+      title:
+        type: string
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  model.BookmarkGroup:
+    properties:
+      bookmarks:
+        items:
+          $ref: '#/definitions/model.Bookmark'
+        type: array
+      created_at:
+        type: string
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      id:
+        type: integer
+      name:
+        type: string
+      sort_order:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  model.MediaAsset:
+    properties:
+      created_at:
+        type: string
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      file_path:
+        description: 相对路径（如 uploads/xxx.jpg）
+        type: string
+      file_size:
+        description: 文件大小（字节）
+        type: integer
+      filename:
+        description: 存储文件名（UUID）
+        type: string
+      height:
+        description: 图片高度（像素）
+        type: integer
+      id:
+        type: integer
+      media_type:
+        description: 媒体类型：image / video
+        type: string
+      mime_type:
+        description: MIME 类型
+        type: string
+      original_name:
+        description: 原始文件名
+        type: string
+      updated_at:
+        type: string
+      width:
+        description: 图片宽度（像素）
+        type: integer
+    type: object
+  model.User:
+    properties:
+      created_at:
+        type: string
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      id:
+        type: integer
+      is_active:
+        description: 是否启用
+        type: boolean
+      role:
+        description: 角色：admin / user
+        type: string
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  service.BackgroundSettings:
+    properties:
+      fade_duration_ms:
+        type: integer
+      interval_seconds:
+        type: integer
+      mode:
+        type: string
+      selected_asset_ids:
+        items:
+          type: integer
+        type: array
+      transition_effect:
+        type: string
+    type: object
+  service.SafeAuthConfig:
+    properties:
+      username:
+        type: string
+    type: object
+  service.SafeConfig:
+    properties:
+      auth:
+        $ref: '#/definitions/service.SafeAuthConfig'
+      database:
+        $ref: '#/definitions/service.SafeDatabaseConfig'
+      log:
+        $ref: '#/definitions/config.LogConfig'
+      server:
+        $ref: '#/definitions/service.SafeServerConfig'
+    type: object
+  service.SafeDatabaseConfig:
+    properties:
+      dbname:
+        type: string
+      host:
+        type: string
+      port:
+        type: integer
+      sslmode:
+        type: string
+      user:
+        type: string
+    type: object
+  service.SafeServerConfig:
+    properties:
+      host:
+        type: string
+      port:
+        type: integer
+    type: object
+  service.UpdateBackgroundRequest:
+    properties:
+      fade_duration_ms:
+        type: integer
+      interval_seconds:
+        type: integer
+      mode:
+        type: string
+      selected_asset_ids:
+        items:
+          type: integer
+        type: array
+      transition_effect:
+        type: string
+    type: object
+  service.UpdateConfigRequest:
+    properties:
+      auth:
+        properties:
+          password:
+            type: string
+          session_secret:
+            type: string
+          username:
+            type: string
+        type: object
+      database:
+        properties:
+          dbname:
+            type: string
+          host:
+            type: string
+          password:
+            type: string
+          port:
+            type: integer
+          sslmode:
+            type: string
+          user:
+            type: string
+        type: object
+      log:
+        properties:
+          db_writer:
+            type: boolean
+          format:
+            type: string
+          level:
+            type: string
+        type: object
+      server:
+        properties:
+          host:
+            type: string
+          port:
+            type: integer
+        type: object
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: HomeHub
+  description: 个人中枢项目 API 接口文档，包含认证、书签管理、配置管理等功能。
+  title: HomeHub API
+  version: "1.0"
+paths:
+  /admin/users:
+    get:
+      description: 返回所有注册用户的信息（仅管理员）
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.User'
+                  type: array
+              type: object
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 获取用户列表
+      tags:
+      - 用户管理
+    post:
+      consumes:
+      - application/json
+      description: 管理员创建新用户，可指定角色（admin/user）
+      parameters:
+      - description: 用户信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 创建成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.User'
+              type: object
+        "400":
+          description: 参数错误或用户名冲突
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 创建用户
+      tags:
+      - 用户管理
+  /admin/users/{id}:
+    delete:
+      description: 管理员删除用户及其所有会话
+      parameters:
+      - description: 用户 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 无效的用户 ID
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 权限不足或不能删除自己
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 用户不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除用户
+      tags:
+      - 用户管理
+    get:
+      description: 返回指定用户的完整信息（仅管理员）
+      parameters:
+      - description: 用户 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户详情
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.User'
+              type: object
+        "400":
+          description: 无效的用户 ID
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 用户不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 获取用户详情
+      tags:
+      - 用户管理
+    put:
+      consumes:
+      - application/json
+      description: 管理员修改用户的用户名、角色或启用状态
+      parameters:
+      - description: 用户 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 更新字段
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.User'
+              type: object
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 用户不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "409":
+          description: 用户名冲突
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新用户
+      tags:
+      - 用户管理
+  /admin/users/{id}/reset-password:
+    put:
+      consumes:
+      - application/json
+      description: 管理员重置指定用户的密码，成功后该用户所有会话失效
+      parameters:
+      - description: 用户 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 新密码
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.resetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 重置成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 用户不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 重置用户密码
+      tags:
+      - 用户管理
+  /auth/change-password:
+    post:
+      consumes:
+      - application/json
+      description: 验证旧密码后修改为新密码，成功后清除所有会话
+      parameters:
+      - description: 修改密码请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.changePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 修改成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 请求参数错误或旧密码错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "401":
+          description: 未登录
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 修改密码
+      tags:
+      - 认证
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: 验证用户名和密码，成功时设置 session cookie 并返回 token
+      parameters:
+      - description: 登录请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 登录成功，返回 token
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+        "400":
+          description: 请求参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "401":
+          description: 用户名或密码错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 用户登录
+      tags:
+      - 认证
+  /auth/logout:
+    post:
+      description: 清除 session cookie 并注销
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 登出成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 用户登出
+      tags:
+      - 认证
+  /auth/status:
+    get:
+      description: 返回当前用户是否已登录
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 返回登录状态
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+      summary: 获取登录状态
+      tags:
+      - 认证
+  /background:
+    get:
+      description: 返回当前页面背景的显示模式、间隔、选中资源等配置
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 背景设置
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BackgroundSettings'
+              type: object
+      summary: 获取背景设置
+      tags:
+      - 背景
+    put:
+      consumes:
+      - application/json
+      description: 修改背景显示模式、切换间隔、选中资源等配置
+      parameters:
+      - description: 背景设置更新
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.UpdateBackgroundRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新背景设置
+      tags:
+      - 背景
+  /bookmark-groups:
+    get:
+      description: 返回所有分组及其下书签的嵌套列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 分组列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.BookmarkGroup'
+                  type: array
+              type: object
+      summary: 获取所有书签分组及书签
+      tags:
+      - 书签
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 分组名称
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createGroupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 创建成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.BookmarkGroup'
+              type: object
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 创建书签分组
+      tags:
+      - 书签
+  /bookmark-groups/{id}:
+    delete:
+      description: 删除分组及其下所有书签
+      parameters:
+      - description: 分组 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 分组不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除书签分组
+      tags:
+      - 书签
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 分组 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 新名称
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateGroupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 分组不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新书签分组名称
+      tags:
+      - 书签
+  /bookmark-groups/reorder:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 分组 ID 列表
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.reorderGroupsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 排序成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 调整分组排序
+      tags:
+      - 书签
+  /bookmarks:
+    get:
+      description: 按分组嵌套返回所有书签
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 书签列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.BookmarkGroup'
+                  type: array
+              type: object
+      summary: 获取所有书签
+      tags:
+      - 书签
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 书签信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createBookmarkRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 创建成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.Bookmark'
+              type: object
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 分组不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 创建书签
+      tags:
+      - 书签
+  /bookmarks/{id}:
+    delete:
+      parameters:
+      - description: 书签 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 书签不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除书签
+      tags:
+      - 书签
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: 书签 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 书签字段
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.updateBookmarkRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.Bookmark'
+              type: object
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 书签不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新书签
+      tags:
+      - 书签
+  /bookmarks/reorder:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 书签 ID 列表
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.reorderBookmarksRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 排序成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 调整书签排序
+      tags:
+      - 书签
+  /config:
+    get:
+      description: 返回当前应用配置（已过滤密码等敏感字段）
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 配置内容
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.SafeConfig'
+              type: object
+      summary: 获取应用配置
+      tags:
+      - 配置
+    put:
+      consumes:
+      - application/json
+      description: 通过 Web 端部分更新 config.json，更新后触发热重载
+      parameters:
+      - description: 配置更新字段
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/service.UpdateConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新应用配置
+      tags:
+      - 配置
+  /media-assets:
+    get:
+      description: 返回所有已上传媒体资源的元数据列表
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 资源列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.MediaAsset'
+                  type: array
+              type: object
+      summary: 获取媒体资源列表
+      tags:
+      - 媒体资源
+    post:
+      consumes:
+      - multipart/form-data
+      description: 上传图片或视频文件，支持 jpg/png/gif/webp/mp4/webm 等格式
+      parameters:
+      - description: 上传文件
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 上传成功
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/model.MediaAsset'
+              type: object
+        "400":
+          description: 文件过大或格式不支持
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 上传媒体资源
+      tags:
+      - 媒体资源
+  /media-assets/{id}:
+    delete:
+      description: 删除媒体资源及其物理文件
+      parameters:
+      - description: 资源 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "400":
+          description: 无效的资源 ID
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 资源不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除媒体资源
+      tags:
+      - 媒体资源
+swagger: "2.0"

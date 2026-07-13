@@ -43,6 +43,26 @@ var (
 	gDBOnce sync.Once // 确保 Init 只执行一次
 )
 
+// ============================================================
+// videos 表分区创建 SQL（不通过 GORM AutoMigrate 管理）
+// ============================================================
+//
+// PostgreSQL 原生分区需要手动创建。AutoMigrate 只会创建父表 videos，
+// 分区需要 DBA 在 psql 中执行以下 SQL。
+//
+// 首次创建分区的示例：
+//
+//	CREATE TABLE videos_0_10m    PARTITION OF videos FOR VALUES FROM (0) TO (10000000);
+//	CREATE TABLE videos_10m_20m  PARTITION OF videos FOR VALUES FROM (10000000) TO (20000000);
+//	-- 继续按需创建...
+//
+// 新分区不自动创建（av 号增量抓取到达新范围时需手动补充）。
+// 建议每抓取完 1000 万条后创建下一个分区。
+//
+// 创建 GIN 索引加速 extra JSONB 列查询：
+//
+//	CREATE INDEX IF NOT EXISTS idx_videos_extra ON videos USING GIN (extra);
+
 // DB 返回全局 *gorm.DB 实例。
 //
 // 调用前必须已通过 Init 完成初始化，否则返回 nil。

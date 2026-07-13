@@ -1,0 +1,132 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ignvex/HomeHub/main/architecture.schema.json",
+  "version": "1.0.0",
+  "project": "HomeHub",
+  "description": "前端架构不可违背规则。任何 AI 工具、协作者、自动化脚本在修改前端代码前必须读取并遵守本文件。",
+
+  "architecture": {
+    "paradigm": "HTMX + React 群岛架构（Component Islands）",
+    "core_rule": "HTMX 拥有页面导航权，React 只作为组件岛嵌入页面。React 不得接管路由。",
+    "navigation_owner": "HTMX",
+    "react_role": "组件岛 — 仅通过 createRoot() 挂载到各页面的 DOM 挂载点",
+    "routing": {
+      "primary": "HTMX (hx-get / hx-post / hx-boost / hx-push-url)",
+      "fallback": "浏览器原生 <a href> + window.location",
+      "forbidden": ["React Router", "react-router-dom", "@reach/router", "TanStack Router", "任何前端路由库"]
+    }
+  },
+
+  "tech_stack": {
+    "build_tool": "Vite 6.x",
+    "ui_framework": "React 19.x",
+    "language": "TypeScript 6.x",
+    "navigation": "HTMX 2.x",
+    "charts": "Chart.js 4.x + react-chartjs-2",
+    "css": "CSS3 + CSS 变量暗色模式",
+    "package_manager": "pnpm 9.x",
+    "lint": "oxlint"
+  },
+
+  "forbidden": {
+    "dependencies": [
+      "react-router-dom",
+      "react-router",
+      "@reach/router",
+      "@tanstack/react-router",
+      "next",
+      "remix",
+      "任何前端路由库"
+    ],
+    "patterns": [
+      "在 React 组件内使用 <BrowserRouter>、<Routes>、<Route>",
+      "在 React 组件内使用 <Navigate>、useNavigate()、useLocation()、<Link>",
+      "使用 createBrowserRouter 或任何前端路由配置",
+      "在 App.tsx 中定义页面路由表",
+      "将多个无关页面塞入同一个组件文件",
+      "在 global.css 中编写页面专属样式"
+    ],
+    "anti_patterns_explanation": {
+      "react_router": "HTMX 负责导航。React Router 会破坏服务端渲染、HTMX 的局部刷新、以及 Go 后端的路由控制。",
+      "monolithic_app_tsx": "App.tsx 仅作为开发环境入口页面。各业务页面由 Go 后端渲染 HTML 壳，页面中各自的 <script> 标签内通过 createRoot 挂载对应的 React 组件。",
+      "page_styles_in_global_css": "global.css 仅包含跨页面复用的基础样式（.card、.btn、.input 等）。页面专属样式放在 src/styles/<page>.css 中。",
+      "multi_page_in_one_file": "每个页面组件应独立为单个 .tsx 文件，保持关注点分离。"
+    }
+  },
+
+  "component_conventions": {
+    "page_component": {
+      "description": "每个页面是一个独立的 React 组件，由 Go 后端渲染的 HTML 页面中的 createRoot() 挂载。",
+      "structure": "src/pages/<PageName>.tsx",
+      "must_not": "不得包含路由逻辑、不得使用 <Route> 或 <Link>",
+      "navigation": "页面间导航使用 HTMX 属性（hx-get/hx-post）或标准 <a> 标签"
+    },
+    "shared_component": {
+      "description": "跨页面复用的 UI 组件。",
+      "structure": "src/components/<ComponentName>.tsx"
+    },
+    "hooks": {
+      "structure": "src/hooks/<hookName>.ts"
+    },
+    "lib": {
+      "description": "API 封装、类型定义、工具函数。",
+      "structure": "src/lib/<module>.ts",
+      "must_never": "不得包含路由导航逻辑"
+    }
+  },
+
+  "css_organization": {
+    "global": {
+      "file": "src/styles/global.css",
+      "rule": "仅包含跨页面复用的基础样式（.card、.btn、.input、.app-header 等）",
+      "must_never": "不得包含页面专属样式"
+    },
+    "theme_tokens": {
+      "file": "src/styles/variables.css",
+      "rule": "CSS 变量定义，暗色模式通过 [data-theme='dark'] 驱动"
+    },
+    "page_specific": {
+      "rule": "每个页面专属样式放在 src/styles/<page>.css 中",
+      "example": "src/styles/home.css、src/styles/login.css、src/styles/shell.css"
+    }
+  },
+
+  "api_communication": {
+    "base_url": "/api/v1",
+    "wrapper": "src/lib/api.ts 中的 api 对象（get/post/put/delete）",
+    "auth": "Cookie-based session（homehub_session），credentials: 'include'",
+    "error_handling": "401 自动重定向到 /login；统一响应格式 { code, message, data }",
+    "must_never": "不得在组件中直接使用 fetch()，必须通过 api 封装"
+  },
+
+  "page_shell": {
+    "public_pages": {
+      "description": "首页和登录页为公开页面，由 Go 后端直接渲染完整 HTML",
+      "pages": ["/", "/login"]
+    },
+    "authenticated_pages": {
+      "description": "认证页面使用 AppShell 侧边栏布局，内容通过 HTMX 局部加载到 #shell-content",
+      "pages": ["/dashboard", "/bookmarks", "/media", "/rss", "/todos", "/search", "/bilibili", "/profile", "/users", "/logs", "/settings", "/appearance"],
+      "shell_component": "src/components/AppShell.tsx",
+      "shell_target": "#shell-content"
+    }
+  },
+
+  "build_and_dev": {
+    "dev_server": "pnpm dev → http://localhost:5173",
+    "proxy": "Vite 自动代理 /api/* 到 Go 后端 :8080",
+    "production": "pnpm build → Go 后端通过 r.Static 服务 web/dist/",
+    "verify_command": "pnpm build"
+  },
+
+  "quality_gates": {
+    "pre_commit": [
+      "pnpm build 必须通过（TypeScript 检查 + Vite 构建）",
+      "oxlint 无严重错误",
+      "不得引入 forbidden.dependencies 中列出的任何依赖"
+    ],
+    "ai_tool_constraint": "任何 AI 编码工具在修改 HomeHub 前端代码前，必须完整读取本文件并逐条对照，违者视为严重架构违规。"
+  },
+
+  "last_updated": "2026-07-12",
+  "reason": "ChatGPT 5.5 引入 react-router-dom 破坏 HTMX 群岛架构，故将此规则固化为不可违背文档。"
+}

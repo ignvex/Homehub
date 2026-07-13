@@ -6,6 +6,17 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [react()],
 
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          charts: ['chart.js', 'react-chartjs-2'],
+        },
+      },
+    },
+  },
+
   // 开发服务器：代理 API 和静态资源到 Go 后端
   server: {
     port: 5173,

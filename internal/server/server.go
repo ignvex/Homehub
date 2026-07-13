@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/ignvex/HomeHub/docs"
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/middleware"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 // Run 启动 HTTP 服务并阻塞，直至收到 SIGINT/SIGTERM 后优雅关闭。
@@ -47,12 +50,15 @@ func Run() error {
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logger())
 
-	// 静态文件与模板
+	// 静态文件
 	r.Static("/static", "./web/static")
-	r.LoadHTMLGlob("web/templates/*.html")
 
 	// 注册路由
 	registerRoutes(r)
+
+	// Swagger 文档路由
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	registerSPAFallback(r)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ignvex/HomeHub/internal/service"
 )
 
 // ============================================================
@@ -27,7 +28,9 @@ func LogList(c *gin.Context) {
 		until, _ = time.Parse(time.RFC3339, u)
 	}
 
-	logs, total, err := svc.Log.ListLogs(page, perPage, level, q, since, until)
+	logs, total, err := svc.Log.ListLogs(service.LogQuery{
+		Page: page, PerPage: perPage, Level: level, Q: q, Since: since, Until: until,
+	})
 	if err != nil {
 		FailInternal(c, "查询日志失败")
 		return

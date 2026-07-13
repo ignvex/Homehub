@@ -1,6 +1,6 @@
 # HomeHub 多阶段构建 Dockerfile
 # 构建: docker build -t homehub .
-# 运行: docker run -d -p 8080:8080 -v $(pwd)/config.json:/app/config.json homehub
+# 运行: docker run -d -p 8080:8080 -v $(pwd)/config.json:/app/config.json -v $(pwd)/uploads:/app/web/static/uploads homehub
 
 # ============================================================
 # 阶段 1: 构建二进制
@@ -34,6 +34,9 @@ COPY --from=builder /build/homehub .
 
 # 复制 Web 静态资源
 COPY web/ ./web/
+
+# 创建上传目录
+RUN mkdir -p /app/web/static/uploads
 
 EXPOSE 8080
 

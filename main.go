@@ -83,6 +83,8 @@ func main() {
 		&model.BookmarkGroup{},
 		&model.Bookmark{},
 		&model.LogEntry{},
+		&model.MediaAsset{},
+		&model.AvatarCache{},
 		&model.RSSFeed{},
 		&model.RSSEntry{},
 		&model.Todo{},

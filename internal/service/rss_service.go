@@ -218,6 +218,11 @@ func (s *RSSService) FetchFeed(id uint64) error {
 		return fmt.Errorf("查询订阅源失败: %w", err)
 	}
 
+	// 每次抓取前复验 URL（防止 DNS rebinding 绕过创建时的校验）
+	if err := validateFeedURL(feed.URL); err != nil {
+		return fmt.Errorf("订阅源 URL 校验失败: %w", err)
+	}
+
 	// 抓取并解析
 	parsed, err := s.fetchAndParse(feed.URL)
 	if err != nil {
@@ -516,7 +521,10 @@ func validateFeedURL(rawURL string) error {
 // 通过 config.ResolveProxy 解析 RSS 模块的代理配置，
 // 支持 HTTP 代理。配置为空时直连。
 func buildRSSHTTPClient() *req.Client {
-	transport := &http.Transport{}
+	transport := &http.Transport{
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
 
 	cfg := config.Get()
 	if cfg != nil {
@@ -531,5 +539,15 @@ func buildRSSHTTPClient() *req.Client {
 
 	client := req.C().SetTimeout(rssHTTPTimeout)
 	client.GetClient().Transport = transport
+	// 禁止自动跟随重定向（防止 SSRF 通过重定向绕过 IP 校验）
+	client.GetClient().CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("超过最大重定向次数")
+		}
+		if err := validateFeedURL(req.URL.String()); err != nil {
+			return fmt.Errorf("重定向目标校验失败: %w", err)
+		}
+		return nil
+	}
 	return client
 }

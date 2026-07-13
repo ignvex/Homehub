@@ -1,15 +1,13 @@
-import { useTheme } from '@/hooks/useTheme';
+import { useTheme } from '@/hooks/useTheme'
 
 export function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, toggleTheme } = useTheme()
+  const isDark = theme === 'dark'
 
   return (
-    <button
-      className="icon-btn"
-      aria-label="切换暗色模式"
-      onClick={toggleTheme}
-    >
-      {theme === 'light' ? '🌓' : '☀️'}
+    <button className="theme-rail" type="button" onClick={toggleTheme} aria-label={isDark ? '切换到浅色主题' : '切换到深色主题'}>
+      <span aria-hidden="true">{isDark ? '☀' : '☾'}</span>
+      <span>{isDark ? '浅色' : '深色'}</span>
     </button>
-  );
+  )
 }

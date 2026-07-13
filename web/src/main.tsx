@@ -7,6 +7,13 @@ import '@/styles/variables.css'
 import '@/styles/reset.css'
 import '@/styles/global.css'
 
+// 页面专属样式（按需加载，构建时由 Vite 合并）
+import '@/styles/home.css'
+import '@/styles/login.css'
+import '@/styles/shell.css'
+import '@/styles/dashboard.css'
+import '@/styles/operations.css'
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

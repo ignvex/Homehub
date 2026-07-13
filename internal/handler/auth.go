@@ -3,12 +3,26 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/middleware"
 	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/ignvex/HomeHub/internal/service"
 )
+
+// 登录限速：记录每个用户名的失败尝试次数和时间戳。
+var (
+	loginAttempts   = sync.Map{} // map[string]loginAttempt
+	loginMaxRetries = 5
+	loginCooldown   = 15 * time.Minute
+)
+
+type loginAttempt struct {
+	count    int
+	lockedAt time.Time
+}
 
 // ============================================================
 // 认证 API
@@ -39,9 +53,30 @@ func AuthLogin(c *gin.Context) {
 		return
 	}
 
+	// 登录限速：检查是否被锁定
+	if att, ok := loginAttempts.Load(req.Username); ok {
+		a := att.(loginAttempt)
+		if a.count >= loginMaxRetries {
+			if time.Since(a.lockedAt) < loginCooldown {
+				Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
+				return
+			}
+			// 冷却时间已过，重置
+			loginAttempts.Delete(req.Username)
+		}
+	}
+
 	token, err := svc.Auth.Login(req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrAuthFailed) {
+			// 记录失败尝试
+			att, _ := loginAttempts.LoadOrStore(req.Username, loginAttempt{})
+			a := att.(loginAttempt)
+			a.count++
+			if a.count >= loginMaxRetries {
+				a.lockedAt = time.Now()
+			}
+			loginAttempts.Store(req.Username, a)
 			Fail(c, http.StatusUnauthorized, CodeAuthFailed, "用户名或密码错误")
 			return
 		}
@@ -52,6 +87,8 @@ func AuthLogin(c *gin.Context) {
 		FailInternal(c, "登录失败")
 		return
 	}
+	// 登录成功，清除限速记录
+	loginAttempts.Delete(req.Username)
 
 	// 设置 Cookie
 	c.SetCookie(

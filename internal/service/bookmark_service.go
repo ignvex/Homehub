@@ -111,17 +111,13 @@ func (s *BookmarkService) ReorderGroups(ids []uint64) error {
 // 返回所有分组，每个分组包含其下的书签，按 sort_order 排序。
 func (s *BookmarkService) ListBookmarks() ([]model.BookmarkGroup, error) {
 	var groups []model.BookmarkGroup
-	if err := s.db.Order("priority DESC, sort_order ASC").Find(&groups).Error; err != nil {
+	// 使用 Preload 一次性加载关联书签，避免 N+1 查询
+	if err := s.db.Order("priority DESC, sort_order ASC").
+		Preload("Bookmarks", func(db *gorm.DB) *gorm.DB {
+			return db.Order("priority DESC, sort_order ASC")
+		}).
+		Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("查询分组列表失败: %w", err)
-	}
-
-	for i := range groups {
-		var bookmarks []model.Bookmark
-		if err := s.db.Where("group_id = ?", groups[i].ID).
-			Order("priority DESC, sort_order ASC").Find(&bookmarks).Error; err != nil {
-			return nil, fmt.Errorf("查询书签列表失败: %w", err)
-		}
-		groups[i].Bookmarks = bookmarks
 	}
 	return groups, nil
 }

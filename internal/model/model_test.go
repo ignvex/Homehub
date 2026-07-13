@@ -55,3 +55,62 @@ func TestBaseModelZeroValue(t *testing.T) {
 		t.Error("zero-value DeletedAt.Valid = true, want false")
 	}
 }
+
+// TestGravatarHash 验证邮箱的 Gravatar MD5 哈希计算。
+func TestGravatarHash(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    string
+		wantHash string
+	}{
+		{
+			name:     "standard email",
+			email:    "MyEmailAddress@example.com",
+			wantHash: "0bc83cb571cd1c50ba6f3e8a78ef1346",
+		},
+		{
+			name:     "email with spaces",
+			email:    "  MyEmailAddress@example.com  ",
+			wantHash: "0bc83cb571cd1c50ba6f3e8a78ef1346",
+		},
+		{
+			name:     "empty email",
+			email:    "",
+			wantHash: "",
+		},
+		{
+			name:     "lowercase gmail",
+			email:    "test@gmail.com",
+			wantHash: "1aedb8d9dc4751e229a335e371db8058",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := User{Email: tt.email}
+			got := u.GravatarHash()
+			if got != tt.wantHash {
+				t.Errorf("GravatarHash(%q) = %q, want %q", tt.email, got, tt.wantHash)
+			}
+		})
+	}
+}
+
+// TestGravatarURL 验证 Gravatar URL 生成。
+func TestGravatarURL(t *testing.T) {
+	u := User{Email: "MyEmailAddress@example.com"}
+	url := u.GravatarURL(200, "identicon", "g")
+	want := "https://www.gravatar.com/avatar/0bc83cb571cd1c50ba6f3e8a78ef1346?s=200&d=identicon&r=g"
+	if url != want {
+		t.Errorf("GravatarURL() = %q, want %q", url, want)
+	}
+}
+
+// TestGravatarURLEmptyEmail 验证空邮箱返回空 URL。
+func TestGravatarURLEmptyEmail(t *testing.T) {
+	u := User{Email: ""}
+	url := u.GravatarURL(200, "identicon", "g")
+	if url != "" {
+		t.Errorf("GravatarURL with empty email = %q, want empty string", url)
+	}
+}
