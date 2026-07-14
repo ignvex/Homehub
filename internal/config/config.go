@@ -6,6 +6,9 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -82,22 +85,19 @@ type ProxyEntry struct {
 
 // ProxyServiceConfig 各服务引用代理的通用配置段。
 //
-// UseProxy 为服务级代理开关，ProxyNames 为按优先级排列的代理名称列表。
-// 抓取时按顺序尝试代理，全失败则退回到直连。
+// ProxyNames 为按优先级排列的代理名称列表，引用 proxy 池中的代理。
+// 空列表表示直连，多个名称形成 fallback 链。
 type ProxyServiceConfig struct {
-	UseProxy   bool     `json:"use_proxy"`   // 是否启用代理
-	ProxyNames []string `json:"proxy_names"` // 代理名称列表（按优先级排列，fallback 链）
+	ProxyNames []string `json:"proxy_names"` // 代理名称列表（按优先级排列，fallback 链），空=直连
 }
 
 // GravatarConfig Gravatar 头像配置。
 type GravatarConfig struct {
-	Enabled        bool   `json:"enabled"`          // 是否启用以 Gravatar 生成头像
-	DefaultStyle   string `json:"default_style"`    // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
-	DefaultSize    int    `json:"default_size"`     // 头像尺寸（像素），默认 200
-	Rating         string `json:"rating"`           // 内容分级：g / pg / r / x
-	UseProxy       bool   `json:"use_proxy"`        // 是否通过代理下载 Gravatar
-	ProxyName      string `json:"proxy_name"`       // 引用的代理名称（对应 proxy 列表中的 name）
-	CustomProxyURL string `json:"custom_proxy_url"` // 自定义代理 URL（优先级高于 proxy_name）
+	Enabled      bool     `json:"enabled"`       // 是否启用以 Gravatar 生成头像
+	DefaultStyle string   `json:"default_style"` // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
+	DefaultSize  int      `json:"default_size"`  // 头像尺寸（像素），默认 200
+	Rating       string   `json:"rating"`        // 内容分级：g / pg / r / x
+	ProxyNames   []string `json:"proxy_names"`   // 代理名称列表（引用 proxy 池），空=直连
 }
 
 // BookmarkConfig 书签模块配置。
@@ -133,6 +133,9 @@ type BilibiliConfig struct {
 	ProxyURL string   `json:"proxy_url"` // 代理地址（空=直连），不复用全局 proxy 列表
 	UAPool   []string `json:"ua_pool"`   // UA 轮换池
 
+	// === 调试 ===
+	Debug bool `json:"debug"` // 调试模式：开启后无视工作时间限制，全天候运行
+
 	// === 全局速率 ===
 	RateMs          int `json:"rate_ms"`           // 请求间隔（毫秒），默认 2000
 	ActiveStartHour int `json:"active_start_hour"` // 活跃时段起点，默认 0
@@ -161,11 +164,15 @@ type LifecycleConfig struct {
 
 // DiscoveryConfig 发现策略配置。
 type DiscoveryConfig struct {
-	IntervalHours       int  `json:"interval_hours"`         // 发现轮询间隔（h），默认 12
-	PopularLimit        int  `json:"popular_limit"`          // 热门榜条数，默认 50
-	RankingRidsPerRound int  `json:"ranking_rids_per_round"` // 每轮查询几个分区排行榜，默认 5
-	RankingLimit        int  `json:"ranking_limit"`          // 每个分区排行榜条数，默认 100
-	DynamicEnabled      bool `json:"dynamic_enabled"`        // 是否启用动态流入口
+	IntervalHours        int  `json:"interval_hours"`         // 发现轮询间隔（h），默认 12
+	PopularLimit         int  `json:"popular_limit"`          // 热门榜条数，默认 50
+	RankingRidsPerRound  int  `json:"ranking_rids_per_round"` // 每轮查询几个分区排行榜，默认 5
+	RankingLimit         int  `json:"ranking_limit"`          // 每个分区排行榜条数，默认 100
+	DynamicEnabled       bool `json:"dynamic_enabled"`        // 是否启用动态流入口
+	WeeklyEnabled        bool `json:"weekly_enabled"`         // 每周必看入口
+	WeeklySeriesCount    int  `json:"weekly_series_count"`    // 每周必看取最近几期，默认 3
+	PreciousEnabled      bool `json:"precious_enabled"`       // 入站必刷入口
+	UserContentDiscovery bool `json:"user_content_discovery"` // 发现 UP 主后自动拉取其全部投稿
 }
 
 // SnapshotConfig 快照策略配置。
@@ -178,18 +185,16 @@ type SnapshotConfig struct {
 
 // Config 应用顶层配置，对应 config.json 文件结构。
 type Config struct {
-	Server       ServerConfig     `json:"server"`
-	Database     DatabaseConfig   `json:"database"`
-	Auth         AuthConfig       `json:"auth"`
-	Log          LogConfig        `json:"log"`
-	Background   BackgroundConfig `json:"background"` // 兼容旧版配置
-	WebUI        WebUIConfig      `json:"webui"`
-	ProxyEnabled bool             `json:"proxy_enabled"` // 全局代理总开关（关闭时所有代理均无效）
-	Proxy        []ProxyEntry     `json:"proxy,omitempty"`
-	Gravatar     GravatarConfig   `json:"gravatar"`
-	Bookmark     BookmarkConfig   `json:"bookmark"`
-	RSS          RSSConfig        `json:"rss"`
-	Bilibili     BilibiliConfig   `json:"bilibili"`
+	Server   ServerConfig   `json:"server"`
+	Database DatabaseConfig `json:"database"`
+	Auth     AuthConfig     `json:"auth"`
+	Log      LogConfig      `json:"log"`
+	WebUI    WebUIConfig    `json:"webui"`
+	Proxy    []ProxyEntry   `json:"proxy,omitempty"`
+	Gravatar GravatarConfig `json:"gravatar"`
+	Bookmark BookmarkConfig `json:"bookmark"`
+	RSS      RSSConfig      `json:"rss"`
+	Bilibili BilibiliConfig `json:"bilibili"`
 }
 
 var (
@@ -211,45 +216,25 @@ func atomicStore(cfg *Config) {
 	globalConfig.Store(cfg)
 }
 
-// ResolveProxy 通用代理解析，支持多代理 fallback 链。
+// ResolveProxy 从代理池中按名称查找可用的代理条目。
 //
-// 参数：
-//   - serviceCfg：服务自身的代理配置（含 UseProxy 和 ProxyNames）
-//   - customURL：自定义代理 URL（优先级最高，如 Gravatar 的 custom_proxy_url）
-//
-// 返回代理地址列表（按优先级排列），空切片表示直连。
-// 调用方按顺序尝试每个代理，失败则尝试下一个。
-func ResolveProxy(serviceCfg ProxyServiceConfig, customURL string) []string {
+// proxyNames 为按优先级排列的代理名称列表，空列表或未匹配到任何代理时返回 nil。
+// 返回的 ProxyEntry 包含 type 字段（http/socks5），调用方据此选择连接方式。
+func ResolveProxy(proxyNames []string) []ProxyEntry {
+	if len(proxyNames) == 0 {
+		return nil
+	}
+
 	cfg := Get()
 	if cfg == nil {
 		return nil
 	}
 
-	// 最高优先级：自定义代理 URL
-	if customURL != "" {
-		return []string{customURL}
-	}
-
-	// 全局开关关闭 → 直连
-	if !cfg.ProxyEnabled {
-		return nil
-	}
-
-	// 服务未启用代理 → 直连
-	if !serviceCfg.UseProxy || len(serviceCfg.ProxyNames) == 0 {
-		return nil
-	}
-
-	// 按 ProxyNames 顺序收集可用的代理地址
-	result := make([]string, 0, len(serviceCfg.ProxyNames))
-	for _, name := range serviceCfg.ProxyNames {
+	result := make([]ProxyEntry, 0, len(proxyNames))
+	for _, name := range proxyNames {
 		for _, p := range cfg.Proxy {
 			if p.Name == name && p.Enabled {
-				addr := p.HTTPURL
-				if addr == "" {
-					continue
-				}
-				result = append(result, addr)
+				result = append(result, p)
 				break
 			}
 		}
@@ -259,12 +244,9 @@ func ResolveProxy(serviceCfg ProxyServiceConfig, customURL string) []string {
 }
 
 // ListEnabledProxies 返回当前所有启用的代理列表。
-//
-// 供 API 端点在 /config 响应中返回可用代理列表，
-// 前端可根据此列表选择代理。
 func ListEnabledProxies() []ProxyEntry {
 	cfg := Get()
-	if cfg == nil || !cfg.ProxyEnabled {
+	if cfg == nil {
 		return nil
 	}
 
@@ -275,4 +257,35 @@ func ListEnabledProxies() []ProxyEntry {
 		}
 	}
 	return result
+}
+
+// AtomicJSONUpdate 以保留非结构体字段（如 _comment）的方式更新 config.json。
+//
+// 读入原始 JSON 为 map，调用 fn 修改 map，写入文件后触发热重载。
+// 与直接序列化 Config 结构体的方式不同，本函数保留所有未映射到结构体的 JSON 字段。
+func AtomicJSONUpdate(path string, fn func(raw map[string]any) error) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+
+	if err := fn(raw); err != nil {
+		return err
+	}
+
+	out, err := json.MarshalIndent(raw, "", "    ")
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+
+	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
+	return Load(path)
 }
