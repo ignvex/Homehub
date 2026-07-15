@@ -3,10 +3,8 @@ package service
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/ignvex/HomeHub/internal/config"
-	"github.com/ignvex/HomeHub/internal/logger"
 )
 
 // ConfigService 配置管理业务服务。
@@ -21,17 +19,16 @@ func NewConfigService() *ConfigService {
 
 // SafeConfig 对外暴露的安全配置视图，不含数据库密码、session_secret 等敏感字段。
 type SafeConfig struct {
-	Server       config.ServerConfig     `json:"server"`
-	Database     SafeDatabaseConfig      `json:"database"`
-	Auth         SafeAuthConfig          `json:"auth"`
-	Log          config.LogConfig        `json:"log"`
-	Background   config.BackgroundConfig `json:"background"`
-	ProxyEnabled bool                    `json:"proxy_enabled"`
-	Proxy        []SafeProxyEntry        `json:"proxy"`
-	Gravatar     config.GravatarConfig   `json:"gravatar"`
-	Bookmark     config.BookmarkConfig   `json:"bookmark"`
-	RSS          config.RSSConfig        `json:"rss"`
-	Bilibili     SafeBilibiliConfig      `json:"bilibili"`
+	Server   config.ServerConfig   `json:"server"`
+	Database SafeDatabaseConfig    `json:"database"`
+	Auth     SafeAuthConfig        `json:"auth"`
+	Log      config.LogConfig      `json:"log"`
+	WebUI    config.WebUIConfig    `json:"webui"`
+	Proxy    []SafeProxyEntry      `json:"proxy"`
+	Gravatar config.GravatarConfig `json:"gravatar"`
+	Bookmark config.BookmarkConfig `json:"bookmark"`
+	RSS      config.RSSConfig      `json:"rss"`
+	Bilibili SafeBilibiliConfig    `json:"bilibili"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。
@@ -73,12 +70,6 @@ func maskProxyList(proxies []config.ProxyEntry) []SafeProxyEntry {
 	return result
 }
 
-// maskGravatarConfig 脱敏 Gravatar 配置中的自定义代理 URL。
-func maskGravatarConfig(cfg config.GravatarConfig) config.GravatarConfig {
-	cfg.CustomProxyURL = ""
-	return cfg
-}
-
 // maskProxyEntry 将 ProxyEntry 脱敏为 SafeProxyEntry。
 func maskProxyEntry(p config.ProxyEntry) SafeProxyEntry {
 	return SafeProxyEntry{
@@ -107,13 +98,12 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		Auth: SafeAuthConfig{
 			Username: cfg.Auth.Username,
 		},
-		Log:          cfg.Log,
-		Background:   cfg.Background,
-		ProxyEnabled: cfg.ProxyEnabled,
-		Proxy:        maskProxyList(cfg.Proxy),
-		Gravatar:     maskGravatarConfig(cfg.Gravatar),
-		Bookmark:     cfg.Bookmark,
-		RSS:          cfg.RSS,
+		Log:      cfg.Log,
+		WebUI:    cfg.WebUI,
+		Proxy:    maskProxyList(cfg.Proxy),
+		Gravatar: cfg.Gravatar,
+		Bookmark: cfg.Bookmark,
+		RSS:      cfg.RSS,
 		Bilibili: SafeBilibiliConfig{
 			Enabled:        cfg.Bilibili.Enabled,
 			VideoEnabled:   cfg.Bilibili.VideoEnabled,
@@ -128,16 +118,15 @@ func (s *ConfigService) GetSafe() SafeConfig {
 //
 // 所有顶级字段均为可选（指针类型），nil 表示不修改该部分。
 type UpdateConfigRequest struct {
-	Server       *ServerUpdate            `json:"server,omitempty"`
-	Database     *DatabaseUpdate          `json:"database,omitempty"`
-	Auth         *AuthUpdate              `json:"auth,omitempty"`
-	Log          *LogUpdate               `json:"log,omitempty"`
-	Background   *config.BackgroundConfig `json:"background,omitempty"`
-	ProxyEnabled *bool                    `json:"proxy_enabled,omitempty"`
-	Proxy        *[]config.ProxyEntry     `json:"proxy,omitempty"`
-	Gravatar     *config.GravatarConfig   `json:"gravatar,omitempty"`
-	Bookmark     *config.BookmarkConfig   `json:"bookmark,omitempty"`
-	RSS          *config.RSSConfig        `json:"rss,omitempty"`
+	Server   *ServerUpdate          `json:"server,omitempty"`
+	Database *DatabaseUpdate        `json:"database,omitempty"`
+	Auth     *AuthUpdate            `json:"auth,omitempty"`
+	Log      *LogUpdate             `json:"log,omitempty"`
+	WebUI    *config.WebUIConfig    `json:"webui,omitempty"`
+	Proxy    *[]config.ProxyEntry   `json:"proxy,omitempty"`
+	Gravatar *config.GravatarConfig `json:"gravatar,omitempty"`
+	Bookmark *config.BookmarkConfig `json:"bookmark,omitempty"`
+	RSS      *config.RSSConfig      `json:"rss,omitempty"`
 }
 
 // ServerUpdate 服务器配置更新字段。
@@ -172,101 +161,125 @@ type LogUpdate struct {
 
 // Update 将 Web 端的部分更新应用到 config.json。
 //
-// 实现为"读取-合并-写回"模式。
-// 写回成功后调用 config.Load 重新加载，触发热重载。
+// 使用 AtomicJSONUpdate 保留 JSON 中的非结构体字段（如 _comment）。
+// 写回成功后触发热重载。
 func (s *ConfigService) Update(req UpdateConfigRequest) error {
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("配置未加载")
-	}
+	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
+		if req.Server != nil {
+			ensureMap(raw, "server")
+			srv := raw["server"].(map[string]any)
+			if req.Server.Host != nil {
+				srv["host"] = *req.Server.Host
+			}
+			if req.Server.Port != nil {
+				srv["port"] = float64(*req.Server.Port)
+			}
+		}
+		if req.Database != nil {
+			ensureMap(raw, "database")
+			db := raw["database"].(map[string]any)
+			if req.Database.Host != nil {
+				db["host"] = *req.Database.Host
+			}
+			if req.Database.Port != nil {
+				db["port"] = float64(*req.Database.Port)
+			}
+			if req.Database.User != nil {
+				db["user"] = *req.Database.User
+			}
+			if req.Database.Password != nil {
+				db["password"] = *req.Database.Password
+			}
+			if req.Database.DBName != nil {
+				db["dbname"] = *req.Database.DBName
+			}
+			if req.Database.SSLMode != nil {
+				db["sslmode"] = *req.Database.SSLMode
+			}
+		}
+		if req.Auth != nil {
+			ensureMap(raw, "auth")
+			auth := raw["auth"].(map[string]any)
+			if req.Auth.Username != nil {
+				auth["username"] = *req.Auth.Username
+			}
+			if req.Auth.Password != nil {
+				auth["password"] = *req.Auth.Password
+			}
+			if req.Auth.SessionSecret != nil {
+				auth["session_secret"] = *req.Auth.SessionSecret
+			}
+		}
+		if req.Log != nil {
+			ensureMap(raw, "log")
+			logMap := raw["log"].(map[string]any)
+			if req.Log.Level != nil {
+				logMap["level"] = *req.Log.Level
+			}
+			if req.Log.Format != nil {
+				logMap["format"] = *req.Log.Format
+			}
+			if req.Log.DBWriter != nil {
+				logMap["db_writer"] = *req.Log.DBWriter
+			}
+		}
+		if req.WebUI != nil {
+			raw["webui"] = structToMap(*req.WebUI)
+		}
+		if req.Proxy != nil {
+			raw["proxy"] = structToMap(*req.Proxy)
+		}
+		if req.Gravatar != nil {
+			raw["gravatar"] = structToMap(*req.Gravatar)
+		}
+		if req.Bookmark != nil {
+			raw["bookmark"] = structToMap(*req.Bookmark)
+		}
+		if req.RSS != nil {
+			raw["rss"] = structToMap(*req.RSS)
+		}
+		return nil
+	})
+}
 
-	// 合并更新（浅拷贝后按字段覆盖）
-	merged := *cfg
+// ensureMap 确保 raw[key] 为 map[string]any。
+func ensureMap(raw map[string]any, key string) {
+	if _, ok := raw[key].(map[string]any); !ok {
+		raw[key] = map[string]any{}
+	}
+}
 
-	if req.Server != nil {
-		if req.Server.Host != nil {
-			merged.Server.Host = *req.Server.Host
-		}
-		if req.Server.Port != nil {
-			merged.Server.Port = *req.Server.Port
-		}
-	}
-	if req.Database != nil {
-		if req.Database.Host != nil {
-			merged.Database.Host = *req.Database.Host
-		}
-		if req.Database.Port != nil {
-			merged.Database.Port = *req.Database.Port
-		}
-		if req.Database.User != nil {
-			merged.Database.User = *req.Database.User
-		}
-		if req.Database.Password != nil {
-			merged.Database.Password = *req.Database.Password
-		}
-		if req.Database.DBName != nil {
-			merged.Database.DBName = *req.Database.DBName
-		}
-		if req.Database.SSLMode != nil {
-			merged.Database.SSLMode = *req.Database.SSLMode
-		}
-	}
-	if req.Auth != nil {
-		if req.Auth.Username != nil {
-			merged.Auth.Username = *req.Auth.Username
-		}
-		if req.Auth.Password != nil {
-			merged.Auth.Password = *req.Auth.Password
-		}
-		if req.Auth.SessionSecret != nil {
-			merged.Auth.SessionSecret = *req.Auth.SessionSecret
-		}
-	}
-	if req.Log != nil {
-		if req.Log.Level != nil {
-			merged.Log.Level = *req.Log.Level
-		}
-		if req.Log.Format != nil {
-			merged.Log.Format = *req.Log.Format
-		}
-		if req.Log.DBWriter != nil {
-			merged.Log.DBWriter = *req.Log.DBWriter
-		}
-	}
-	if req.Background != nil {
-		merged.Background = *req.Background
-	}
-	if req.ProxyEnabled != nil {
-		merged.ProxyEnabled = *req.ProxyEnabled
-	}
-	if req.Proxy != nil {
-		merged.Proxy = *req.Proxy
-	}
-	if req.Gravatar != nil {
-		merged.Gravatar = *req.Gravatar
-	}
-	if req.Bookmark != nil {
-		merged.Bookmark = *req.Bookmark
-	}
-	if req.RSS != nil {
-		merged.RSS = *req.RSS
-	}
+// structToMap 将任意值通过 JSON 往返转换为 map/切片等通用类型。
+func structToMap(v any) any {
+	data, _ := json.Marshal(v)
+	var result any
+	json.Unmarshal(data, &result)
+	return result
+}
 
-	// 写回 config.json
-	data, err := json.MarshalIndent(merged, "", "    ")
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
+// ToggleBilibiliCrawler 切换指定 Bilibili 爬虫模块的启用状态。
+//
+// 通过修改 config.json 中对应的 _enabled 字段并触发热重载实现。
+// 启用子模块时总开关自动开启。使用 AtomicJSONUpdate 保留 _comment 字段。
+func (s *ConfigService) ToggleBilibiliCrawler(crawlerType string, enabled bool) error {
+	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
+		ensureMap(raw, "bilibili")
+		bili := raw["bilibili"].(map[string]any)
 
-	if err := os.WriteFile("config.json", data, 0600); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
-	}
+		if enabled {
+			bili["enabled"] = true
+		}
 
-	// 触发热重载
-	if err := config.Load("config.json"); err != nil {
-		return fmt.Errorf("重新加载配置失败: %w", err)
-	}
-
-	logger.Info("配置文件已通过 Web 端更新并热重载")
-	return nil
+		switch crawlerType {
+		case "video":
+			bili["video_enabled"] = enabled
+		case "article":
+			bili["article_enabled"] = enabled
+		case "user":
+			bili["user_enabled"] = enabled
+		default:
+			return fmt.Errorf("无效的爬虫类型: %s", crawlerType)
+		}
+		return nil
+	})
 }

@@ -17,8 +17,13 @@ func serveSPA(c *gin.Context) {
 func registerSPAFallback(r *gin.Engine) {
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
-		if c.Request.Method != http.MethodGet || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/swagger/") || filepath.Ext(path) != "" {
+		if c.Request.Method != http.MethodGet || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/swagger/") {
 			c.Status(http.StatusNotFound)
+			return
+		}
+		// SPA 静态资源：带扩展名的请求从 dist 目录返回（JS/CSS/图片/favicon 等）
+		if filepath.Ext(path) != "" {
+			c.File("web/dist" + path)
 			return
 		}
 		serveSPA(c)
@@ -65,6 +70,12 @@ func registerRoutes(r *gin.Engine) {
 
 		// 搜索（只读）
 		publicAPI.GET("/search", handler.SearchAll)
+
+		// 剪贴板（公开读写，无需认证）
+		publicAPI.GET("/pastes", handler.PasteList)
+		publicAPI.POST("/pastes", handler.PasteCreate)
+		publicAPI.GET("/pastes/:id", handler.PasteGet)
+		publicAPI.DELETE("/pastes/:id", handler.PasteDelete)
 	}
 
 	// --- 以下路由需要认证 ---
@@ -140,6 +151,14 @@ func registerRoutes(r *gin.Engine) {
 			rssGroup.POST("/groups", handler.RSSCreateGroup)
 			rssGroup.PUT("/groups/:id", handler.RSSUpdateGroup)
 			rssGroup.DELETE("/groups/:id", handler.RSSDeleteGroup)
+		}
+
+		// 余额监控
+		balance := authRequired.Group("/balances")
+		{
+			balance.GET("", handler.BalanceList)
+			balance.GET("/status", handler.BalanceStatus)
+			balance.POST("/refresh", handler.BalanceRefresh)
 		}
 
 		// TODO 待办

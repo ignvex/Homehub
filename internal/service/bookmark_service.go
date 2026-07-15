@@ -24,10 +24,14 @@ func NewBookmarkService(db *gorm.DB) *BookmarkService {
 // 书签分组操作
 // ============================================================
 
-// ListGroups 返回所有分组，按 sort_order 升序排列。
+// ListGroups 返回所有分组及其书签，按 sort_order 升序排列。
 func (s *BookmarkService) ListGroups() ([]model.BookmarkGroup, error) {
 	var groups []model.BookmarkGroup
-	if err := s.db.Order("priority DESC, sort_order ASC").Find(&groups).Error; err != nil {
+	if err := s.db.Order("priority DESC, sort_order ASC").
+		Preload("Bookmarks", func(db *gorm.DB) *gorm.DB {
+			return db.Order("priority DESC, sort_order ASC")
+		}).
+		Find(&groups).Error; err != nil {
 		return nil, fmt.Errorf("查询分组列表失败: %w", err)
 	}
 	return groups, nil

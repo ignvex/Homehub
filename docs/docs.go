@@ -838,6 +838,90 @@ const docTemplate = `{
                 }
             }
         },
+        "/balances": {
+            "get": {
+                "description": "返回所有已配置监控点的最新查询结果（内存缓存），包括 DeepSeek、智谱 AI、one-api/new-api 中转站",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "余额监控"
+                ],
+                "summary": "获取所有余额",
+                "responses": {
+                    "200": {
+                        "description": "监控点列表",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/service.TargetResult"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/balances/refresh": {
+            "post": {
+                "description": "立即查询所有启用的监控点，返回最新结果（同步执行，可能耗时）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "余额监控"
+                ],
+                "summary": "手动刷新余额",
+                "responses": {
+                    "200": {
+                        "description": "刷新后的监控点列表",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/service.TargetResult"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/balances/status": {
+            "get": {
+                "description": "返回模块开关状态、监控点总数、成功/失败计数、上次刷新时间",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "余额监控"
+                ],
+                "summary": "余额监控状态",
+                "responses": {
+                    "200": {
+                        "description": "监控状态概览",
+                        "schema": {
+                            "$ref": "#/definitions/service.BalanceStatus"
+                        }
+                    },
+                    "500": {
+                        "description": "服务内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/bilibili/articles": {
             "get": {
                 "description": "分页查询已抓取的 Bilibili 专栏文章，支持关键词搜索、作者筛选和排序",
@@ -902,6 +986,41 @@ const docTemplate = `{
                 }
             }
         },
+        "/bilibili/articles/:cvid/snapshots": {
+            "get": {
+                "description": "返回专栏统计数据的时间序列快照",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取专栏快照",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "专栏 CV 号",
+                        "name": "cvid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "快照列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 cvid",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/bilibili/articles/{cvid}": {
             "get": {
                 "description": "根据 CV 号获取单个专栏文章的基本信息",
@@ -939,7 +1058,7 @@ const docTemplate = `{
         },
         "/bilibili/crawlers": {
             "get": {
-                "description": "返回所有 Bilibili 爬虫（视频/专栏/用户）的启用状态、窗口进度和完成百分比",
+                "description": "返回所有 Bilibili 爬虫（视频/专栏/用户）的启用状态、入库数据量和窗口扫描进度",
                 "produces": [
                     "application/json"
                 ],
@@ -949,13 +1068,60 @@ const docTemplate = `{
                 "summary": "获取爬虫状态列表",
                 "responses": {
                     "200": {
-                        "description": "爬虫状态列表",
+                        "description": "爬虫状态列表（stored_count / window_base / window_scanned / window_progress_pct）",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
                     "500": {
                         "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/crawlers/{type}": {
+            "patch": {
+                "description": "修改 config.json 中指定爬虫模块的 enabled 字段并触发热重载",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "切换爬虫开关",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "爬虫类型：video / article / user",
+                        "name": "type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "{ enabled: bool }",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "切换成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的爬虫类型",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -1073,6 +1239,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/bilibili/stats/lifecycle": {
+            "get": {
+                "description": "返回各生命周期阶段 (newborn/growing/mature/archived) 的视频/专栏/用户数量",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 爬虫"
+                ],
+                "summary": "获取生命周期统计",
+                "responses": {
+                    "200": {
+                        "description": "生命周期分布",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/bilibili/users": {
             "get": {
                 "description": "分页查询已抓取的 Bilibili 用户，支持关键词搜索、等级/VIP状态筛选和排序",
@@ -1110,8 +1296,8 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "VIP 状态筛选（0=非VIP, 1=大会员, -1=全部）",
-                        "name": "vip_status",
+                        "description": "VIP 等级筛选（0=非会员, 1=月度/3=年度/7=十年/15=百年, -1=全部）",
+                        "name": "vip_role",
                         "in": "query"
                     },
                     {
@@ -1347,6 +1533,41 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bilibili/videos/:aid/snapshots": {
+            "get": {
+                "description": "返回视频播放量等统计字段的时间序列快照",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Bilibili 数据查询"
+                ],
+                "summary": "获取视频快照",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "视频 AV 号",
+                        "name": "aid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "快照列表",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "无效的 aid",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2041,6 +2262,157 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "资源不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/pastes": {
+            "post": {
+                "description": "上传文本内容，返回公开 ID 和删除密钥。无需认证。",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "剪贴板"
+                ],
+                "summary": "创建粘贴",
+                "parameters": [
+                    {
+                        "description": "粘贴内容",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.createPasteRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "创建成功",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/handler.pasteResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "内容为空或超长",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/pastes/{id}": {
+            "get": {
+                "description": "根据公开 ID 获取粘贴内容。已过期的粘贴返回 404。无需认证。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "剪贴板"
+                ],
+                "summary": "获取粘贴",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "公开 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "粘贴内容",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/handler.pasteResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "404": {
+                        "description": "不存在或已过期",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "提供创建时返回的 delete_token 以删除粘贴。无需认证。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "剪贴板"
+                ],
+                "summary": "删除粘贴",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "公开 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "删除密钥",
+                        "name": "token",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "删除成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "缺少 token",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "不存在或 token 错误",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2980,25 +3352,17 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "proxy_names": {
-                    "description": "代理名称列表（按优先级排列，fallback 链）",
+                    "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
-                },
-                "use_proxy": {
-                    "description": "是否启用代理",
-                    "type": "boolean"
                 }
             }
         },
         "config.GravatarConfig": {
             "type": "object",
             "properties": {
-                "custom_proxy_url": {
-                    "description": "自定义代理 URL（优先级高于 proxy_name）",
-                    "type": "string"
-                },
                 "default_size": {
                     "description": "头像尺寸（像素），默认 200",
                     "type": "integer"
@@ -3011,17 +3375,24 @@ const docTemplate = `{
                     "description": "是否启用以 Gravatar 生成头像",
                     "type": "boolean"
                 },
-                "proxy_name": {
-                    "description": "引用的代理名称（对应 proxy 列表中的 name）",
-                    "type": "string"
+                "proxy_names": {
+                    "description": "代理名称列表（引用 proxy 池），空=直连",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "rating": {
                     "description": "内容分级：g / pg / r / x",
                     "type": "string"
-                },
-                "use_proxy": {
-                    "description": "是否通过代理下载 Gravatar",
-                    "type": "boolean"
+                }
+            }
+        },
+        "config.HomeWebUIConfig": {
+            "type": "object",
+            "properties": {
+                "background": {
+                    "$ref": "#/definitions/config.BackgroundConfig"
                 }
             }
         },
@@ -3038,6 +3409,18 @@ const docTemplate = `{
                 },
                 "level": {
                     "description": "日志级别：debug / info / warn / error，默认 \"info\"",
+                    "type": "string"
+                }
+            }
+        },
+        "config.LoginWebUIConfig": {
+            "type": "object",
+            "properties": {
+                "background": {
+                    "$ref": "#/definitions/config.BackgroundConfig"
+                },
+                "layout": {
+                    "description": "left / center / right",
                     "type": "string"
                 }
             }
@@ -3079,7 +3462,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "proxy_names": {
-                    "description": "代理名称列表（按优先级排列，fallback 链）",
+                    "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -3088,10 +3471,6 @@ const docTemplate = `{
                 "retention_count": {
                     "description": "每个订阅源保留条目数，默认 5000",
                     "type": "integer"
-                },
-                "use_proxy": {
-                    "description": "是否启用代理",
-                    "type": "boolean"
                 }
             }
         },
@@ -3105,6 +3484,17 @@ const docTemplate = `{
                 "port": {
                     "description": "监听端口，默认 8080",
                     "type": "integer"
+                }
+            }
+        },
+        "config.WebUIConfig": {
+            "type": "object",
+            "properties": {
+                "home": {
+                    "$ref": "#/definitions/config.HomeWebUIConfig"
+                },
+                "login": {
+                    "$ref": "#/definitions/config.LoginWebUIConfig"
                 }
             }
         },
@@ -3179,6 +3569,17 @@ const docTemplate = `{
             ],
             "properties": {
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.createPasteRequest": {
+            "type": "object",
+            "required": [
+                "content"
+            ],
+            "properties": {
+                "content": {
                     "type": "string"
                 }
             }
@@ -3260,6 +3661,27 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.pasteResponse": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "delete_token": {
+                    "description": "仅创建时返回",
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
                     "type": "string"
                 }
             }
@@ -3622,6 +4044,26 @@ const docTemplate = `{
                 }
             }
         },
+        "service.BalanceStatus": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error_count": {
+                    "type": "integer"
+                },
+                "last_refresh_at": {
+                    "type": "string"
+                },
+                "ok_count": {
+                    "type": "integer"
+                },
+                "target_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "service.DatabaseUpdate": {
             "type": "object",
             "properties": {
@@ -3693,9 +4135,6 @@ const docTemplate = `{
                 "auth": {
                     "$ref": "#/definitions/service.SafeAuthConfig"
                 },
-                "background": {
-                    "$ref": "#/definitions/config.BackgroundConfig"
-                },
                 "bilibili": {
                     "$ref": "#/definitions/service.SafeBilibiliConfig"
                 },
@@ -3717,14 +4156,14 @@ const docTemplate = `{
                         "$ref": "#/definitions/service.SafeProxyEntry"
                     }
                 },
-                "proxy_enabled": {
-                    "type": "boolean"
-                },
                 "rss": {
                     "$ref": "#/definitions/config.RSSConfig"
                 },
                 "server": {
                     "$ref": "#/definitions/config.ServerConfig"
+                },
+                "webui": {
+                    "$ref": "#/definitions/config.WebUIConfig"
                 }
             }
         },
@@ -3773,6 +4212,43 @@ const docTemplate = `{
                 }
             }
         },
+        "service.TargetResult": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "description": "剩余余额",
+                    "type": "number"
+                },
+                "base_url": {
+                    "type": "string"
+                },
+                "currency": {
+                    "description": "货币单位，如 \"CNY\" / \"USD\" / \"quota\"",
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "last_checked_at": {
+                    "description": "最后查询时间",
+                    "type": "string"
+                },
+                "last_error": {
+                    "description": "最近错误信息",
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "\"ok\" / \"error\" / \"checking\"",
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
         "service.UpdateBackgroundRequest": {
             "type": "object",
             "properties": {
@@ -3802,9 +4278,6 @@ const docTemplate = `{
                 "auth": {
                     "$ref": "#/definitions/service.AuthUpdate"
                 },
-                "background": {
-                    "$ref": "#/definitions/config.BackgroundConfig"
-                },
                 "bookmark": {
                     "$ref": "#/definitions/config.BookmarkConfig"
                 },
@@ -3823,14 +4296,14 @@ const docTemplate = `{
                         "$ref": "#/definitions/config.ProxyEntry"
                     }
                 },
-                "proxy_enabled": {
-                    "type": "boolean"
-                },
                 "rss": {
                     "$ref": "#/definitions/config.RSSConfig"
                 },
                 "server": {
                     "$ref": "#/definitions/service.ServerUpdate"
+                },
+                "webui": {
+                    "$ref": "#/definitions/config.WebUIConfig"
                 }
             }
         }

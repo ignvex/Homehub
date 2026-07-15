@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ignvex/HomeHub/internal/middleware"
 	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/ignvex/HomeHub/internal/service"
 )
@@ -185,6 +186,9 @@ func AdminUpdateUser(c *gin.Context) {
 		FailBadRequest(c, err.Error())
 		return
 	}
+
+	// 清除被修改用户的 session 缓存，确保下次请求读到最新数据
+	middleware.InvalidateSessionForUser(targetID)
 
 	Success(c, user)
 }

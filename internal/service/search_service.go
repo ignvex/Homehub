@@ -21,7 +21,16 @@ type SearchService struct {
 
 // SearchResult 搜索结果。
 type SearchResult struct {
-	Bookmarks []BookmarkSearchItem `json:"bookmarks"`
+	Bookmarks  []BookmarkSearchItem `json:"bookmarks"`
+	RssEntries []RssEntrySearchItem `json:"rss_entries"`
+}
+
+// RssEntrySearchItem RSS 条目搜索结果。
+type RssEntrySearchItem struct {
+	ID        uint64 `json:"id"`
+	Title     string `json:"title"`
+	Link      string `json:"link"`
+	FeedTitle string `json:"feed_title"`
 }
 
 // BookmarkSearchItem 书签搜索结果。
@@ -67,8 +76,8 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 		var items []BookmarkSearchItem
 		s.db.Raw(`
 			SELECT b.id, b.title, b.url, bg.name AS group_name
-			FROM bookmarks b
-			JOIN bookmark_groups bg ON bg.id = b.group_id
+			FROM homehub_bookmarks b
+			JOIN homehub_bookmark_groups bg ON bg.id = b.group_id
 			WHERE b.deleted_at IS NULL AND bg.deleted_at IS NULL
 			  AND (b.title ILIKE ? OR b.url ILIKE ?)
 			ORDER BY b.priority DESC, b.sort_order ASC
@@ -79,9 +88,27 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 		mu.Unlock()
 	}
 
+	searchRssEntries := func() {
+		defer wg.Done()
+		var items []RssEntrySearchItem
+		s.db.Raw(`
+			SELECT re.id, re.title, re.link, rf.title AS feed_title
+			FROM homehub_rss_entries re
+			JOIN homehub_rss_feeds rf ON rf.id = re.feed_id
+			WHERE re.deleted_at IS NULL AND rf.deleted_at IS NULL
+			  AND re.title ILIKE ?
+			ORDER BY re.published DESC
+			LIMIT ?
+		`, pattern, searchLimitPerSource).Scan(&items)
+		mu.Lock()
+		result.RssEntries = items
+		mu.Unlock()
+	}
+
 	dispatch := map[string]func(){
 		"all":       func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
 		"bookmarks": func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
+		"rss":       func() { wg.Add(1); safeGo("rss", searchRssEntries) },
 	}
 
 	fn, ok := dispatch[scope]

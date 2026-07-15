@@ -185,16 +185,42 @@ type SnapshotConfig struct {
 
 // Config 应用顶层配置，对应 config.json 文件结构。
 type Config struct {
-	Server   ServerConfig   `json:"server"`
-	Database DatabaseConfig `json:"database"`
-	Auth     AuthConfig     `json:"auth"`
-	Log      LogConfig      `json:"log"`
-	WebUI    WebUIConfig    `json:"webui"`
-	Proxy    []ProxyEntry   `json:"proxy,omitempty"`
-	Gravatar GravatarConfig `json:"gravatar"`
-	Bookmark BookmarkConfig `json:"bookmark"`
-	RSS      RSSConfig      `json:"rss"`
-	Bilibili BilibiliConfig `json:"bilibili"`
+	Server         ServerConfig         `json:"server"`
+	Database       DatabaseConfig       `json:"database"`
+	Auth           AuthConfig           `json:"auth"`
+	Log            LogConfig            `json:"log"`
+	WebUI          WebUIConfig          `json:"webui"`
+	Proxy          []ProxyEntry         `json:"proxy,omitempty"`
+	Gravatar       GravatarConfig       `json:"gravatar"`
+	Bookmark       BookmarkConfig       `json:"bookmark"`
+	RSS            RSSConfig            `json:"rss"`
+	Bilibili       BilibiliConfig       `json:"bilibili"`
+	BalanceMonitor BalanceMonitorConfig `json:"balance_monitor"`
+	Pastebin       PastebinConfig       `json:"pastebin"`
+}
+
+// BalanceTarget 单个余额监控点配置。
+type BalanceTarget struct {
+	Name    string `json:"name"`     // 监控点名称，如 "DeepSeek 主号"
+	Type    string `json:"type"`     // 类型：目前仅支持 deepseek
+	BaseURL string `json:"base_url"` // API 基础地址，如 https://api.deepseek.com
+	APIKey  string `json:"api_key"`  // API 密钥
+	Enabled bool   `json:"enabled"`  // 是否启用该监控点
+}
+
+// BalanceMonitorConfig 余额监控模块配置。
+type BalanceMonitorConfig struct {
+	Enabled                bool            `json:"enabled"`                  // 模块总开关
+	RefreshIntervalSeconds int             `json:"refresh_interval_seconds"` // 后台刷新间隔（秒），默认 60
+	Targets                []BalanceTarget `json:"targets"`                  // 监控点列表
+}
+
+// PastebinConfig 剪贴板模块配置。
+type PastebinConfig struct {
+	Enabled              bool `json:"enabled"`                // 模块总开关
+	MaxContentLength     int  `json:"max_content_length"`     // 单条内容最大字节数，默认 1048576 (1MB)
+	DefaultTTLHours      int  `json:"default_ttl_hours"`      // 默认过期时间（小时），默认 168 (7天)
+	CleanupIntervalHours int  `json:"cleanup_interval_hours"` // 过期清理间隔（小时），默认 24
 }
 
 var (

@@ -123,11 +123,13 @@ func buildFaviconHTTPClient() *req.Client {
 
 	cfg := config.Get()
 	if cfg != nil {
-		proxyURLs := config.ResolveProxy(cfg.Bookmark.ProxyServiceConfig, "")
-		if len(proxyURLs) > 0 {
-			proxyAddr := proxyURLs[0]
-			transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-				return url.Parse(proxyAddr)
+		proxies := config.ResolveProxy(cfg.Bookmark.ProxyNames)
+		if len(proxies) > 0 {
+			addr := proxies[0].HTTPURL
+			if addr != "" {
+				transport.Proxy = func(_ *http.Request) (*url.URL, error) {
+					return url.Parse(addr)
+				}
 			}
 		}
 	}

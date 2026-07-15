@@ -204,8 +204,8 @@ func (s *GravatarService) downloadAndCache(user *model.User) (*model.AvatarCache
 		FileSize:     int64(len(imageData)),
 	}
 
-	// UPSERT：先删后插，确保唯一
-	s.db.Where("user_id = ?", user.ID).Delete(&model.AvatarCache{})
+	// UPSERT：先硬删后插，避免软删除记录占用唯一索引
+	s.db.Unscoped().Where("user_id = ?", user.ID).Delete(&model.AvatarCache{})
 	if err := s.db.Create(&cache).Error; err != nil {
 		return nil, fmt.Errorf("保存头像缓存失败: %w", err)
 	}
@@ -215,76 +215,40 @@ func (s *GravatarService) downloadAndCache(user *model.User) (*model.AvatarCache
 
 // buildGravatarHTTPClient 根据代理配置构建 HTTP 客户端。
 //
-// 支持 HTTP 代理（通过 Transport.Proxy）和 SOCKS5 代理（通过 DialContext）。
-// 配置的解析逻辑由 config.ResolveProxy 提供。
+// 通过 config.ResolveProxy 获取代理列表，支持 HTTP 代理（通过 Transport.Proxy）
+// 和 SOCKS5 代理（通过 DialContext）。配置为空时直连。
 func buildGravatarHTTPClient() *req.Client {
-	proxyType, proxyAddr := resolveGravatarProxy()
-
 	transport := &http.Transport{}
 
-	switch proxyType {
-	case "socks5":
-		dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
-		if err == nil {
-			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			}
-		}
-		// SOCKS5 dialer 创建失败时退回到直连
+	cfg := config.Get()
+	if cfg != nil {
+		proxies := config.ResolveProxy(cfg.Gravatar.ProxyNames)
+		for _, p := range proxies {
+			switch p.Type {
+			case "socks5":
+				dialer, err := proxy.SOCKS5("tcp", p.HTTPURL, nil, proxy.Direct)
+				if err == nil {
+					transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return dialer.Dial(network, addr)
+					}
+					goto done
+				}
+				// SOCKS5 dialer 创建失败时尝试下一个
 
-	default: // "http" 或空
-		if proxyAddr != "" {
-			transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-				return url.Parse(proxyAddr)
+			default: // "http" 或空
+				if p.HTTPURL != "" {
+					transport.Proxy = func(_ *http.Request) (*url.URL, error) {
+						return url.Parse(p.HTTPURL)
+					}
+					goto done
+				}
 			}
 		}
 	}
+done:
 
 	client := req.C().
 		SetTimeout(gravatarHTTPTimeout)
 	client.GetClient().Transport = transport
 	return client
-}
-
-// resolveGravatarProxy 解析 Gravatar 代理配置，返回 (type, address)。
-//
-// 兼容旧的 ProxyName 单代理字段，优先使用 custom_proxy_url。
-// 返回空字符串表示不使用代理（直连）。
-func resolveGravatarProxy() (string, string) {
-	cfg := config.Get()
-	if cfg == nil {
-		return "", ""
-	}
-
-	// 优先：自定义代理 URL
-	if cfg.Gravatar.CustomProxyURL != "" {
-		return "http", cfg.Gravatar.CustomProxyURL
-	}
-
-	// 全局开关关闭 → 直连
-	if !cfg.ProxyEnabled {
-		return "", ""
-	}
-
-	// Gravatar 未启用代理 → 直连
-	if !cfg.Gravatar.UseProxy || cfg.Gravatar.ProxyName == "" {
-		return "", ""
-	}
-
-	// 在 Proxy 列表中按名称查找
-	for _, p := range cfg.Proxy {
-		if p.Name == cfg.Gravatar.ProxyName && p.Enabled {
-			addr := p.HTTPURL
-			if addr == "" {
-				continue
-			}
-			pType := p.Type
-			if pType == "" {
-				pType = "http"
-			}
-			return pType, addr
-		}
-	}
-
-	return "", ""
 }

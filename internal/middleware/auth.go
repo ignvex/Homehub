@@ -71,6 +71,17 @@ func InvalidateSession(token string) {
 	sessionCacheMu.Unlock()
 }
 
+// InvalidateSessionForUser 清除指定用户所有 session 的缓存。
+func InvalidateSessionForUser(userID uint64) {
+	sessionCacheMu.Lock()
+	for token, entry := range sessionCache {
+		if entry.user != nil && entry.user.ID == userID {
+			delete(sessionCache, token)
+		}
+	}
+	sessionCacheMu.Unlock()
+}
+
 // ============================================================
 // 中间件
 // ============================================================

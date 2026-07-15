@@ -1,12 +1,7 @@
 package service
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-
 	"github.com/ignvex/HomeHub/internal/config"
-	"github.com/ignvex/HomeHub/internal/logger"
 )
 
 // BackgroundService 背景设置业务服务。
@@ -26,7 +21,7 @@ type BackgroundSettings struct {
 	SelectedAssetIDs []uint64 `json:"selected_asset_ids"`
 }
 
-// Get 返回当前背景设置。
+// Get 返回当前背景设置（首页背景）。
 func (s *BackgroundService) Get() BackgroundSettings {
 	cfg := config.Get()
 	if cfg == nil {
@@ -39,11 +34,11 @@ func (s *BackgroundService) Get() BackgroundSettings {
 	}
 
 	return BackgroundSettings{
-		Mode:             cfg.Background.Mode,
-		IntervalSeconds:  cfg.Background.IntervalSeconds,
-		TransitionEffect: cfg.Background.TransitionEffect,
-		FadeDurationMs:   cfg.Background.FadeDurationMs,
-		SelectedAssetIDs: cfg.Background.SelectedAssetIDs,
+		Mode:             cfg.WebUI.Home.Background.Mode,
+		IntervalSeconds:  cfg.WebUI.Home.Background.IntervalSeconds,
+		TransitionEffect: cfg.WebUI.Home.Background.TransitionEffect,
+		FadeDurationMs:   cfg.WebUI.Home.Background.FadeDurationMs,
+		SelectedAssetIDs: cfg.WebUI.Home.Background.SelectedAssetIDs,
 	}
 }
 
@@ -56,46 +51,41 @@ type UpdateBackgroundRequest struct {
 	SelectedAssetIDs *[]uint64 `json:"selected_asset_ids,omitempty" form:"selected_asset_ids"`
 }
 
-// Update 更新背景设置并写回 config.json。
+// Update 更新首页背景设置并写回 config.json。
+// 使用 AtomicJSONUpdate 保留 JSON 中的非结构体字段（如 _comment）。
 func (s *BackgroundService) Update(req UpdateBackgroundRequest) error {
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("配置未加载")
-	}
+	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
+		webui, ok := raw["webui"].(map[string]any)
+		if !ok {
+			raw["webui"] = map[string]any{}
+			webui = raw["webui"].(map[string]any)
+		}
+		home, ok := webui["home"].(map[string]any)
+		if !ok {
+			webui["home"] = map[string]any{}
+			home = webui["home"].(map[string]any)
+		}
+		bg, ok := home["background"].(map[string]any)
+		if !ok {
+			home["background"] = map[string]any{}
+			bg = home["background"].(map[string]any)
+		}
 
-	merged := *cfg
-
-	if req.Mode != nil {
-		merged.Background.Mode = *req.Mode
-	}
-	if req.IntervalSeconds != nil {
-		merged.Background.IntervalSeconds = *req.IntervalSeconds
-	}
-	if req.TransitionEffect != nil {
-		merged.Background.TransitionEffect = *req.TransitionEffect
-	}
-	if req.FadeDurationMs != nil {
-		merged.Background.FadeDurationMs = *req.FadeDurationMs
-	}
-	if req.SelectedAssetIDs != nil {
-		merged.Background.SelectedAssetIDs = *req.SelectedAssetIDs
-	}
-
-	// 写回 config.json
-	data, err := json.MarshalIndent(merged, "", "    ")
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
-
-	if err := os.WriteFile("config.json", data, 0600); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
-	}
-
-	// 触发热重载
-	if err := config.Load("config.json"); err != nil {
-		return fmt.Errorf("重新加载配置失败: %w", err)
-	}
-
-	logger.Info("背景设置已更新并热重载")
-	return nil
+		if req.Mode != nil {
+			bg["mode"] = *req.Mode
+		}
+		if req.IntervalSeconds != nil {
+			bg["interval_seconds"] = float64(*req.IntervalSeconds)
+		}
+		if req.TransitionEffect != nil {
+			bg["transition_effect"] = *req.TransitionEffect
+		}
+		if req.FadeDurationMs != nil {
+			bg["fade_duration_ms"] = float64(*req.FadeDurationMs)
+		}
+		if req.SelectedAssetIDs != nil {
+			bg["selected_asset_ids"] = *req.SelectedAssetIDs
+		}
+		return nil
+	})
 }

@@ -1,0 +1,45 @@
+# HomeHub .dockerignore
+# 排除构建上下文中不需要的文件，加速 docker build
+
+# ── Go 构建产物 ──
+bin/
+*.exe
+*.exe~
+*.test
+*.out
+HomeHub.exe
+
+# ── 依赖与缓存 ──
+node_modules/
+web/node_modules/
+
+# ── 前端依赖与废弃构建产物 ──
+web/dist-ssr/
+
+# ── IDE / OS ──
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Git ──
+.git/
+.gitattributes
+.gitignore
+web/.gitignore
+
+# ── 杂项 ──
+data/
+*.local
+*.log
+
+# ── 文档与工具（非运行时必需） ──
+docs/
+crawler/
+architecture.json
+cache.json
+readme.json
+README.md
+*.lnk

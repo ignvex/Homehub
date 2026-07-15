@@ -11,9 +11,6 @@ importers:
       chart.js:
         specifier: ^4.5.1
         version: 4.5.1
-      htmx.org:
-        specifier: ^2.0.10
-        version: 2.0.10
       react:
         specifier: ^19.2.7
         version: 19.2.7
@@ -645,9 +642,6 @@ packages:
   gensync@1.0.0-beta.2:
     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
     engines: {node: '>=6.9.0'}
-
-  htmx.org@2.0.10:
-    resolution: {integrity: sha512-kdeJe7ZVwaS6QMz/ebBIVtZdpwen6L0OQ5GOhPV9MKBb196TCZeZu4yA7ZIQsaLKv7EpXz+So7KSXNuHXhj7Cw==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -1329,8 +1323,6 @@ snapshots:
     optional: true
 
   gensync@1.0.0-beta.2: {}
-
-  htmx.org@2.0.10: {}
 
   js-tokens@4.0.0: {}
 

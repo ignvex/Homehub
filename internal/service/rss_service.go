@@ -2,12 +2,18 @@ package service
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -176,7 +182,7 @@ func (s *RSSService) ListFeeds(groupID *uint64) ([]model.RSSFeed, error) {
 // ListEntries 分页查询指定订阅源的条目，按发布时间倒序。
 //
 // page 从 1 开始；perPage <= 0 时默认 20。
-// 返回条目列表、总数和错误。
+// feedID == 0 表示不过滤，查询全部订阅源的条目。
 func (s *RSSService) ListEntries(feedID uint64, page, perPage int) ([]model.RSSEntry, int64, error) {
 	if page < 1 {
 		page = 1
@@ -185,14 +191,19 @@ func (s *RSSService) ListEntries(feedID uint64, page, perPage int) ([]model.RSSE
 		perPage = 20
 	}
 
+	baseQuery := s.db.Model(&model.RSSEntry{})
+	if feedID > 0 {
+		baseQuery = baseQuery.Where("feed_id = ?", feedID)
+	}
+
 	var total int64
-	if err := s.db.Model(&model.RSSEntry{}).Where("feed_id = ?", feedID).Count(&total).Error; err != nil {
+	if err := baseQuery.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("统计条目数量失败: %w", err)
 	}
 
 	var entries []model.RSSEntry
 	offset := (page - 1) * perPage
-	if err := s.db.Where("feed_id = ?", feedID).
+	if err := baseQuery.
 		Order("published DESC").
 		Offset(offset).
 		Limit(perPage).
@@ -256,9 +267,12 @@ func (s *RSSService) FetchFeed(id uint64) error {
 		entries = append(entries, entry)
 	}
 
-	// 批量插入（ON CONFLICT DO NOTHING）
+	// 批量插入（ON CONFLICT DO UPDATE magnet_url）
 	if len(entries) > 0 {
-		if err := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&entries).Error; err != nil {
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "link"}},
+			DoUpdates: clause.AssignmentColumns([]string{"magnet_url"}),
+		}).Create(&entries).Error; err != nil {
 			errMsg := err.Error()
 			if len(errMsg) > 1024 {
 				errMsg = errMsg[:1024]
@@ -422,7 +436,21 @@ func (s *RSSService) itemToEntry(feedID uint64, item *gofeed.Item, fetchedAt tim
 			content = string(runes[:2000]) + "..."
 		}
 	}
-	entry.Content = content
+	entry.Content = sanitizeRssContent(content)
+
+	// 磁力链接：优先从 Enclosures 提取，fallback 正则扫描内容
+	for _, enc := range item.Enclosures {
+		if enc.URL != "" && strings.HasPrefix(enc.URL, "magnet:") {
+			entry.MagnetURL = enc.URL
+			break
+		}
+	}
+	if entry.MagnetURL == "" && item.Description != "" {
+		entry.MagnetURL = extractMagnet(item.Description)
+	}
+	if entry.MagnetURL == "" && item.Content != "" {
+		entry.MagnetURL = extractMagnet(item.Content)
+	}
 
 	// 发布时间
 	if item.PublishedParsed != nil {
@@ -612,11 +640,13 @@ func buildRSSHTTPClient() *req.Client {
 
 	cfg := config.Get()
 	if cfg != nil {
-		proxyURLs := config.ResolveProxy(cfg.RSS.ProxyServiceConfig, "")
-		if len(proxyURLs) > 0 {
-			proxyAddr := proxyURLs[0]
-			transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-				return url.Parse(proxyAddr)
+		proxies := config.ResolveProxy(cfg.RSS.ProxyNames)
+		if len(proxies) > 0 {
+			addr := proxies[0].HTTPURL
+			if addr != "" {
+				transport.Proxy = func(_ *http.Request) (*url.URL, error) {
+					return url.Parse(addr)
+				}
 			}
 		}
 	}
@@ -634,4 +664,116 @@ func buildRSSHTTPClient() *req.Client {
 		return nil
 	}
 	return client
+}
+
+// magnetPattern 匹配 magnet: 协议链接。
+var magnetPattern = regexp.MustCompile(`magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s"<]*`)
+
+// extractMagnet 从文本中提取第一个磁力链接。
+func extractMagnet(text string) string {
+	return magnetPattern.FindString(text)
+}
+
+// rssImgPattern 匹配 HTML 中的 <img> 标签。
+var rssImgPattern = regexp.MustCompile(`<img[^>]+src=["']([^"']+)["'][^>]*/?>`)
+
+// cacheDir 图片缓存目录。
+var cacheDir = filepath.Join("web", "static", "uploads", "rss_img")
+
+// dangerousSelfClosing 自闭合或单标签形式的危险标签。
+var dangerousSelfClosing = regexp.MustCompile(`<(script|iframe|link|embed|object|frame)\b[^>]*/?>`)
+
+// dangerousPaired 成对出现的危险标签（含内容），逐标签匹配（RE2 不支持 backreference）。
+var dangerousPaired = regexp.MustCompile(`(?s)<script\b[^>]*>.*?</script>|<iframe\b[^>]*>.*?</iframe>|<embed\b[^>]*>.*?</embed>|<object\b[^>]*>.*?</object>|<frame\b[^>]*>.*?</frame>`)
+
+// extSrcPattern 任意标签中带外部 URL 的 src 属性。
+var extSrcPattern = regexp.MustCompile(`src=["'](https?://[^"']+)["']`)
+
+// styleUrlPattern 内联 style 中的外链图片（background-image 等）。
+var styleUrlPattern = regexp.MustCompile(`url\(\s*["']?(https?://[^)"'\s]+)["']?\s*\)`)
+
+// sanitizeRssContent 清洗 RSS 内容：移除危险标签、缓存外链图片、剥离其他外部资源。
+func sanitizeRssContent(content string) string {
+	if content == "" {
+		return content
+	}
+	// 1. 移除危险标签
+	content = dangerousSelfClosing.ReplaceAllString(content, "")
+	content = dangerousPaired.ReplaceAllString(content, "")
+
+	// 2. <img> 外部图片 → 本地缓存
+	content = rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		match := rssImgPattern.FindStringSubmatch(tag)
+		if len(match) < 2 || match[1] == "" {
+			return tag
+		}
+		src := match[1]
+		if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "data:") {
+			return tag
+		}
+		hash := md5.Sum([]byte(src))
+		name := hex.EncodeToString(hash[:])
+		clean := strings.SplitN(src, "?", 2)[0]
+		ext := filepath.Ext(clean)
+		if ext == "" || !isImageExt(ext) {
+			ext = ".png"
+		}
+		filename := "rss_" + name + ext
+		localPath := filepath.Join(cacheDir, filename)
+		localURL := "/static/uploads/rss_img/" + filename
+		if _, err := os.Stat(localPath); err == nil {
+			return strings.Replace(tag, src, localURL, 1)
+		}
+		if err := downloadImage(src, localPath); err != nil {
+			log.Printf("[rss] 图片下载失败 url=%s: %v", src, err)
+			return ""
+		}
+		return strings.Replace(tag, src, localURL, 1)
+	})
+
+	// 3. 其他标签的外部 src → 移除 src 属性
+	content = extSrcPattern.ReplaceAllString(content, "")
+
+	// 4. 内联 style 中的外链 url(...) → 移除 url 的值（保留占位）
+	content = styleUrlPattern.ReplaceAllString(content, "none")
+
+	return content
+}
+
+// isImageExt 判断扩展名是否为常见图片格式。
+func isImageExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico":
+		return true
+	}
+	return false
+}
+
+// downloadImage 下载单张图片到本地，限制 2MB 和 5s 超时。
+func downloadImage(urlStr, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return err
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(urlStr)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	// 限制 2MB
+	limited := io.LimitReader(resp.Body, 2<<20)
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, limited)
+	return err
 }

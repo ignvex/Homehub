@@ -107,21 +107,8 @@ func applyDefaults(cfg *Config) {
 		cfg.Log.Format = "json"
 	}
 
-	if cfg.Background.Mode == "" {
-		cfg.Background.Mode = "single"
-	}
-	if cfg.Background.IntervalSeconds == 0 {
-		cfg.Background.IntervalSeconds = 30
-	}
-	if cfg.Background.TransitionEffect == "" {
-		cfg.Background.TransitionEffect = "fade"
-	}
-	if cfg.Background.FadeDurationMs == 0 {
-		cfg.Background.FadeDurationMs = 1000
-	}
-
-	applyBackgroundDefaults(&cfg.WebUI.Home.Background, cfg.Background)
-	applyBackgroundDefaults(&cfg.WebUI.Login.Background, cfg.Background)
+	applyBackgroundDefaults(&cfg.WebUI.Home.Background)
+	applyBackgroundDefaults(&cfg.WebUI.Login.Background)
 	if cfg.WebUI.Login.Layout == "" {
 		cfg.WebUI.Login.Layout = "center"
 	}
@@ -143,21 +130,41 @@ func applyDefaults(cfg *Config) {
 	}
 
 	// Bilibili 子开关默认关闭（用户需显式开启，避免误启动大规模抓取）
+
+	// Balance Monitor 默认值
+	if cfg.BalanceMonitor.RefreshIntervalSeconds == 0 {
+		cfg.BalanceMonitor.RefreshIntervalSeconds = 60
+	}
+	for i := range cfg.BalanceMonitor.Targets {
+		if cfg.BalanceMonitor.Targets[i].Type == "" {
+			cfg.BalanceMonitor.Targets[i].Type = "oneapi"
+		}
+	}
+
+	// Pastebin 默认值
+	if cfg.Pastebin.MaxContentLength == 0 {
+		cfg.Pastebin.MaxContentLength = 1048576 // 1MB
+	}
+	if cfg.Pastebin.DefaultTTLHours == 0 {
+		cfg.Pastebin.DefaultTTLHours = 168 // 7天
+	}
+	if cfg.Pastebin.CleanupIntervalHours == 0 {
+		cfg.Pastebin.CleanupIntervalHours = 24
+	}
 }
 
-func applyBackgroundDefaults(background *BackgroundConfig, fallback BackgroundConfig) {
-	// 仅当字段为零值时从 fallback 复制（逐字段 fallback，避免整体替换覆盖用户显式设置）。
+func applyBackgroundDefaults(background *BackgroundConfig) {
 	if background.Mode == "" {
-		background.Mode = fallback.Mode
+		background.Mode = "single"
 	}
 	if background.IntervalSeconds == 0 {
-		background.IntervalSeconds = fallback.IntervalSeconds
+		background.IntervalSeconds = 30
 	}
 	if background.TransitionEffect == "" {
-		background.TransitionEffect = fallback.TransitionEffect
+		background.TransitionEffect = "fade"
 	}
 	if background.FadeDurationMs == 0 {
-		background.FadeDurationMs = fallback.FadeDurationMs
+		background.FadeDurationMs = 1000
 	}
 }
 
@@ -195,18 +202,6 @@ func validate(cfg *Config) error {
 		errs = append(errs, "log.format 必须为 json/colored 之一")
 	}
 
-	if !slices.Contains(validBackgroundModes, strings.ToLower(cfg.Background.Mode)) {
-		errs = append(errs, "background.mode 必须为 single/carousel/random 之一")
-	}
-	if cfg.Background.IntervalSeconds < 1 || cfg.Background.IntervalSeconds > 3600 {
-		errs = append(errs, "background.interval_seconds 必须在 1-3600 之间")
-	}
-	if !slices.Contains(validBackgroundTransitions, strings.ToLower(cfg.Background.TransitionEffect)) {
-		errs = append(errs, "background.transition_effect 必须为 fade/slide 之一")
-	}
-	if cfg.Background.FadeDurationMs < 0 || cfg.Background.FadeDurationMs > 10000 {
-		errs = append(errs, "background.fade_duration_ms 必须在 0-10000 之间")
-	}
 	validateBackground := func(path string, background BackgroundConfig) {
 		if !slices.Contains(validBackgroundModes, strings.ToLower(background.Mode)) {
 			errs = append(errs, path+".mode 必须为 single/carousel/random 之一")
@@ -254,6 +249,38 @@ func validate(cfg *Config) error {
 		if cfg.Bilibili.DedeUserID == "" {
 			errs = append(errs, "bilibili.dede_user_id 不能为空（SESSDATA 已配置时必须填写）")
 		}
+	}
+
+	// Balance Monitor 校验
+	validBalanceTypes := []string{"deepseek"}
+	if cfg.BalanceMonitor.RefreshIntervalSeconds < 10 || cfg.BalanceMonitor.RefreshIntervalSeconds > 3600 {
+		errs = append(errs, "balance_monitor.refresh_interval_seconds 必须在 10-3600 之间")
+	}
+	for i, t := range cfg.BalanceMonitor.Targets {
+		if t.Name == "" {
+			errs = append(errs, fmt.Sprintf("balance_monitor.targets[%d].name 不能为空", i))
+		}
+		if !slices.Contains(validBalanceTypes, strings.ToLower(t.Type)) {
+			errs = append(errs, fmt.Sprintf("balance_monitor.targets[%d].type 目前仅支持 deepseek", i))
+		}
+		if t.BaseURL == "" {
+			errs = append(errs, fmt.Sprintf("balance_monitor.targets[%d].base_url 不能为空", i))
+		}
+		if t.APIKey == "" {
+			errs = append(errs, fmt.Sprintf("balance_monitor.targets[%d].api_key 不能为空", i))
+		}
+
+	}
+
+	// Pastebin 校验
+	if cfg.Pastebin.MaxContentLength < 1 || cfg.Pastebin.MaxContentLength > 10*1024*1024 {
+		errs = append(errs, "pastebin.max_content_length 必须在 1-10485760 (10MB) 之间")
+	}
+	if cfg.Pastebin.DefaultTTLHours < 1 || cfg.Pastebin.DefaultTTLHours > 8760 {
+		errs = append(errs, "pastebin.default_ttl_hours 必须在 1-8760 (1年) 之间")
+	}
+	if cfg.Pastebin.CleanupIntervalHours < 1 || cfg.Pastebin.CleanupIntervalHours > 168 {
+		errs = append(errs, "pastebin.cleanup_interval_hours 必须在 1-168 之间")
 	}
 
 	if len(errs) > 0 {

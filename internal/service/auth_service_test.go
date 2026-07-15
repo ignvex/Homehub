@@ -23,11 +23,11 @@ func TestLogin_Success(t *testing.T) {
 	user := testutil.CreateTestUser(t, "admin", "admin", "")
 	user.PasswordHash = string(hash)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "users" WHERE username = $1 AND "users"."deleted_at" IS NULL ORDER BY "users"."id" LIMIT $2`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "homehub_users" WHERE username = $1 AND "homehub_users"."deleted_at" IS NULL ORDER BY "homehub_users"."id" LIMIT $2`)).
 		WithArgs("admin", 1).
 		WillReturnRows(sqlmock.NewRows(testutil.ColumnsForUser()).AddRow(testutil.UserToRow(user)...))
 	// session 创建
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "sessions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "homehub_sessions"`)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 
 	token, err := svc.Login("admin", password)
@@ -52,7 +52,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	user := testutil.CreateTestUser(t, "admin", "admin", "")
 	user.PasswordHash = string(hash)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "users" WHERE username = $1 AND "users"."deleted_at" IS NULL ORDER BY "users"."id" LIMIT $2`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "homehub_users" WHERE username = $1 AND "homehub_users"."deleted_at" IS NULL ORDER BY "homehub_users"."id" LIMIT $2`)).
 		WithArgs("admin", 1).
 		WillReturnRows(sqlmock.NewRows(testutil.ColumnsForUser()).AddRow(testutil.UserToRow(user)...))
 
@@ -70,11 +70,11 @@ func TestLogin_UserNotFound(t *testing.T) {
 	defer cleanup()
 	svc := NewAuthService(db)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "users" WHERE username = $1 AND "users"."deleted_at" IS NULL ORDER BY "users"."id" LIMIT $2`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "homehub_users" WHERE username = $1 AND "homehub_users"."deleted_at" IS NULL ORDER BY "homehub_users"."id" LIMIT $2`)).
 		WithArgs("nonexistent", 1).
 		WillReturnError(gorm.ErrRecordNotFound)
 
-	mock.ExpectQuery(`SELECT \* FROM "users" WHERE \(email = \$1 AND email != ''\) AND "users"."deleted_at" IS NULL ORDER BY "users"."id" LIMIT \$2`).
+	mock.ExpectQuery(`SELECT \* FROM "homehub_users" WHERE \(email = \$1 AND email != ''\) AND "homehub_users"."deleted_at" IS NULL ORDER BY "homehub_users"."id" LIMIT \$2`).
 		WithArgs("nonexistent", 1).
 		WillReturnError(gorm.ErrRecordNotFound)
 
@@ -93,11 +93,11 @@ func TestCreateUser_Success(t *testing.T) {
 	svc := NewAuthService(db)
 
 	// 检查用户名不存在
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "users" WHERE username = $1 AND "users"."deleted_at" IS NULL`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "homehub_users" WHERE username = $1 AND "homehub_users"."deleted_at" IS NULL`)).
 		WithArgs("newuser").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	// INSERT（无 BEGIN/COMMIT，因 SkipDefaultTransaction）
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "users"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "homehub_users"`)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
 
 	user, err := svc.CreateUser("newuser", "password123", "user", "")
@@ -117,7 +117,7 @@ func TestCreateUser_UsernameExists(t *testing.T) {
 	defer cleanup()
 	svc := NewAuthService(db)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "users" WHERE username = $1 AND "users"."deleted_at" IS NULL`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT count(*) FROM "homehub_users" WHERE username = $1 AND "homehub_users"."deleted_at" IS NULL`)).
 		WithArgs("admin").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 

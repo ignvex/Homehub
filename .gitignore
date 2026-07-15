@@ -4,6 +4,7 @@
 bin/
 *.exe
 *.exe~
+homehub
 
 # 数据目录
 data/
@@ -17,6 +18,9 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# CodeWhale
+.codewhale/
 
 # Go
 *.test

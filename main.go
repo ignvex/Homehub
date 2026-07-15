@@ -95,6 +95,21 @@ func main() {
 	}
 	logger.Info("数据库迁移完成")
 
+	// 迁移：移除旧 bvid 唯一索引（v1.x uniqueIndex 遗留，AutoMigrate 不自动删除），
+	// 改用普通索引避免 Discovery 占位记录空字符串冲突。
+	if err := db.Exec("DROP INDEX IF EXISTS idx_videos_bvid").Error; err != nil {
+		logger.Error("移除旧 bvid 唯一索引失败", "error", err)
+	}
+	if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_videos_bvid ON videos(bvid)").Error; err != nil {
+		logger.Error("创建 bvid 普通索引失败", "error", err)
+	}
+
+	// 迁移：创建 pastes 表（独立于 AutoMigrate，不使用软删除）
+	if err := model.CreatePastesTable(db); err != nil {
+		logger.Error("创建 pastes 表失败", "error", err)
+		os.Exit(1)
+	}
+
 	// ============================================================
 	// 6. 创建初始用户（若不存在）
 	// ============================================================
@@ -120,6 +135,16 @@ func main() {
 	rssCtx, rssCancel := context.WithCancel(context.Background())
 	defer rssCancel()
 	svc.RSS.StartBackgroundFetcher(rssCtx)
+
+	// 启动余额监控后台刷新
+	balanceCtx, balanceCancel := context.WithCancel(context.Background())
+	defer balanceCancel()
+	svc.Balance.StartBackgroundRefresh(balanceCtx)
+
+	// 启动剪贴板过期清理
+	pasteCtx, pasteCancel := context.WithCancel(context.Background())
+	defer pasteCancel()
+	svc.Paste.StartPurgeLoop(pasteCtx)
 
 	// ============================================================
 	// 7. 注入 Handler

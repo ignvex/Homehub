@@ -13,7 +13,7 @@ import "github.com/gin-gonic/gin"
 //	@Tags			搜索
 //	@Produce		json
 //	@Param			q		query		string	true	"搜索关键词"
-//	@Param			scope	query		string	false	"搜索范围：all / bookmarks / videos / articles / users（默认 all）"
+//	@Param			scope	query		string	false	"搜索范围：all / bookmarks / videos / articles / users / rss（默认 all）"
 //	@Success		200		{object}	Response	"搜索结果"
 //	@Failure		400		{object}	Response	"缺少搜索关键词"
 //	@Failure		500		{object}	Response	"服务器内部错误"

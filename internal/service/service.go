@@ -22,6 +22,8 @@ type Services struct {
 	Search     *SearchService
 	Log        *LogService
 	Todo       *TodoService
+	Balance    *BalanceService
+	Paste      *PasteService
 }
 
 // NewServices 创建并返回所有 Service 实例。
@@ -38,5 +40,7 @@ func NewServices(db *gorm.DB) *Services {
 		Search:     NewSearchService(db),
 		Log:        NewLogService(db),
 		Todo:       NewTodoService(db),
+		Balance:    NewBalanceService(),
+		Paste:      NewPasteService(db),
 	}
 }

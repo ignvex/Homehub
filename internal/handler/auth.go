@@ -328,6 +328,11 @@ func AuthUpdateProfile(c *gin.Context) {
 		return
 	}
 
+	// 清除当前 session 缓存，确保下次请求读到最新用户名
+	if token, ok := c.Get("session_token"); ok {
+		middleware.InvalidateSession(token.(string))
+	}
+
 	Success(c, gin.H{
 		"id":         updated.ID,
 		"username":   updated.Username,

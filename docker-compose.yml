@@ -1,0 +1,46 @@
+# HomeHub Docker Compose 部署配置
+#
+# 前置条件:
+#   1. 已安装 Docker + Compose 插件
+#   2. PostgreSQL 数据库已运行（默认连接 192.168.1.2:5432）
+#   3. 项目根目录下有 config.json（首次可从 config.json 复制并修改数据库连接和密码）
+#
+# 使用:
+#   docker compose build    # 构建镜像
+#   docker compose up -d    # 后台启动
+#   docker compose logs -f  # 查看日志
+#   docker compose down     # 停止并移除容器
+#
+# Unraid 用户注意:
+#   - 通过 Unraid 的 Compose 插件或终端使用本文件
+#   - 若容器无法连接 NAS 数据库，请切换到 host 网络模式（见下方注释）
+#   - uploads 目录建议映射到 Unraid 的 /mnt/user/appdata/homehub/uploads
+
+version: "3.8"
+
+services:
+  homehub:
+    image: homehub:latest
+    container_name: homehub
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      # config.json 已内置在镜像中，无需挂载。如需外部覆盖，取消下面注释：
+      # - ./config.json:/app/config.json:ro
+      # 上传目录持久化 — 改为你的 Unraid 路径，如:
+      # - /mnt/user/appdata/homehub/uploads:/app/web/static/uploads
+      - homehub_uploads:/app/web/static/uploads
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    # === 网络模式说明 ===
+    # Bridge（默认）：适用于大多数场景，容器通过端口映射访问。
+    # Host：若容器无法访问 192.168.1.2 的数据库，取消下面注释切换到 host 网络模式。
+    #       注意：host 模式下 ports 映射无效，应用直接监听宿主机 8080。
+    # network_mode: host
+
+volumes:
+  homehub_uploads:

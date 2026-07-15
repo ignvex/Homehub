@@ -8,7 +8,7 @@
 
 ### 前端
 
-基于 Vite + React + HTMX 的"群岛架构"：HTMX 负责页面导航与表单提交，React 嵌入复杂交互模块（图表、轮播），CSS 变量驱动暗色模式。
+基于 Vite + React + TypeScript 构建的 SPA（单页应用），Go 后端通过 SPA fallback 提供入口。CSS 变量驱动暗色模式。
 
 #### 功能
 
@@ -29,7 +29,7 @@
 | 构建工具 | Vite | 6.x |
 | UI 框架 | React | 19.x |
 | 语言 | TypeScript | 6.x |
-| 页面导航 | HTMX | 2.x |
+| 页面导航 | 原生 &lt;a&gt; + window.location | — |
 | 图表 | Chart.js + react-chartjs-2 | 4.x |
 | 样式方案 | CSS3 + CSS 变量 + CSS Modules | — |
 | 包管理器 | pnpm | 9.x |
@@ -70,16 +70,14 @@ pnpm build        # 生产构建 → dist/
 
 ```
 web/
-├── index.html                  ← Vite 入口，引入 HTMX
+├── index.html                  ← Vite 入口
 ├── vite.config.ts              ← 代理 /api→Go:8080，@/ 路径别名
 ├── tsconfig.json               ← TS 配置
 ├── package.json                ← 依赖与脚本
-├── public/
-│   └── htmx.min.js             ← HTMX 运行时（不参与打包）
 ├── src/
 │   ├── main.tsx                ← 应用入口（导入全局样式）
-│   ├── App.tsx                 ← 根组件
-│   ├── pages/                  ← 页面目录（每页一个子目录）
+│   ├── App.tsx                 ← 根组件（路由分发）
+│   ├── pages/                  ← 页面目录（每页一个 .tsx 文件）
 │   ├── components/             ← 通用 React 组件
 │   ├── hooks/                  ← 通用 hooks（useTheme 等）
 │   ├── styles/
@@ -94,11 +92,11 @@ web/
 
 ### 架构说明
 
-**React 与 HTMX 协作模式**（"群岛架构"）：
+**React SPA 路由分发模式**：
 
-- HTMX 通过 `hx-get` / `hx-post` 处理页面导航和表单提交，保持"无整页刷新"体验
-- React 不接管路由（不使用 React Router），作为"组件岛"嵌入页面
-- 每个页面通过 `createRoot()` 挂载各自的 React 组件到 DOM 挂载点
+- App.tsx 通过 `window.location.pathname` 解析当前页面路径，从 `pages` 字典映射到对应组件
+- 公开页面（`/`、`/login`）直接渲染，认证页面通过 `ProtectedPage` 组件校验登录状态后包裹 `AppShell` 侧边栏布局
+- 不使用 React Router 或任何前端路由库，页面导航使用原生 `<a>` 标签
 - 暗色模式通过 `useTheme` hook 管理 `html[data-theme]` + localStorage
 
 **开发时前后端协作**：
@@ -119,6 +117,81 @@ web/
 | `pnpm build` | TypeScript 检查 + Vite 生产构建 |
 | `pnpm preview` | 预览生产构建产物 |
 | `pnpm lint` | 运行 oxlint 代码检查 |
+
+## Docker 部署
+
+项目通过 Docker 容器部署，推荐使用 docker-compose 一键启动。
+
+### 前置条件
+
+- Docker + Compose 插件
+- PostgreSQL 数据库（已运行，默认连接 `192.168.1.2:5432`）
+- 宿主机上准备好 `config.json`（参考项目根目录的 `config.json` 修改数据库连接信息）
+
+### 快速开始
+
+```bash
+# 1. 克隆项目
+git clone <你的仓库地址> && cd HomeHub
+
+# 2. 编辑 config.json，确保 database 段指向你的 PostgreSQL
+#    host: 你的数据库IP
+#    password: 你的数据库密码
+#    首次启动前填好 auth.password，启动后密码自动清除并写入数据库
+
+# 3. 构建前端（需 Node.js ≥ 20 + pnpm）
+cd web && pnpm install && pnpm build && cd ..
+
+# 4. 构建镜像并启动
+docker compose build
+docker compose up -d
+
+# 5. 验证
+curl http://localhost:8080/api/v1/health
+# 浏览器访问 http://localhost:8080
+```
+
+### 容器端口与挂载
+
+| 端口 | 用途 |
+|------|------|
+| `8080` | HTTP 服务（API + SPA 前端） |
+
+| 挂载路径 | 用途 | 持久化 |
+|----------|------|--------|
+| `/app/config.json` | 配置文件（只读） | 是，bind mount |
+| `/app/web/static/uploads` | 用户上传的媒体文件 | 是，volume 或 bind mount |
+
+### Unraid 部署要点
+
+1. 安装 **Compose** 插件（Community Applications → 搜索 "compose"）
+2. 将项目目录放到 Unraid 共享文件夹，如 `/mnt/user/appdata/homehub/`
+3. 修改 `docker-compose.yml` 中的挂载路径：
+   ```yaml
+   volumes:
+     - ./config.json:/app/config.json:ro
+     - /mnt/user/appdata/homehub/uploads:/app/web/static/uploads
+   ```
+4. 若容器无法连接 NAS 上的数据库，在 `docker-compose.yml` 中启用 `network_mode: host`
+5. 前端需在开发机上先构建（Unraid 通常不装 Node.js），然后将 `web/dist/` 一并复制到 Unraid：
+   ```bash
+   # 在开发机上
+   cd web && pnpm install && pnpm build
+   # 复制整个项目到 Unraid（web/dist/ 会一起过去）
+   scp -r ../HomeHub root@unraid:/mnt/user/appdata/homehub/
+   ```
+6. Unraid 终端执行：
+   ```bash
+   cd /mnt/user/appdata/homehub
+   docker compose build
+   docker compose up -d
+   ```
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `HOMEHUB_CONFIG` | 配置文件路径 | `/app/config.json` |
 
 ## 爬虫模块
 
