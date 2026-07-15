@@ -3,11 +3,13 @@ const BASE_URL = '/api/v1'
 
 class ApiRequestError extends Error {
   status: number
+  code?: number
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: number) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -21,6 +23,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     ...options,
     credentials: 'include',
     headers,
+    signal: options.signal,
   })
   const body = await response.json().catch(() => ({}))
 
@@ -34,7 +37,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   if (!response.ok) {
     throw new ApiRequestError(
       response.status,
-      body.message || body.error || `请求失败 (${response.status})`,
+      body.message || body.error || `请求失败 (${response.status})`, body.code,
     )
   }
 
@@ -58,6 +61,11 @@ export const api = {
   put: <T>(path: string, data?: unknown) =>
     request<T>(path, {
       method: 'PUT',
+      body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
+    }),
+  patch: <T>(path: string, data?: unknown) =>
+    request<T>(path, {
+      method: 'PATCH',
       body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
     }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),

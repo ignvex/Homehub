@@ -12,7 +12,8 @@ import '@/styles/home.css'
 import '@/styles/login.css'
 import '@/styles/shell.css'
 import '@/styles/dashboard.css'
-import '@/styles/operations.css'
+import '@/styles/workspace.css'
+import '@/styles/palette.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

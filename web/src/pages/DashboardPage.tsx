@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { dashboardApi, type CrawlerStats } from '@/lib/dashboard'
+import { balanceApi, type TargetResult } from '@/lib/balance'
 
 const labels = { video: '视频', video_page: '分P', article: '专栏', user: 'UP 主' }
 const actions: [string, string, string][] = [
@@ -13,8 +14,10 @@ export function DashboardPage() {
   const [stats, setStats] = useState<CrawlerStats | null>(null)
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [error, setError] = useState('')
+  const [balances, setBalances] = useState<TargetResult[]>([])
 
   useEffect(() => {
+    balanceApi.list().then(setBalances).catch(() => {})
     Promise.allSettled([dashboardApi.health(), dashboardApi.stats()]).then(([health, crawler]) => {
       setHealthy(health.status === 'fulfilled' && health.value.status === 'ok' && (!health.value.db || health.value.db === 'ok'))
       if (crawler.status === 'fulfilled') setStats(crawler.value)
@@ -23,7 +26,6 @@ export function DashboardPage() {
   }, [])
 
   const tables = stats ? [stats.video, stats.video_page, stats.article, stats.user] : []
-
   return (
     <div className="dashboard">
       <section className="dashboard-status">
@@ -51,11 +53,9 @@ export function DashboardPage() {
               <p>DATA INVENTORY</p>
               <h2>数据资产</h2>
             </div>
-            <a href="/bilibili">打开控制台 →</a>
+            <a href="/bilibili">查看采集 →</a>
           </header>
-          {error ? (
-            <div className="panel-error">{error}</div>
-          ) : (
+          {error ? <div className="panel-error">{error}</div> : (
             <div className="metric-table">
               {tables.length ? tables.map(item => (
                 <div key={item.table}>
@@ -68,26 +68,24 @@ export function DashboardPage() {
           )}
         </section>
 
-        <section className="work-panel">
+        {balances.length > 0 && <section className="work-panel">
           <header>
             <div>
-              <p>CRAWLER PROGRESS</p>
-              <h2>采集进度</h2>
+              <p>BALANCE</p>
+              <h2>余额监控</h2>
             </div>
+            <a href="/balance">查看详情 →</a>
           </header>
-          <div className="progress-list">
-            {stats?.progress?.length ? stats.progress.map(item => (
-              <div key={item.type}>
-                <div>
-                  <strong>{labels[item.type]}</strong>
-                  <span className={item.enabled ? 'is-enabled' : ''}>{item.enabled ? '已启用' : '已停用'}</span>
-                </div>
-                <div className="progress-track"><i style={{ width: item.progress_pct }} /></div>
-                <small>{item.progress_pct} · 窗口 {item.window_base.toLocaleString()}</small>
+          <div className="metric-table">
+            {balances.map(b => (
+              <div key={b.name}>
+                <span>{b.name}</span>
+                <strong>{b.balance?.toFixed(2) ?? '—'} {b.currency || ''}</strong>
+                <small style={{ color: b.status === 'ok' ? 'var(--color-success)' : b.status === 'error' ? 'var(--color-error)' : 'var(--color-text-secondary)' }}>{b.status === 'ok' ? '可用' : b.status === 'error' ? '异常' : '查询中'}</small>
               </div>
-            )) : <div className="panel-loading">暂无进度数据</div>}
+            ))}
           </div>
-        </section>
+        </section>}
       </div>
 
       <section className="work-panel quick-panel">

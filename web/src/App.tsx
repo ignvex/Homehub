@@ -1,15 +1,73 @@
-import { useEffect, useState, type ComponentType } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, type ComponentType } from 'react'
 import { AppShell, type ShellPageMeta } from '@/components/AppShell'
 import { homeApi, type AuthStatus } from '@/lib/home'
+import { BalancePage } from '@/pages/BalancePage'
 import BilibiliPage from '@/pages/BilibiliPage'
+import { AppearancePage } from '@/pages/AppearancePage'
 import { BookmarksPage } from '@/pages/BookmarksPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { HomePage } from '@/pages/HomePage'
 import { LoginPage } from '@/pages/LoginPage'
+import { LogsPage } from '@/pages/LogsPage'
 import { MediaPage } from '@/pages/MediaPage'
-import { LogsPage, RSSPage, SearchPage, SettingsPage, TodosPage, UsersPage } from '@/pages/OperationsPages'
+import { PastePage } from '@/pages/PastePage'
 import { ProfilePage } from '@/pages/ProfilePage'
+import { RSSPage } from '@/pages/RSSPage'
+import { SearchPage } from '@/pages/SearchPage'
+import { SettingsPage } from '@/pages/SettingsPage'
+import { TodosPage } from '@/pages/TodosPage'
+import { UsersPage } from '@/pages/UsersPage'
 
+// ============================================================
+// Auth Context — 应用级别缓存认证状态，避免每次页面切换重新请求
+// ============================================================
+const AuthContext = createContext<AuthStatus | null>(null)
+export function useAuth() { return useContext(AuthContext) }
+
+// ============================================================
+// 客户端导航 — 使用 history.pushState 替代整页跳转，消除白屏
+// ============================================================
+function getPathname() { return window.location.pathname.replace(/\/$/, '') || '/' }
+
+function useClientNavigation() {
+  const [path, setPath] = useState(getPathname)
+
+  // 浏览器前进/后退
+  useEffect(() => {
+    const handler = () => setPath(getPathname())
+    window.addEventListener('popstate', handler)
+    return () => window.removeEventListener('popstate', handler)
+  }, [])
+
+  // 拦截同源 <a> 标签点击，使用 pushState 实现客户端导航
+  useEffect(() => {
+    const isSameOrigin = (href: string) => {
+      try { const url = new URL(href, window.location.origin); return url.origin === window.location.origin }
+      catch { return false }
+    }
+    const handler = (event: MouseEvent) => {
+      const anchor = (event.target as Element).closest('a')
+      if (!anchor) return
+      const href = anchor.getAttribute('href')
+      // 跳过：空链接、外链、锚点、mailto、下载、新窗口、显式标记
+      if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('javascript:') || anchor.getAttribute('download') !== null || anchor.getAttribute('target') === '_blank' || anchor.getAttribute('rel')?.includes('external') || !isSameOrigin(href)) return
+      // 跳过：带有 data-native 属性的链接（强制整页跳转）
+      if (anchor.hasAttribute('data-native')) return
+      event.preventDefault()
+      history.pushState(null, '', href)
+      setPath(getPathname())
+      window.scrollTo(0, 0)
+    }
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [])
+
+  return { path, navigate: useCallback((href: string) => { history.pushState(null, '', href); setPath(getPathname()); window.scrollTo(0, 0) }, []) }
+}
+
+// ============================================================
+// 页面定义
+// ============================================================
 interface PageDefinition {
   component: ComponentType
   meta: ShellPageMeta
@@ -27,13 +85,22 @@ const pages: Record<string, PageDefinition> = {
   '/users': { component: UsersPage, meta: { eyebrow: '访问控制', title: '用户管理', description: '管理成员、角色与账户状态。' }, admin: true },
   '/logs': { component: LogsPage, meta: { eyebrow: '系统事件', title: '系统日志', description: '筛选和定位后端运行事件。' }, admin: true },
   '/settings': { component: SettingsPage, meta: { eyebrow: '系统配置', title: '设置', description: '按配置域修改后端支持的参数。' }, admin: true },
-  '/appearance': { component: () => <SettingsPage appearance />, meta: { eyebrow: '界面偏好', title: '外观', description: '设置当前浏览器的显示主题。' } },
+  '/appearance': { component: AppearancePage, meta: { eyebrow: '界面偏好', title: '外观', description: '管理当前浏览器主题与服务端背景配置。' } },
+  '/balance': { component: BalancePage, meta: { eyebrow: '服务监视', title: 'LLM 余额', description: '查看各平台 API 余额与监控状态。' } },
 }
 
 function resolvePage(pathname: string): PageDefinition | null {
   if (pathname === '/bilibili' || pathname.startsWith('/bilibili/')) {
-    const [, , rawKind, detailID] = pathname.split('/')
+    const parts = pathname.split('/')
+    const rawKind = parts[2]
+    if (!rawKind) {
+      return {
+        component: () => <BilibiliPage overview kind="videos" />,
+        meta: { eyebrow: '数据探索', title: 'Bilibili', description: '查看爬虫运行状态与采集概览。' },
+      }
+    }
     const kind = rawKind === 'articles' || rawKind === 'users' ? rawKind : 'videos'
+    const detailID = parts[3]
     return {
       component: () => <BilibiliPage kind={kind} detailID={detailID} />,
       meta: { eyebrow: '数据探索', title: 'Bilibili', description: '查询已采集的视频、专栏与用户对象。' },
@@ -42,38 +109,81 @@ function resolvePage(pathname: string): PageDefinition | null {
   return pages[pathname] ?? null
 }
 
-function ProtectedPage({ page }: { page: PageDefinition }) {
+// ============================================================
+// App 根组件 — 认证缓存 + 客户端导航
+// ============================================================
+export default function App() {
+  const { path } = useClientNavigation()
   const [auth, setAuth] = useState<AuthStatus | null>(null)
-  const [error, setError] = useState('')
+  const [authChecked, setAuthChecked] = useState(false)
 
+  // 仅首次加载时检查认证状态（后续客户端导航不再重复请求）
   useEffect(() => {
     homeApi.auth()
-      .then(status => {
-        if (!status.logged_in) {
-          const returnTo = `${window.location.pathname}${window.location.search}`
-          window.location.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`)
-          return
-        }
-        setAuth(status)
-      })
-      .catch(cause => setError(cause instanceof Error ? cause.message : '无法确认登录状态'))
+      .then(status => { setAuth(status); setAuthChecked(true) })
+      .catch(() => { setAuth({ logged_in: false }); setAuthChecked(true) })
   }, [])
 
-  if (error) return <main className="route-state" role="alert"><h1>无法打开页面</h1><p>{error}</p><a href="/login">前往登录</a></main>
-  if (!auth) return <main className="route-state" aria-busy="true"><p>正在确认会话...</p></main>
-  if (page.admin && auth.role !== 'admin') return <main className="route-state"><h1>无权访问</h1><p>此页面仅对管理员开放。</p><a href="/dashboard">返回仪表盘</a></main>
+  // 公开页面
+  if (path === '/') return <AuthContext.Provider value={auth}><HomePage /></AuthContext.Provider>
+  if (path === '/login') return <AuthContext.Provider value={auth}><LoginPage /></AuthContext.Provider>
+  if (path === '/paste' || path.startsWith('/paste/')) return <PastePage />
+
+  // 认证页面 — 等待首次认证检查
+  if (!authChecked) {
+    return (
+      <AuthContext.Provider value={null}>
+        <div className="shell">
+          <div className="route-loading" aria-busy="true" style={{ display: 'grid', placeContent: 'center', justifyItems: 'center', gap: 13, minHeight: '100vh' }}>
+            <span style={{ width: 23, height: 23, border: '2px solid var(--color-border)', borderTopColor: 'var(--color-accent)', borderRadius: '50%', animation: 'shell-spin .8s linear infinite' }} />
+            <p style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>HomeHub</p>
+          </div>
+        </div>
+      </AuthContext.Provider>
+    )
+  }
+
+  // 未登录 → 重定向
+  if (!auth?.logged_in) {
+    const returnTo = encodeURIComponent(`${path}${window.location.search}`)
+    window.location.replace(`/login?returnTo=${returnTo}`)
+    return null
+  }
+
+  // 页面解析
+  const page = resolvePage(path)
+  if (!page) {
+    return (
+      <AuthContext.Provider value={auth}>
+        <div className="not-found" role="alert">
+          <p>404</p>
+          <h1>页面不存在</h1>
+          <span>请求的地址没有对应的 HomeHub 页面。</span>
+          <a href="/">返回首页</a>
+        </div>
+      </AuthContext.Provider>
+    )
+  }
+
+  // 管理员权限检查
+  if (page.admin && auth.role !== 'admin') {
+    return (
+      <AuthContext.Provider value={auth}>
+        <div className="shell">
+          <main className="route-state" role="alert" style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', justifyItems: 'center', gap: 8 }}>
+            <h1>无权访问</h1>
+            <p>此页面仅对管理员开放。</p>
+            <a href="/dashboard">返回仪表盘</a>
+          </main>
+        </div>
+      </AuthContext.Provider>
+    )
+  }
 
   const Page = page.component
-  return <AppShell auth={auth} meta={page.meta}><Page /></AppShell>
-}
-
-export default function App() {
-  const pathname = window.location.pathname.replace(/\/$/, '') || '/'
-  if (pathname === '/') return <HomePage />
-  if (pathname === '/login') return <LoginPage />
-
-  const page = resolvePage(pathname)
-  if (page) return <ProtectedPage page={page} />
-
-  return <main className="route-state"><p className="eyebrow">404</p><h1>页面不存在</h1><p>请求的地址没有对应的 HomeHub 页面。</p><a href="/">返回首页</a></main>
+  return (
+    <AuthContext.Provider value={auth}>
+      <AppShell auth={auth} meta={page.meta}><Page /></AppShell>
+    </AuthContext.Provider>
+  )
 }

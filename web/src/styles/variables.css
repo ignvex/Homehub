@@ -1,33 +1,57 @@
 /* ============================================================
    CSS 变量 — 浅色 / 暗色主题
+   配色方案：米白基底 + 青松绿主色 + 陶土棕边框 + 珊瑚红强调 + 墨石灰文字 + 宝石蓝交互
+   语义令牌定义在此，组件级覆盖在 palette.css
    ============================================================ */
 
 :root {
-  /* 背景 */
-  --color-bg: #f5f5f5;
-  --color-surface: #ffffff;
+  /* 页面背景 — 米白 #F5F5DC */
+  --color-bg: #f5f5dc;
+  --color-bg-primary: #f5f5dc;
 
-  /* 主色 */
-  --color-primary: #4a90d9;
-  --color-primary-hover: #357abd;
+  /* 内容表面 — 暖白 */
+  --color-surface: #fffdf4;
+  --color-surface-muted: #eee9d8;
 
-  /* 文字 */
-  --color-text: #333333;
-  --color-text-secondary: #666666;
+  /* 主色 — 青松绿 #4A7729 */
+  --color-primary: #4a7729;
+  --color-primary-hover: #34591c;
 
-  /* 边框 */
-  --color-border: #e0e0e0;
+  /* 强调色 — 珊瑚红 #FF6B6B */
+  --color-accent: #ff6b6b;
+  --color-accent-strong: #b93646;
+
+  /* 文字 — 墨石灰 #2F4F4F */
+  --color-text: #2f4f4f;
+  --color-text-secondary: #64716c;
+
+  /* 边框 — 陶土棕 #D2B48C 浅阶 */
+  --color-border: #d8c3a5;
+  --color-border-strong: #d2b48c;
+
+  /* 链接与交互 — 宝石蓝 #4169E1 */
+  --color-link: #34591c;
+  --color-interactive: #4169e1;
 
   /* 状态 */
-  --color-error: #e74c3c;
-  --color-success: #27ae60;
+  --color-error: #b93646;
+  --color-success: #4a7729;
+  --color-warning: #8b641f;
 
   /* 输入 */
-  --color-input-bg: #ffffff;
+  --color-input-bg: #fffef8;
+
+  /* 导航 */
+  --color-nav: #4a7729;
+  --color-nav-strong: #34591c;
+  --color-nav-text: #fffdf4;
+
+  /* 遮罩 */
+  --color-overlay: rgba(47, 79, 79, .48);
 
   /* 阴影 & 圆角 */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-sm: 0 1px 3px rgba(47, 79, 79, .08);
+  --shadow-md: 0 12px 34px rgba(47, 79, 79, .14);
   --radius: 8px;
 
   /* 布局 */
@@ -39,18 +63,38 @@
     "Helvetica Neue", Arial, sans-serif;
 }
 
-/* 暗色主题 */
+/* 暗色主题 — 墨石灰/深松绿底，品牌色提亮 */
 html[data-theme="dark"] {
-  --color-bg: #1a1a2e;
-  --color-surface: #16213e;
-  --color-primary: #6ea8fe;
-  --color-primary-hover: #8bb9fe;
-  --color-text: #e0e0e0;
-  --color-text-secondary: #999999;
-  --color-border: #2a2a4a;
-  --color-input-bg: #1a1a2e;
-  --color-error: #ff6b6b;
-  --color-success: #51cf66;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --color-bg: #1b2927;
+  --color-bg-primary: #1b2927;
+  --color-surface: #263633;
+  --color-surface-muted: #30423e;
+
+  --color-primary: #8eb46b;
+  --color-primary-hover: #a7ca84;
+
+  --color-accent: #ff8585;
+  --color-accent-strong: #ff9c9c;
+
+  --color-text: #f5f1df;
+  --color-text-secondary: #bdc5bb;
+
+  --color-border: #746954;
+  --color-border-strong: #97836a;
+
+  --color-link: #a7ca84;
+  --color-interactive: #86a5ff;
+
+  --color-input-bg: #22312e;
+  --color-error: #ff9292;
+  --color-success: #9ac178;
+  --color-warning: #e4b763;
+
+  --color-nav: #304f27;
+  --color-nav-strong: #263f20;
+  --color-nav-text: #fffdf4;
+
+  --color-overlay: rgba(7, 15, 13, .66);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, .28);
+  --shadow-md: 0 14px 40px rgba(0, 0, 0, .34);
 }

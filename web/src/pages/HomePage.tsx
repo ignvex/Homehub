@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, FormEvent } from 'react'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { UserAvatar } from '@/components/UserAvatar'
 import { ApiRequestError } from '@/lib/api'
 import { homeApi, type AuthStatus, type BackgroundSettings, type BookmarkGroup, type MediaAsset, type RSSEntry, type RSSFeed } from '@/lib/home'
 import { getWebUIConfig } from '@/lib/webui'
@@ -8,6 +10,8 @@ import { mediaURL } from '@/lib/media'
 type Preferences = { bookmarks: number[]; feeds: number[] }
 const STORAGE_KEY = 'homehub.home.preferences.v1'
 const fallbackBackground: BackgroundSettings = { mode: 'single', interval_seconds: 30, transition_effect: 'fade', fade_duration_ms: 1000, selected_asset_ids: [] }
+const MAX_BOOKMARKS_PER_GROUP = 8
+const MAX_ENTRIES_PER_FEED = 5
 
 export function HomePage() {
   const [auth, setAuth] = useState<AuthStatus>({ logged_in: false })
@@ -19,30 +23,42 @@ export function HomePage() {
   const [backgroundIndex, setBackgroundIndex] = useState(0)
   const [customizing, setCustomizing] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
   const [preferences, setPreferences] = useState<Preferences>(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '') as Preferences } catch { return { bookmarks: [], feeds: [] } }
   })
 
+  // 并行加载所有数据（公开端点不需要登录）
   useEffect(() => {
-    Promise.allSettled([homeApi.auth(), getWebUIConfig()]).then(([authResult, webuiResult]) => {
-      if (authResult.status === 'fulfilled') setAuth(authResult.value)
-      if (webuiResult.status === 'fulfilled') {
-        setBackground(webuiResult.value.home.background)
-        setAssets(webuiResult.value.home.assets)
-      }
-    })
+    let cancelled = false
+    const load = () => {
+      Promise.allSettled([
+        homeApi.auth(),
+        getWebUIConfig(),
+        homeApi.bookmarks(),
+        homeApi.feeds(),
+        homeApi.entries(),
+      ]).then(([authResult, webuiResult, groupsResult, feedsResult, entriesResult]) => {
+        if (cancelled) return
+        if (authResult.status === 'fulfilled') setAuth(authResult.value)
+        if (webuiResult.status === 'fulfilled') {
+          setBackground(webuiResult.value.home.background)
+          setAssets(webuiResult.value.home.assets)
+        }
+        if (groupsResult.status === 'fulfilled') setGroups(groupsResult.value || [])
+        if (feedsResult.status === 'fulfilled') setFeeds(feedsResult.value || [])
+        if (entriesResult.status === 'fulfilled') setEntries(entriesResult.value.list || [])
+        setLoading(false)
+      })
+    }
+    load()
+    // 页面恢复可见时刷新 auth（改名后切回首页能立即生效）
+    const onVisible = () => { if (document.visibilityState === 'visible') { homeApi.auth().then(a => { if (!cancelled) setAuth(a) }) } }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { cancelled = true; document.removeEventListener('visibilitychange', onVisible) }
   }, [])
 
-  useEffect(() => {
-    if (!auth.logged_in) { setLoading(false); return }
-    Promise.allSettled([homeApi.bookmarks(), homeApi.feeds(), homeApi.entries()]).then(([g, f, e]) => {
-      if (g.status === 'fulfilled') setGroups(g.value || [])
-      if (f.status === 'fulfilled') setFeeds(f.value || [])
-      if (e.status === 'fulfilled') setEntries(e.value.list || [])
-      setLoading(false)
-    })
-  }, [auth.logged_in])
-
+  // 背景图轮播
   const selectedAssets = useMemo(() => background.selected_asset_ids.map(id => assets.find(asset => asset.id === id)).filter(Boolean) as MediaAsset[], [assets, background.selected_asset_ids])
   useEffect(() => {
     if (selectedAssets.length < 2 || background.mode === 'single') return
@@ -52,7 +68,18 @@ export function HomePage() {
     return () => window.clearInterval(timer)
   }, [selectedAssets.length, background.interval_seconds, background.mode])
 
-  const activeAsset = selectedAssets[backgroundIndex % Math.max(selectedAssets.length, 1)]
+  // 背景图交叉淡入淡出
+  const currentAssetRef = useRef<MediaAsset | null>(null)
+  const [bgLayers, setBgLayers] = useState<{ current: MediaAsset | null; outgoing: MediaAsset | null }>({ current: null, outgoing: null })
+  const activeAsset = selectedAssets[backgroundIndex % Math.max(selectedAssets.length, 1)] ?? null
+  useEffect(() => {
+    if (activeAsset?.id === currentAssetRef.current?.id) return
+    setBgLayers({ current: activeAsset, outgoing: currentAssetRef.current })
+    currentAssetRef.current = activeAsset
+    const timer = setTimeout(() => setBgLayers(prev => ({ ...prev, outgoing: null })), background.fade_duration_ms + 100)
+    return () => clearTimeout(timer)
+  }, [activeAsset, background.fade_duration_ms])
+
   const visibleGroups = preferences.bookmarks.length ? groups.filter(group => preferences.bookmarks.includes(group.id)) : groups
   const visibleFeeds = preferences.feeds.length ? feeds.filter(feed => preferences.feeds.includes(feed.id)) : feeds
 
@@ -62,18 +89,40 @@ export function HomePage() {
     savePreferences({ ...preferences, [kind]: current.includes(id) ? current.filter(value => value !== id) : [...current, id] })
   }
   async function logout() { try { await homeApi.logout() } finally { window.location.reload() } }
+  function submitSearch(event: FormEvent) {
+    event.preventDefault()
+    const q = searchQuery.trim()
+    if (q) window.location.assign(`/search?q=${encodeURIComponent(q)}`)
+  }
+
+  const bgFadeStyle = { '--bg-duration': `${background.fade_duration_ms}ms` } as CSSProperties
+  const bgInClass = background.transition_effect === 'slide' ? 'slide-in' : 'bg-fade-in'
+  const bgOutClass = background.transition_effect === 'slide' ? 'slide-out' : 'bg-fade-out'
+  const hasContent = visibleGroups.length > 0 || visibleFeeds.length > 0
 
   return <div className="home-shell">
     <div className="home-background" aria-hidden="true">
-      {activeAsset?.media_type === 'video' ? <video key={activeAsset.id} src={mediaURL(activeAsset.file_path)} autoPlay muted loop playsInline /> : activeAsset ? <div key={activeAsset.id} className="background-image" style={{ backgroundImage: `url("${mediaURL(activeAsset.file_path)}")`, transitionDuration: `${background.fade_duration_ms}ms` }} /> : <div className="background-gradient" />}
+      <div className="background-gradient" />
+      {bgLayers.outgoing && (
+        bgLayers.outgoing.media_type === 'video'
+          ? <video className={`background-layer ${bgOutClass}`} src={mediaURL(bgLayers.outgoing.file_path)} autoPlay muted loop playsInline style={bgFadeStyle} />
+          : <div className={`background-image ${bgOutClass}`} style={{ backgroundImage: `url("${mediaURL(bgLayers.outgoing.file_path)}")`, ...bgFadeStyle }} />
+      )}
+      {bgLayers.current && (
+        bgLayers.current.media_type === 'video'
+          ? <video className={`background-layer ${bgInClass}`} key={bgLayers.current.id} src={mediaURL(bgLayers.current.file_path)} autoPlay muted loop playsInline style={bgFadeStyle} />
+          : <div className={`background-image ${bgInClass}`} key={bgLayers.current.id} style={{ backgroundImage: `url("${mediaURL(bgLayers.current.file_path)}")`, ...bgFadeStyle }} />
+      )}
       <div className="background-shade" />
     </div>
 
     <header className="home-header">
       <a className="brand" href="/"><span className="brand-mark">H</span><span>HomeHub</span></a>
+      <a href="/paste" className="pastebin-link">Pastebin</a>
       <div className="header-actions">
-        <button className="glass-button" onClick={() => setCustomizing(true)}>自定义首页</button>
-        {auth.logged_in ? <><a className="login-button console-button" href="/dashboard">进入控制台</a><span className="user-label">{auth.username || '已登录'}</span><button className="login-button" onClick={logout}>退出</button></> : <a className="login-button" href="/login?returnTo=%2Fdashboard">登录</a>}
+        {auth.logged_in
+          ? <><a href="/profile" className="home-avatar-link"><UserAvatar username={auth.username} size={32} /></a><div className="panel-dropdown"><a className="login-button console-button" href="/dashboard">进入面板</a><div className="panel-dropdown-menu"><a href="/dashboard">进入面板</a><a href="/settings">系统设置</a><a href="/appearance">界面外观</a><button onClick={logout}>退出登录</button></div></div></>
+          : <a className="login-button" href="/login?returnTo=%2Fdashboard">登录</a>}
       </div>
     </header>
 
@@ -81,22 +130,32 @@ export function HomePage() {
 
     <main className="home-main">
       <section className="hero">
-        <p className="eyebrow">YOUR PERSONAL SPACE</p>
-        <h1>{auth.logged_in ? `欢迎回来，${auth.username || '朋友'}` : '让常用内容，触手可及'}</h1>
-        <p className="hero-copy">书签与订阅汇聚一处，保持专注，也保留探索的乐趣。</p>
+        <p className="hero-copy">{auth.logged_in ? `欢迎回来，${auth.username}` : '欢迎来到 HomeHub，你的个人资源中枢。'}</p>
+        <form className="hero-search" onSubmit={submitSearch}>
+          <input className="hero-search-input" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="搜索书签、视频、RSS、专栏或用户…" />
+          <button type="submit" className="hero-search-btn">搜索</button>
+        </form>
       </section>
 
-      {!auth.logged_in ? <section className="empty-panel"><span className="empty-icon">⌂</span><div><h2>登录后加载你的首页</h2><p>书签组、RSS 订阅和自定义背景会在这里自动汇集。</p></div><a className="login-button" href="/login">现在登录</a></section> : loading ? <section className="empty-panel">正在整理你的内容…</section> : <div className="content-grid">
-        {visibleGroups.map(group => <section className="content-card bookmark-section" key={`bookmark-${group.id}`}>
-          <div className="section-heading"><div><span className="section-kicker">BOOKMARKS</span><h2>{group.name}</h2></div><span>{group.bookmarks?.length || 0} 个链接</span></div>
-          {group.bookmarks?.length ? <div className="bookmark-grid">{group.bookmarks.map(bookmark => <a className="bookmark-item" key={bookmark.id} href={bookmark.url} target="_blank" rel="noreferrer"><span className="bookmark-icon">{bookmark.icon ? <img src={bookmark.icon} alt=""/> : bookmark.title.slice(0, 1).toUpperCase()}</span><span><strong>{bookmark.title}</strong><small>{new URL(bookmark.url).hostname.replace('www.', '')}</small></span><i>↗</i></a>)}</div> : <p className="muted">这个分组还没有书签。</p>}
-        </section>)}
-        {visibleFeeds.map(feed => { const feedEntries = entries.filter(entry => entry.feed_id === feed.id).slice(0, 5); return <section className="content-card rss-section" key={`feed-${feed.id}`}>
-          <div className="section-heading"><div><span className="section-kicker">RSS FEED</span><h2>{feed.title || '未命名订阅'}</h2></div><a href={feed.site_url || feed.url} target="_blank" rel="noreferrer">查看站点 ↗</a></div>
-          {feedEntries.length ? <div className="rss-list">{feedEntries.map(entry => <a href={entry.link} target="_blank" rel="noreferrer" key={entry.id}><strong>{entry.title}</strong><span>{entry.author || '最新文章'} · {entry.published ? new Date(entry.published).toLocaleDateString('zh-CN') : '最近更新'}</span></a>)}</div> : <p className="muted">暂无已抓取的文章。</p>}
-        </section>})}
-        {!visibleGroups.length && !visibleFeeds.length && <section className="empty-panel">还没有可展示的内容组。点击“自定义首页”检查选择，或先添加书签和 RSS。</section>}
-      </div>}
+      {loading ? <section className="empty-panel">正在整理你的内容…</section> : hasContent ? <div className="content-grid">
+        {visibleGroups.map(group => {
+          const bookmarks = group.bookmarks ?? []
+          const displayed = bookmarks.slice(0, MAX_BOOKMARKS_PER_GROUP)
+          const hasMore = bookmarks.length > MAX_BOOKMARKS_PER_GROUP
+          return <section className="content-card bookmark-section" key={`bookmark-${group.id}`}>
+            {bookmarks.length ? <div className="bookmark-grid">{displayed.map(bookmark => <a className="bookmark-item" key={bookmark.id} href={bookmark.url} target="_blank" rel="noreferrer"><span className="bookmark-icon">{bookmark.icon ? <img src={bookmark.icon} alt=""/> : bookmark.title.slice(0, 1).toUpperCase()}</span><span><strong>{bookmark.title}</strong><small>{new URL(bookmark.url).hostname.replace('www.', '')}</small></span><i>↗</i></a>)}{hasMore && <a className="bookmark-item bookmark-more" href="/bookmarks"><span className="bookmark-icon">→</span><span><strong>查看全部</strong></span></a>}</div> : <p className="muted">暂无书签。</p>}
+          </section>
+        })}
+        {visibleFeeds.map(feed => {
+          const feedEntries = entries.filter(entry => entry.feed_id === feed.id).slice(0, MAX_ENTRIES_PER_FEED)
+          const totalFeedEntries = entries.filter(entry => entry.feed_id === feed.id).length
+          return <section className="content-card rss-section" key={`feed-${feed.id}`}>
+            <div className="section-heading"><div><h2>{feed.title || '未命名订阅'}</h2></div><div className="heading-links"><a href={feed.site_url || feed.url} target="_blank" rel="noreferrer">查看站点 ↗</a>{totalFeedEntries > MAX_ENTRIES_PER_FEED && <><span className="heading-sep">·</span><a href="/rss">查看更多 →</a></>}</div></div>
+            {feedEntries.length ? <div className="rss-list">{feedEntries.map(entry => <div className="rss-item-row" key={entry.id}><a href={entry.link} target="_blank" rel="noreferrer"><strong>{entry.title}</strong><span>{entry.author || '最新文章'} · {entry.published ? new Date(entry.published).toLocaleDateString('zh-CN') : '最近更新'}</span></a>{entry.magnet_url && <span className="rss-magnet-wrap"><a className="rss-magnet-link" href={entry.magnet_url} title="磁力链接">🧲</a><a className="rss-magnet-btn" target="_blank" title="保存到 PikPak" href={`https://keepshare.org/i9l0fcvt/${encodeURIComponent(`magnet:?xt=urn:btih:${entry.magnet_url!.match(/btih:([a-zA-Z0-9]+)/)?.[1] || ''}`)}`}>⚡</a></span>}</div>)}</div> : <p className="muted">暂无已抓取的文章。</p>}
+          </section>
+        })}
+      </div> : <section className="empty-panel"><span className="empty-icon">⌂</span><div><h2>还没有可展示的内容</h2><p>{auth.logged_in ? '点击右下角齿轮按钮自定义首页，或先添加书签和 RSS。' : '登录后可自定义首页内容，或前往控制台添加书签和订阅。'}</p></div>{!auth.logged_in && <a className="login-button" href="/login">现在登录</a>}</section>}
+      {auth.logged_in && <button className="customize-float" onClick={() => setCustomizing(true)} aria-label="自定义首页" title="自定义首页">⚙</button>}
     </main>
 
     {customizing && <div className="drawer-backdrop" onMouseDown={() => setCustomizing(false)}><aside className="custom-drawer" onMouseDown={event => event.stopPropagation()} aria-label="自定义首页">

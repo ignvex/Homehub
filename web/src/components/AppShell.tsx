@@ -11,7 +11,7 @@ import type { AuthStatus } from '@/lib/home'
 // 不依赖 React Router，也不将完整 HTML 文档注入局部容器。
 // ============================================================
 
-interface NavItem { href: string; label: string; icon: ReactNode; admin?: boolean }
+interface NavItem { href: string; label: string; icon: ReactNode; admin?: boolean; children?: NavItem[] }
 interface NavGroup { label: string; items: NavItem[] }
 
 const icon = (path: ReactNode) => <svg viewBox="0 0 24 24" aria-hidden="true">{path}</svg>
@@ -27,15 +27,27 @@ const navigation: NavGroup[] = [
     ]
   },
   {
-    label: '数据与自动化', items: [
-      { href: '/bilibili', label: 'Bilibili', icon: icon(<><rect x="3" y="6" width="18" height="14" rx="2" /><path d="m8 3 4 3 4-3M8 11v3m8-3v3" /></>) },
+    label: '数据洞察', items: [
+      {
+        href: '/bilibili', label: 'Bilibili', icon: icon(<><rect x="3" y="6" width="18" height="14" rx="2" /><path d="m8 3 4 3 4-3" /><polygon points="10,10 10,16 15,13" /></>),
+        children: [
+          { href: '/bilibili/videos', label: '视频', icon: icon(<><polygon points="9,8 9,16 16,12" /></>) },
+          { href: '/bilibili/articles', label: '专栏', icon: icon(<><rect x="5" y="4" width="14" height="16" rx="1" /><path d="M8 9h8M8 13h8M8 17h5" /></>) },
+          { href: '/bilibili/users', label: '用户', icon: icon(<><circle cx="12" cy="8" r="3" /><path d="M5 20c.8-4 3.1-6 7-6s6.2 2 7 6" /></>) },
+        ]
+      },
       { href: '/search', label: '数据搜索', icon: icon(<><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4 4" /></>) },
+      { href: '/balance', label: '余额监控', icon: icon(<><circle cx="12" cy="12" r="10" /><path d="M12 6v12m-4-4 4 4 4-4" /></>) },
     ]
   },
   {
-    label: '系统', items: [
-      { href: '/appearance', label: '界面外观', icon: icon(<><circle cx="12" cy="12" r="3" /><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /></>) },
+    label: '个人', items: [
       { href: '/profile', label: '个人中心', icon: icon(<><circle cx="12" cy="8" r="3" /><path d="M5 20c.8-4 3.1-6 7-6s6.2 2 7 6" /></>) },
+      { href: '/appearance', label: '界面外观', icon: icon(<><circle cx="12" cy="12" r="3" /><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /></>) },
+    ]
+  },
+  {
+    label: '系统管理', items: [
       { href: '/users', label: '用户管理', admin: true, icon: icon(<><circle cx="9" cy="8" r="3" /><path d="M3 20c.5-4 2.5-6 6-6s5.5 2 6 6M16 7h5m-2.5-2.5v5" /></>) },
       { href: '/logs', label: '系统日志', admin: true, icon: icon(<><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></>) },
       { href: '/settings', label: '设置', admin: true, icon: icon(<><circle cx="12" cy="12" r="3" /><path d="m19 13.5 1-1.5-1-1.5.1-1.8-1.7-.7-.9-1.5-1.8.2L14.2 5 12.5 4l-1.4 1.1-1.8-.2-.9 1.6-1.7.7.1 1.8-1 1.5 1 1.5-.1 1.8 1.7.7.9 1.5 1.8-.2 1.4 1.1 1.7-1.1 1.8.2.9-1.5 1.7-.7z" /></>) },
@@ -44,6 +56,24 @@ const navigation: NavGroup[] = [
 ]
 
 export interface ShellPageMeta { title: string; eyebrow?: string; description?: string }
+
+// ============================================================
+// 导航组折叠状态持久化
+// ============================================================
+const FOLD_STORAGE_KEY = 'homehub-nav-folded'
+function loadFoldedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FOLD_STORAGE_KEY)
+    if (raw) {
+      const arr: string[] = JSON.parse(raw)
+      if (Array.isArray(arr)) return new Set(arr)
+    }
+  } catch { /* ignore corrupt storage */ }
+  return new Set()
+}
+function saveFoldedGroups(folded: Set<string>) {
+  localStorage.setItem(FOLD_STORAGE_KEY, JSON.stringify([...folded]))
+}
 
 /**
  * 判断当前路径是否匹配导航项（用于高亮 active 状态）。
@@ -57,6 +87,14 @@ function isActivePath(href: string): boolean {
 export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: ShellPageMeta; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('homehub-shell-collapsed') === '1')
+  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => {
+    const pathname = window.location.pathname
+    const expanded = new Set<string>()
+    if (pathname.startsWith('/bilibili/')) expanded.add('/bilibili')
+    return expanded
+  })
+  // 导航分组折叠状态 — 默认全部展开
+  const [foldedGroups, setFoldedGroups] = useState<Set<string>>(loadFoldedGroups)
 
   // 浏览器前进、后退时关闭移动端侧栏。
   useEffect(() => {
@@ -71,6 +109,73 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
     localStorage.setItem('homehub-shell-collapsed', collapsed ? '1' : '0')
   }, [collapsed])
 
+  // 导航组折叠状态持久化
+  useEffect(() => {
+    saveFoldedGroups(foldedGroups)
+  }, [foldedGroups])
+
+  function toggleMenu(href: string) {
+    setExpandedMenus(prev => {
+      const next = new Set(prev)
+      if (next.has(href)) next.delete(href)
+      else next.add(href)
+      return next
+    })
+  }
+
+  function toggleGroupFold(label: string) {
+    setFoldedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+  }
+
+  function renderNavItem(item: NavItem) {
+    // 有子菜单且侧栏展开时，渲染可折叠子菜单
+    if (item.children && !collapsed) {
+      const isExpanded = expandedMenus.has(item.href)
+      const isChildActive = item.children.some(child => isActivePath(child.href))
+      return (
+        <div key={item.href} className="nav-collapsible">
+          <div className="nav-collapsible-head">
+            <a href={item.href} className={isActivePath(item.href) || isChildActive ? 'is-active' : ''}>
+              {item.icon}
+              <span>{item.label}</span>
+            </a>
+            <button className="nav-expand" onClick={() => toggleMenu(item.href)} aria-label={isExpanded ? '折叠子菜单' : '展开子菜单'}>
+              {isExpanded ? '▾' : '▸'}
+            </button>
+          </div>
+          {isExpanded && (
+            <div className="nav-children">
+              {item.children.map(child => (
+                <a key={child.href} href={child.href} className={isActivePath(child.href) ? 'is-active' : ''}>
+                  {child.icon}
+                  <span>{child.label}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // 普通导航项（或收起状态下的所有项）
+    return (
+      <a
+        key={item.href}
+        href={item.href}
+        title={collapsed ? item.label : undefined}
+        className={isActivePath(item.href) ? 'is-active' : ''}
+      >
+        {item.icon}
+        <span>{item.label}</span>
+      </a>
+    )
+  }
+
   return (
     <div className={`shell ${collapsed ? 'shell--collapsed' : ''}`}>
       <button className={`shell-scrim ${open ? 'is-open' : ''}`} onClick={() => setOpen(false)} aria-label="关闭导航" />
@@ -81,25 +186,33 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             <span className="shell-brand-mark">H</span>
             <span className="shell-brand-name">HomeHub</span>
           </a>
-          <button onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '展开侧栏' : '收起侧栏'}>‹</button>
+          <button onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '展开侧栏' : '收起侧栏'}>{collapsed ? '›' : '‹'}</button>
         </div>
         <nav className="shell-nav" aria-label="主导航">
-          {navigation.map(group => (
-            <section key={group.label}>
-              <h2>{group.label}</h2>
-              {group.items.map(item => (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  title={collapsed ? item.label : undefined}
-                  className={isActivePath(item.href) ? 'is-active' : ''}
+          {navigation.map(group => {
+            const isFolded = foldedGroups.has(group.label)
+            const hasActiveChild = group.items.some(item =>
+              isActivePath(item.href) || item.children?.some(c => isActivePath(c.href))
+            )
+            // 如果分组中有当前活跃的子项，自动展开折叠
+            const effectiveFolded = collapsed ? false : (hasActiveChild ? false : isFolded)
+            return (
+              <section key={group.label}>
+                <h2
+                  className={`shell-nav-group-head ${effectiveFolded ? 'is-folded' : ''}`}
+                  onClick={() => { if (!collapsed) toggleGroupFold(group.label) }}
+                  title={collapsed ? '' : (effectiveFolded ? '展开分组' : '折叠分组')}
+                  role="button"
+                  tabIndex={collapsed ? -1 : 0}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroupFold(group.label) } }}
                 >
-                  {item.icon}
-                  <span>{item.label}</span>
-                </a>
-              ))}
-            </section>
-          ))}
+                  <span>{group.label}</span>
+                  {!collapsed && <span className="shell-nav-group-arrow">{effectiveFolded ? '▸' : '▾'}</span>}
+                </h2>
+                {!collapsed && !effectiveFolded && group.items.filter(item => !item.admin || auth.role === 'admin').map(renderNavItem)}
+              </section>
+            )
+          })}
         </nav>
         <a href="/profile" className="shell-account">
           <UserAvatar username={auth.username} size={36} />

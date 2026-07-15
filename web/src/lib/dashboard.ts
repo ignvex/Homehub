@@ -10,11 +10,11 @@ export interface TableStats {
 export interface CrawlerProgress {
   type: 'video' | 'article' | 'user'
   enabled: boolean
+  stored_count: number
   window_base: number
   window_size: number
-  fetched: number
-  total_est: number
-  progress_pct: string
+  window_scanned: number
+  window_progress_pct: string
 }
 
 export interface CrawlerStats {

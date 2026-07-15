@@ -1,26 +1,29 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react'
 
-const STORAGE_KEY = 'homehub-theme';
+const STORAGE_KEY = 'homehub-theme'
+export type ThemePreference = 'light' | 'dark' | 'system'
 
-type Theme = 'light' | 'dark';
+function getInitialTheme(): ThemePreference {
+  const stored = localStorage.getItem(STORAGE_KEY)
+  return stored === 'dark' || stored === 'light' || stored === 'system' ? stored : 'system'
+}
 
-function getInitialTheme(): Theme {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === 'dark' || stored === 'light') return stored;
-  return 'light';
+function resolveTheme(preference: ThemePreference): 'light' | 'dark' {
+  return preference === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : preference
 }
 
 export function useTheme() {
-  const [theme, setThemeState] = useState<Theme>(getInitialTheme);
+  const [theme, setTheme] = useState<ThemePreference>(getInitialTheme)
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem(STORAGE_KEY, theme);
-  }, [theme]);
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => document.documentElement.setAttribute('data-theme', resolveTheme(theme))
+    apply()
+    localStorage.setItem(STORAGE_KEY, theme)
+    if (theme === 'system') media.addEventListener('change', apply)
+    return () => media.removeEventListener('change', apply)
+  }, [theme])
 
-  const toggleTheme = useCallback(() => {
-    setThemeState((prev) => (prev === 'light' ? 'dark' : 'light'));
-  }, []);
-
-  return { theme, toggleTheme };
+  const toggleTheme = useCallback(() => setTheme(previous => resolveTheme(previous) === 'light' ? 'dark' : 'light'), [])
+  return { theme, setTheme, toggleTheme, resolvedTheme: resolveTheme(theme) }
 }
