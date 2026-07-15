@@ -17,5 +17,5 @@ type AvatarCache struct {
 
 // TableName 指定表名为 avatar_caches。
 func (AvatarCache) TableName() string {
-	return "avatar_caches"
+	return "homehub_avatar_caches"
 }

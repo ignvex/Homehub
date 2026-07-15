@@ -19,5 +19,5 @@ type MediaAsset struct {
 
 // TableName 指定表名为 media_assets。
 func (MediaAsset) TableName() string {
-	return "media_assets"
+	return "homehub_media_assets"
 }

@@ -25,7 +25,7 @@ type RSSFeed struct {
 
 // TableName 指定表名。
 func (RSSFeed) TableName() string {
-	return "rss_feeds"
+	return "homehub_rss_feeds"
 }
 
 // ============================================================
@@ -43,11 +43,12 @@ type RSSEntry struct {
 	Link      string    `gorm:"uniqueIndex;size:2048;not null" json:"link"` // 条目链接（唯一，用于去重）
 	Author    string    `gorm:"size:255" json:"author,omitempty"`           // 作者
 	Content   string    `gorm:"type:text" json:"content,omitempty"`         // 摘要/正文（截断到 2000 字符）
+	MagnetURL string    `gorm:"type:text" json:"magnet_url,omitempty"`      // 磁力链接（从 RSS 附件或内容中提取）
 	Published time.Time `gorm:"index" json:"published"`                     // 发布时间
 	FetchedAt time.Time `gorm:"not null" json:"fetched_at"`                 // 抓取时间
 }
 
 // TableName 指定表名。
 func (RSSEntry) TableName() string {
-	return "rss_entries"
+	return "homehub_rss_entries"
 }

@@ -23,7 +23,7 @@ type User struct {
 
 // TableName 指定表名为 users。
 func (User) TableName() string {
-	return "users"
+	return "homehub_users"
 }
 
 // GravatarHash 返回邮箱的小写去空格后 MD5 哈希（十六进制字符串）。

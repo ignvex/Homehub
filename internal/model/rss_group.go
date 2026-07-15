@@ -17,5 +17,5 @@ type RSSGroup struct {
 
 // TableName 指定表名。
 func (RSSGroup) TableName() string {
-	return "rss_groups"
+	return "homehub_rss_groups"
 }
