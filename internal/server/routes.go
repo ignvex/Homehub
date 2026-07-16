@@ -192,6 +192,8 @@ func registerRoutes(r *gin.Engine) {
 			adminLogs := admin.Group("/logs")
 			{
 				adminLogs.GET("", handler.LogList)
+				adminLogs.DELETE("", handler.LogClearAll)
+				adminLogs.GET("/stream", handler.LogStream)
 			}
 		}
 	}

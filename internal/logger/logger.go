@@ -11,6 +11,7 @@ package logger
 import (
 	"log/slog"
 	"os"
+	"runtime"
 
 	"gorm.io/gorm"
 )
@@ -94,29 +95,39 @@ func parseLevel(level string) slog.Level {
 // Debug 输出 debug 级别日志。
 func Debug(msg string, args ...any) {
 	if lg != nil {
-		lg.Debug(msg, args...)
+		lg.Debug(msg, appendSource(args)...)
 	}
 }
 
 // Info 输出 info 级别日志。
 func Info(msg string, args ...any) {
 	if lg != nil {
-		lg.Info(msg, args...)
+		lg.Info(msg, appendSource(args)...)
 	}
 }
 
 // Warn 输出 warn 级别日志。
 func Warn(msg string, args ...any) {
 	if lg != nil {
-		lg.Warn(msg, args...)
+		lg.Warn(msg, appendSource(args)...)
 	}
 }
 
 // Error 输出 error 级别日志。
 func Error(msg string, args ...any) {
 	if lg != nil {
-		lg.Error(msg, args...)
+		lg.Error(msg, appendSource(args)...)
 	}
+}
+
+// appendSource 捕获调用方文件位置作为 source key=value 对，追加到 args 末尾。
+// 跳过 2 层：appendSource → Debug/Info/Warn/Error → 实际调用方。
+func appendSource(args []any) []any {
+	_, file, line, ok := runtime.Caller(2)
+	if ok {
+		args = append(args, "source", trimPath(file)+":"+itoa(line))
+	}
+	return args
 }
 
 // Logger 返回全局 *slog.Logger 实例。

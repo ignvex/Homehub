@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/imroc/req/v3"
 	"github.com/mmcdole/gofeed"
@@ -32,6 +32,9 @@ var (
 )
 
 const rssHTTPTimeout = 30 * time.Second
+
+// rssUserAgent 用于伪装 RSS 抓取请求，避免 Go 默认 UA 被反爬拦截。
+const rssUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 
 // RSSService RSS 订阅业务服务。
 //
@@ -61,7 +64,7 @@ func NewRSSService(db *gorm.DB) *RSSService {
 //
 // 先检查 URL 是否已存在，然后通过 gofeed 解析订阅源获取元数据，
 // 最后创建 RSSFeed 记录并返回。
-func (s *RSSService) CreateFeed(urlStr string) (*model.RSSFeed, error) {
+func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed, error) {
 	if urlStr == "" {
 		return nil, errors.New("订阅源 URL 不能为空")
 	}
@@ -93,6 +96,10 @@ func (s *RSSService) CreateFeed(urlStr string) (*model.RSSFeed, error) {
 		FetchInterval: 3600, // 默认 1 小时
 	}
 
+	if groupID != nil {
+		rssFeed.GroupID = groupID
+	}
+
 	// 提取站点图标
 	if feed.Image != nil && feed.Image.URL != "" {
 		rssFeed.IconURL = feed.Image.URL
@@ -101,6 +108,13 @@ func (s *RSSService) CreateFeed(urlStr string) (*model.RSSFeed, error) {
 	if err := s.db.Create(&rssFeed).Error; err != nil {
 		return nil, fmt.Errorf("创建订阅源失败: %w", err)
 	}
+
+	// 立即执行首次抓取，填充初始条目
+	go func() {
+		if err := s.FetchFeed(rssFeed.ID); err != nil {
+			logger.Error("[rss] 首次抓取失败", "feed_id", rssFeed.ID, "error", err)
+		}
+	}()
 
 	return &rssFeed, nil
 }
@@ -183,7 +197,7 @@ func (s *RSSService) ListFeeds(groupID *uint64) ([]model.RSSFeed, error) {
 //
 // page 从 1 开始；perPage <= 0 时默认 20。
 // feedID == 0 表示不过滤，查询全部订阅源的条目。
-func (s *RSSService) ListEntries(feedID uint64, page, perPage int) ([]model.RSSEntry, int64, error) {
+func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage int) ([]model.RSSEntry, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -194,6 +208,11 @@ func (s *RSSService) ListEntries(feedID uint64, page, perPage int) ([]model.RSSE
 	baseQuery := s.db.Model(&model.RSSEntry{})
 	if feedID > 0 {
 		baseQuery = baseQuery.Where("feed_id = ?", feedID)
+	}
+	if groupID > 0 {
+		baseQuery = baseQuery.
+			Joins("JOIN homehub_rss_feeds ON homehub_rss_feeds.id = homehub_rss_entries.feed_id").
+			Where("homehub_rss_feeds.group_id = ?", groupID)
 	}
 
 	var total int64
@@ -285,6 +304,9 @@ func (s *RSSService) FetchFeed(id uint64) error {
 		}
 	}
 
+	// 诊断：记录成功抓取的条目数
+	logger.Info("[rss] 抓取完成", "feed_id", feed.ID, "entries", len(entries))
+
 	// 执行保留策略
 	if err := s.enforceRetention(feed.ID); err != nil {
 		errMsg := err.Error()
@@ -371,13 +393,13 @@ func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
 
 			if enabled {
 				if err := s.FetchAll(); err != nil {
-					log.Printf("[rss] 后台定时抓取出错: %v", err)
+					logger.Error("[rss] 后台定时抓取出错", "error", err)
 				}
 			}
 
 			select {
 			case <-ctx.Done():
-				log.Println("[rss] 后台定时抓取已停止")
+				logger.Info("[rss] 后台定时抓取已停止")
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
 			}
@@ -415,7 +437,7 @@ func (s *RSSService) itemToEntry(feedID uint64, item *gofeed.Item, fetchedAt tim
 	entry := model.RSSEntry{
 		FeedID:    feedID,
 		Title:     item.Title,
-		Link:      item.Link,
+		Link:      truncateStr(item.Link, 2048),
 		FetchedAt: fetchedAt,
 	}
 
@@ -651,8 +673,14 @@ func buildRSSHTTPClient() *req.Client {
 		}
 	}
 
-	client := req.C().SetTimeout(rssHTTPTimeout)
+	client := req.C().SetTimeout(rssHTTPTimeout).DisableDebugLog()
 	client.GetClient().Transport = transport
+	// 设置 User-Agent 伪装为浏览器，避免 Go 默认 UA 被 RSS 源拒绝
+	ua := rssUserAgent
+	if cfg != nil && cfg.RSS.UserAgent != "" {
+		ua = cfg.RSS.UserAgent
+	}
+	client.SetCommonHeader("User-Agent", ua)
 	// 禁止自动跟随重定向（防止 SSRF 通过重定向绕过 IP 校验）
 	client.GetClient().CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
@@ -672,6 +700,14 @@ var magnetPattern = regexp.MustCompile(`magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s"<]
 // extractMagnet 从文本中提取第一个磁力链接。
 func extractMagnet(text string) string {
 	return magnetPattern.FindString(text)
+}
+
+// truncateStr 按字符截断字符串，用于保护数据库列长度限制。
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 // rssImgPattern 匹配 HTML 中的 <img> 标签。
@@ -701,7 +737,7 @@ func sanitizeRssContent(content string) string {
 	content = dangerousSelfClosing.ReplaceAllString(content, "")
 	content = dangerousPaired.ReplaceAllString(content, "")
 
-	// 2. <img> 外部图片 → 本地缓存
+	// 2. <img> 外部图片 → 本地缓存（失败则保留原始 src，不阻断入库）
 	content = rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
 		match := rssImgPattern.FindStringSubmatch(tag)
 		if len(match) < 2 || match[1] == "" {
@@ -725,8 +761,7 @@ func sanitizeRssContent(content string) string {
 			return strings.Replace(tag, src, localURL, 1)
 		}
 		if err := downloadImage(src, localPath); err != nil {
-			log.Printf("[rss] 图片下载失败 url=%s: %v", src, err)
-			return ""
+			return "" // 无法缓存的图片直接移除
 		}
 		return strings.Replace(tag, src, localURL, 1)
 	})
@@ -755,8 +790,14 @@ func downloadImage(urlStr, dest string) error {
 		return err
 	}
 
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", rssUserAgent)
+
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(urlStr)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

@@ -45,4 +45,5 @@ export const adminApi = {
     if (query.until) params.set('until', localDateToRFC3339(query.until))
     return api.get<PageResult<LogEntry>>(`/admin/logs?${params}`)
   },
+  deleteLogs: () => api.delete<void>('/admin/logs'),
 }

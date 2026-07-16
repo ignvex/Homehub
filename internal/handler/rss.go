@@ -95,7 +95,7 @@ func RSSCreateFeed(c *gin.Context) {
 		return
 	}
 
-	feed, err := svc.RSS.CreateFeed(req.URL)
+	feed, err := svc.RSS.CreateFeed(req.URL, req.GroupID)
 	if err != nil {
 		FailBadRequest(c, err.Error())
 		return
@@ -236,10 +236,20 @@ func RSSListEntries(c *gin.Context) {
 		}
 	}
 
+	groupID := uint64(0)
+	if gid := c.Query("group_id"); gid != "" {
+		var err error
+		groupID, err = strconv.ParseUint(gid, 10, 64)
+		if err != nil {
+			FailBadRequest(c, "无效的 group_id")
+			return
+		}
+	}
+
 	page := queryInt(c, "page", 1)
 	perPage := queryInt(c, "per_page", 20)
 
-	entries, total, err := svc.RSS.ListEntries(feedID, page, perPage)
+	entries, total, err := svc.RSS.ListEntries(feedID, groupID, page, perPage)
 	if err != nil {
 		FailInternal(c, "查询条目失败")
 		return

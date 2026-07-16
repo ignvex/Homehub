@@ -108,9 +108,10 @@ type BookmarkConfig struct {
 // RSSConfig RSS 订阅模块配置。
 type RSSConfig struct {
 	ProxyServiceConfig
-	RetentionCount          int  `json:"retention_count"`           // 每个订阅源保留条目数，默认 5000
-	BackgroundFetchEnabled  bool `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
-	BackgroundFetchInterval int  `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
+	RetentionCount          int    `json:"retention_count"`           // 每个订阅源保留条目数，默认 5000
+	BackgroundFetchEnabled  bool   `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
+	BackgroundFetchInterval int    `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
+	UserAgent               string `json:"user_agent"`                // 自定义 User-Agent，空则默认 Chrome 150
 }
 
 // BilibiliConfig B 站爬虫完整配置。

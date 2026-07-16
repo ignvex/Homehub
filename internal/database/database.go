@@ -24,10 +24,10 @@ import (
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/logger"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 )
 
 // 连接池默认参数（生产环境建议值）。
@@ -86,7 +86,7 @@ func Init(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 		dsn := buildDSN(cfg)
 
 		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-			Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+			Logger: logger.NewGormLogger(200 * time.Millisecond),
 		})
 		if err != nil {
 			initErr = fmt.Errorf("database: 连接 PostgreSQL 失败 (主机=%s): %w", cfg.Host, err)

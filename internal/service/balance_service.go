@@ -66,7 +66,7 @@ func NewBalanceService() *BalanceService {
 	client := req.C().
 		SetTimeout(15 * time.Second).
 		SetCommonHeaders(map[string]string{
-			"User-Agent": "HomeHub/1.0",
+			"User-Agent": rssUserAgent,
 		})
 	client.GetClient().Transport = transport
 

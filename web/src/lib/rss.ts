@@ -37,9 +37,10 @@ export const rssApi = {
   deleteFeed: (id: number) => api.delete<void>(`/rss/feeds/${id}`),
   fetchFeed: (id: number) => api.post<void>(`/rss/feeds/${id}/fetch`),
   fetchAll: () => api.post<void>('/rss/fetch-all'),
-  listEntries: (feedID: number | null, page: number, perPage = 20) => {
+  listEntries: (feedID: number | null, groupID: number | null, page: number, perPage = 20) => {
     const query = new URLSearchParams({ page: String(page), per_page: String(perPage) })
     if (feedID) query.set('feed_id', String(feedID))
+    if (groupID) query.set('group_id', String(groupID))
     return api.get<PageResult<RSSEntry>>(`/rss/entries?${query}`)
   },
   listGroups: () => api.get<RSSGroup[]>('/rss/groups'),

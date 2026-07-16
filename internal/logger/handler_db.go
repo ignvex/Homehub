@@ -108,6 +108,13 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 	// 收集附加字段
 	attrs := make(map[string]any)
 	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "source" && src == "" {
+			// 若便捷函数已通过属性传入真实调用方 source，优先使用
+			if s, ok := a.Value.Any().(string); ok {
+				entry.Source = s
+			}
+			return true
+		}
 		attrs[a.Key] = a.Value.Any()
 		return true
 	})
@@ -121,6 +128,9 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 	default:
 		// 缓冲区满，丢弃（不阻塞主流程）
 	}
+
+	// 推送到实时广播（SSE/WebSocket）
+	broadcastLog(entry)
 
 	return nil
 }

@@ -81,6 +81,14 @@ func (s *LogService) ListLogs(q LogQuery) ([]model.LogEntry, int64, error) {
 	return entries, total, nil
 }
 
+// DeleteAll 清除所有日志记录。
+func (s *LogService) DeleteAll() error {
+	if err := s.db.Where("1 = 1").Delete(&model.LogEntry{}).Error; err != nil {
+		return fmt.Errorf("清除日志失败: %w", err)
+	}
+	return nil
+}
+
 // clampPerPage 限定每页数量到 1-100，非正值回落到 20。
 func clampPerPage(perPage int) int {
 	if perPage <= 0 {

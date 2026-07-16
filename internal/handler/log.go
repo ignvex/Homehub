@@ -49,3 +49,20 @@ func LogList(c *gin.Context) {
 	}
 	Success(c, gin.H{"list": logs, "total": total, "page": page, "per_page": perPage})
 }
+
+// LogClearAll 清除全部系统日志。
+//
+//	@Summary		清除全部日志
+//	@Description	删除所有系统日志记录（仅管理员）
+//	@Tags			系统日志
+//	@Produce		json
+//	@Success		200	{object}	Response	"清除成功"
+//	@Failure		500	{object}	Response	"服务器内部错误"
+//	@Router			/admin/logs [delete]
+func LogClearAll(c *gin.Context) {
+	if err := svc.Log.DeleteAll(); err != nil {
+		FailInternal(c, "清除日志失败")
+		return
+	}
+	Success(c, nil)
+}
