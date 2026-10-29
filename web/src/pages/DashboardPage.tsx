@@ -1,31 +1,43 @@
 import { useEffect, useState } from 'react'
-import { dashboardApi, type CrawlerStats } from '@/lib/dashboard'
+import { dashboardApi, type HealthStatus } from '@/lib/dashboard'
 import { balanceApi, type TargetResult } from '@/lib/balance'
 
-const labels = { video: '视频', video_page: '分P', article: '专栏', user: 'UP 主' }
+function formatUptime(seconds?: number): string {
+  if (seconds === undefined || seconds < 0) return '—'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days} 天 ${hours} 小时`
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`
+  return `${minutes} 分`
+}
+
 const actions: [string, string, string][] = [
   ['/bookmarks', '整理书签', '维护工作空间入口'],
   ['/media', '管理媒体', '上传背景与封面'],
   ['/appearance', '调整外观', '配置首页和登录页'],
-  ['/bilibili', '查看采集', '检查爬虫状态'],
+  ['/rss', '阅读订阅', '查看 RSS 抓取结果'],
 ]
 
 export function DashboardPage() {
-  const [stats, setStats] = useState<CrawlerStats | null>(null)
+  const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   const [balances, setBalances] = useState<TargetResult[]>([])
 
   useEffect(() => {
     balanceApi.list().then(setBalances).catch(() => {})
-    Promise.allSettled([dashboardApi.health(), dashboardApi.stats()]).then(([health, crawler]) => {
-      setHealthy(health.status === 'fulfilled' && health.value.status === 'ok' && (!health.value.db || health.value.db === 'ok'))
-      if (crawler.status === 'fulfilled') setStats(crawler.value)
-      else setError(crawler.reason instanceof Error ? crawler.reason.message : '统计数据暂不可用')
-    })
+    dashboardApi.health()
+      .then(status => {
+        setHealth(status)
+        setHealthy(status.status === 'ok' && (!status.db || status.db === 'ok'))
+      })
+      .catch((cause: unknown) => {
+        setHealthy(false)
+        setError(cause instanceof Error ? cause.message : '健康检查失败')
+      })
   }, [])
 
-  const tables = stats ? [stats.video, stats.video_page, stats.article, stats.user] : []
   return (
     <div className="dashboard">
       <section className="dashboard-status">
@@ -35,14 +47,14 @@ export function DashboardPage() {
           <strong>{healthy === null ? '检查中' : healthy ? '运行正常' : '连接异常'}</strong>
         </div>
         <div>
-          <p>归档占用</p>
-          <strong>{stats?.total_mb ?? '—'}</strong>
-          <span>预估数据库空间</span>
+          <p>数据库</p>
+          <strong>{health?.db === 'ok' ? '已连接' : health?.db ? health.db : '—'}</strong>
+          <span>PostgreSQL 连接状态</span>
         </div>
         <div>
-          <p>采集记录</p>
-          <strong>{stats ? tables.reduce((sum, item) => sum + item.row_count, 0).toLocaleString() : '—'}</strong>
-          <span>跨四个数据表</span>
+          <p>运行时长</p>
+          <strong>{formatUptime(health?.uptime_seconds)}</strong>
+          <span>自上次启动以来</span>
         </div>
       </section>
 
@@ -50,20 +62,28 @@ export function DashboardPage() {
         <section className="work-panel">
           <header>
             <div>
-              <p>DATA INVENTORY</p>
-              <h2>数据资产</h2>
+              <p>SERVICE HEALTH</p>
+              <h2>服务检查</h2>
             </div>
-            <a href="/bilibili">查看采集 →</a>
+            <a href="/logs">查看日志 →</a>
           </header>
           {error ? <div className="panel-error">{error}</div> : (
             <div className="metric-table">
-              {tables.length ? tables.map(item => (
-                <div key={item.table}>
-                  <span>{labels[item.table as keyof typeof labels] || item.table}</span>
-                  <strong>{item.row_count.toLocaleString()}</strong>
-                  <small>{item.est_mb}</small>
-                </div>
-              )) : <div className="panel-loading">正在读取统计…</div>}
+              <div>
+                <span>HTTP 服务</span>
+                <strong>{healthy === null ? '—' : healthy ? '正常' : '异常'}</strong>
+                <small>Health endpoint</small>
+              </div>
+              <div>
+                <span>数据库</span>
+                <strong>{health?.db ?? '—'}</strong>
+                <small>连接与查询</small>
+              </div>
+              <div>
+                <span>整体状态</span>
+                <strong>{health?.status ?? '—'}</strong>
+                <small>综合判定</small>
+              </div>
             </div>
           )}
         </section>

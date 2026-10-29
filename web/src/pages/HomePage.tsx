@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
-import { ApiRequestError } from '@/lib/api'
 import { homeApi, type AuthStatus, type BackgroundSettings, type BookmarkGroup, type MediaAsset, type RSSEntry, type RSSFeed } from '@/lib/home'
 import { getWebUIConfig } from '@/lib/webui'
 import { mediaURL } from '@/lib/media'
@@ -132,7 +131,7 @@ export function HomePage() {
       <section className="hero">
         <p className="hero-copy">{auth.logged_in ? `欢迎回来，${auth.username}` : '欢迎来到 HomeHub，你的个人资源中枢。'}</p>
         <form className="hero-search" onSubmit={submitSearch}>
-          <input className="hero-search-input" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="搜索书签、视频、RSS、专栏或用户…" />
+          <input className="hero-search-input" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="搜索书签或 RSS 条目…" />
           <button type="submit" className="hero-search-btn">搜索</button>
         </form>
       </section>
@@ -167,4 +166,3 @@ export function HomePage() {
   </div>
 }
 
-export function getApiErrorMessage(error: unknown) { return error instanceof ApiRequestError ? error.message : '暂时无法连接服务' }

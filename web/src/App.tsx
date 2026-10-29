@@ -1,8 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ComponentType } from 'react'
+import { createContext, useCallback, useEffect, useState, type ComponentType } from 'react'
 import { AppShell, type ShellPageMeta } from '@/components/AppShell'
 import { homeApi, type AuthStatus } from '@/lib/home'
 import { BalancePage } from '@/pages/BalancePage'
-import BilibiliPage from '@/pages/BilibiliPage'
 import { AppearancePage } from '@/pages/AppearancePage'
 import { BookmarksPage } from '@/pages/BookmarksPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -22,7 +21,6 @@ import { UsersPage } from '@/pages/UsersPage'
 // Auth Context — 应用级别缓存认证状态，避免每次页面切换重新请求
 // ============================================================
 const AuthContext = createContext<AuthStatus | null>(null)
-export function useAuth() { return useContext(AuthContext) }
 
 // ============================================================
 // 客户端导航 — 使用 history.pushState 替代整页跳转，消除白屏
@@ -75,38 +73,18 @@ interface PageDefinition {
 }
 
 const pages: Record<string, PageDefinition> = {
-  '/dashboard': { component: DashboardPage, meta: { eyebrow: '运行概览', title: '仪表盘', description: '查看服务健康、数据规模与采集进度。' } },
+  '/dashboard': { component: DashboardPage, meta: { eyebrow: '运行概览', title: '仪表盘', description: '查看服务健康、数据库连接与运行时长。' } },
   '/bookmarks': { component: BookmarksPage, meta: { eyebrow: '工作空间', title: '书签', description: '维护分组、链接与显示顺序。' } },
   '/rss': { component: RSSPage, meta: { eyebrow: '内容订阅', title: 'RSS', description: '维护订阅源并阅读指定来源的条目。' } },
   '/todos': { component: TodosPage, meta: { eyebrow: '共享任务', title: '待办事项', description: '跟踪所有认证用户共享的任务集合。' } },
   '/media': { component: MediaPage, meta: { eyebrow: '资源库', title: '媒体资源', description: '上传、检查和清理背景媒体。' } },
-  '/search': { component: SearchPage, meta: { eyebrow: '跨域检索', title: '数据搜索', description: '检索书签、视频、专栏与用户。' } },
+  '/search': { component: SearchPage, meta: { eyebrow: '跨域检索', title: '数据搜索', description: '检索书签与 RSS 条目。' } },
   '/profile': { component: ProfilePage, meta: { eyebrow: '账户', title: '个人中心', description: '维护个人资料、头像与登录密码。' } },
   '/users': { component: UsersPage, meta: { eyebrow: '访问控制', title: '用户管理', description: '管理成员、角色与账户状态。' }, admin: true },
   '/logs': { component: LogsPage, meta: { eyebrow: '系统事件', title: '系统日志', description: '筛选和定位后端运行事件。' }, admin: true },
   '/settings': { component: SettingsPage, meta: { eyebrow: '系统配置', title: '设置', description: '按配置域修改后端支持的参数。' }, admin: true },
   '/appearance': { component: AppearancePage, meta: { eyebrow: '界面偏好', title: '外观', description: '管理当前浏览器主题与服务端背景配置。' } },
   '/balance': { component: BalancePage, meta: { eyebrow: '服务监视', title: 'LLM 余额', description: '查看各平台 API 余额与监控状态。' } },
-}
-
-function resolvePage(pathname: string): PageDefinition | null {
-  if (pathname === '/bilibili' || pathname.startsWith('/bilibili/')) {
-    const parts = pathname.split('/')
-    const rawKind = parts[2]
-    if (!rawKind) {
-      return {
-        component: () => <BilibiliPage overview kind="videos" />,
-        meta: { eyebrow: '数据探索', title: 'Bilibili', description: '查看爬虫运行状态与采集概览。' },
-      }
-    }
-    const kind = rawKind === 'articles' || rawKind === 'users' ? rawKind : 'videos'
-    const detailID = parts[3]
-    return {
-      component: () => <BilibiliPage kind={kind} detailID={detailID} />,
-      meta: { eyebrow: '数据探索', title: 'Bilibili', description: '查询已采集的视频、专栏与用户对象。' },
-    }
-  }
-  return pages[pathname] ?? null
 }
 
 // ============================================================
@@ -151,7 +129,7 @@ export default function App() {
   }
 
   // 页面解析
-  const page = resolvePage(path)
+  const page = pages[path] ?? null
   if (!page) {
     return (
       <AuthContext.Provider value={auth}>

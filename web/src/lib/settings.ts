@@ -15,7 +15,6 @@ export interface SafeConfig {
   gravatar: { enabled: boolean; default_style: string; default_size: number; rating: string; use_proxy: boolean; proxy_name: string; custom_proxy_url: string }
   bookmark: { use_proxy: boolean; proxy_names: string[] }
   rss: { use_proxy: boolean; proxy_names: string[]; retention_count: number; background_fetch_enabled: boolean; background_fetch_interval: number }
-  bilibili: { enabled: boolean; video_enabled: boolean; article_enabled: boolean; user_enabled: boolean; user_agent: string }
 }
 
 // ============================================================
@@ -34,7 +33,6 @@ interface BackendSafeConfig {
   gravatar?: { enabled?: boolean; default_style?: string; default_size?: number; rating?: string; proxy_names?: string[] }
   bookmark?: { proxy_names?: string[] }
   rss?: { proxy_names?: string[]; retention_count?: number; background_fetch_enabled?: boolean; background_fetch_interval?: number }
-  bilibili?: SafeConfig['bilibili']
 }
 
 // ============================================================
@@ -77,9 +75,6 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
       retention_count: raw.rss?.retention_count ?? 5000,
       background_fetch_enabled: raw.rss?.background_fetch_enabled ?? true,
       background_fetch_interval: raw.rss?.background_fetch_interval ?? 300,
-    },
-    bilibili: raw.bilibili ?? {
-      enabled: false, video_enabled: false, article_enabled: false, user_enabled: false, user_agent: '',
     },
   }
 }

@@ -62,7 +62,7 @@ export function PastePage() {
         <div style={styles.actions}>
           <button style={styles.btn} onClick={() => copy(paste.content, '内容')}>{copied === '内容' ? '已复制 ✓' : '复制内容'}</button>
           <button style={styles.btn} onClick={() => copy(`${window.location.origin}/paste/${paste.id}`, '链接')}>{copied === '链接' ? '已复制 ✓' : '复制分享链接'}</button>
-          <button style={{ ...styles.btn, ...styles.danger }} disabled={deleting} onClick={() => void remove()}>{deleting ? '删除中...' : '删除'}</button>
+          {pasteApi.hasToken(paste.id) && <button style={{ ...styles.btn, ...styles.danger }} disabled={deleting} onClick={() => void remove()}>{deleting ? '删除中...' : '删除'}</button>}
         </div>
         {viewError && <p style={{ color: 'var(--color-error)', fontSize: 13 }}>{viewError}</p>}
       </div>

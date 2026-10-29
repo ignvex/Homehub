@@ -28,14 +28,6 @@ const navigation: NavGroup[] = [
   },
   {
     label: '数据洞察', items: [
-      {
-        href: '/bilibili', label: 'Bilibili', icon: icon(<><rect x="3" y="6" width="18" height="14" rx="2" /><path d="m8 3 4 3 4-3" /><polygon points="10,10 10,16 15,13" /></>),
-        children: [
-          { href: '/bilibili/videos', label: '视频', icon: icon(<><polygon points="9,8 9,16 16,12" /></>) },
-          { href: '/bilibili/articles', label: '专栏', icon: icon(<><rect x="5" y="4" width="14" height="16" rx="1" /><path d="M8 9h8M8 13h8M8 17h5" /></>) },
-          { href: '/bilibili/users', label: '用户', icon: icon(<><circle cx="12" cy="8" r="3" /><path d="M5 20c.8-4 3.1-6 7-6s6.2 2 7 6" /></>) },
-        ]
-      },
       { href: '/search', label: '数据搜索', icon: icon(<><circle cx="10.5" cy="10.5" r="5.5" /><path d="m15 15 4 4" /></>) },
       { href: '/balance', label: '余额监控', icon: icon(<><circle cx="12" cy="12" r="10" /><path d="M12 6v12m-4-4 4 4 4-4" /></>) },
     ]
@@ -87,12 +79,7 @@ function isActivePath(href: string): boolean {
 export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: ShellPageMeta; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('homehub-shell-collapsed') === '1')
-  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => {
-    const pathname = window.location.pathname
-    const expanded = new Set<string>()
-    if (pathname.startsWith('/bilibili/')) expanded.add('/bilibili')
-    return expanded
-  })
+  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => new Set())
   // 导航分组折叠状态 — 默认全部展开
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(loadFoldedGroups)
 

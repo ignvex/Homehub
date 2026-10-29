@@ -17,10 +17,8 @@ export interface BackgroundSettings {
 
 export const homeApi = {
   auth: () => api.get<AuthStatus>('/auth/status'),
-  background: () => api.get<BackgroundSettings>('/background'),
   bookmarks: () => api.get<BookmarkGroup[]>('/bookmark-groups'),
   feeds: () => api.get<RSSFeed[]>('/rss/feeds'),
   entries: () => api.get<RSSPage>('/rss/entries?page=1&per_page=50'),
-  media: () => api.get<MediaAsset[]>('/media-assets'),
   logout: () => api.post<void>('/auth/logout'),
 }
