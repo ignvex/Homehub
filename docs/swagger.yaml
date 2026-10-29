@@ -100,6 +100,34 @@ definitions:
       background_fetch_interval:
         description: 后台抓取间隔（秒），默认 300
         type: integer
+      extension_token:
+        description: ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
+        type: string
+      extension_url:
+        description: |-
+          ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。
+
+          为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：
+          HomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。
+        type: string
+      fetch_concurrency:
+        description: |-
+          FetchConcurrency 同时抓取的订阅源数量，默认 4。
+          单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。
+        type: integer
+      fetch_timeout_seconds:
+        description: |-
+          FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。
+          超时只影响该订阅源，其他订阅源继续抓取。
+        type: integer
+      image_cache_concurrency:
+        description: ImageCacheConcurrency 图片并发下载数，默认 6。
+        type: integer
+      image_cache_enabled:
+        description: |-
+          ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。
+          关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。
+        type: boolean
       proxy_names:
         description: 代理名称列表（按优先级排列，fallback 链），空=直连
         items:
@@ -108,6 +136,9 @@ definitions:
       retention_count:
         description: 每个订阅源保留条目数，默认 5000
         type: integer
+      user_agent:
+        description: 自定义 User-Agent，空则默认 Chrome 150
+        type: string
     type: object
   config.ServerConfig:
     properties:
@@ -235,17 +266,6 @@ definitions:
     - password
     - username
     type: object
-  handler.pasteSummary:
-    properties:
-      content_preview:
-        type: string
-      created_at:
-        type: string
-      expires_at:
-        type: string
-      id:
-        type: string
-    type: object
   handler.pasteResponse:
     properties:
       content:
@@ -254,6 +274,17 @@ definitions:
         type: string
       delete_token:
         description: 仅创建时返回
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+    type: object
+  handler.pasteSummary:
+    properties:
+      content_preview:
+        type: string
+      created_at:
         type: string
       expires_at:
         type: string
@@ -384,7 +415,6 @@ definitions:
       id:
         type: integer
       priority:
-        description: 展示优先级，值越大越靠前
         type: integer
       sort_order:
         type: integer
@@ -410,7 +440,6 @@ definitions:
       name:
         type: string
       priority:
-        description: 展示优先级，值越大越靠前
         type: integer
       sort_order:
         type: integer
@@ -539,25 +568,10 @@ definitions:
       username:
         type: string
     type: object
-  service.SafeBilibiliConfig:
-    properties:
-      article_enabled:
-        type: boolean
-      enabled:
-        type: boolean
-      user_agent:
-        type: string
-      user_enabled:
-        type: boolean
-      video_enabled:
-        type: boolean
-    type: object
   service.SafeConfig:
     properties:
       auth:
         $ref: '#/definitions/service.SafeAuthConfig'
-      bilibili:
-        $ref: '#/definitions/service.SafeBilibiliConfig'
       bookmark:
         $ref: '#/definitions/config.BookmarkConfig'
       database:
@@ -674,11 +688,27 @@ host: localhost:8080
 info:
   contact:
     name: HomeHub
-  description: 个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、Bilibili 爬虫与数据查询、系统日志、配置管理等功能。
+  description: 个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、系统日志、配置管理等功能。
   title: HomeHub API
   version: "1.0"
 paths:
   /admin/logs:
+    delete:
+      description: 删除所有系统日志记录（仅管理员）
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 清除成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "500":
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 清除全部日志
+      tags:
+      - 系统日志
     get:
       description: 分页查看系统运行日志，支持按级别、关键词、时间范围筛选（仅管理员）
       parameters:
@@ -718,6 +748,19 @@ paths:
           schema:
             $ref: '#/definitions/handler.Response'
       summary: 查看系统日志
+      tags:
+      - 系统日志
+  /admin/logs/stream:
+    get:
+      description: 通过 Server-Sent Events 实时推送系统日志（仅管理员）
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE 事件流
+          schema:
+            type: string
+      summary: 实时日志推送
       tags:
       - 系统日志
   /admin/users:
@@ -1250,459 +1293,6 @@ paths:
       summary: 余额监控状态
       tags:
       - 余额监控
-  /bilibili/articles:
-    get:
-      description: 分页查询已抓取的 Bilibili 专栏文章，支持关键词搜索、作者筛选和排序
-      parameters:
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页数量（默认 20）
-        in: query
-        name: per_page
-        type: integer
-      - description: 搜索关键词（匹配标题）
-        in: query
-        name: q
-        type: string
-      - description: 作者 MID 筛选
-        in: query
-        name: mid
-        type: integer
-      - description: 排序字段（默认 fetched_at）
-        in: query
-        name: sort
-        type: string
-      - description: 排序方向：asc / desc（默认 desc）
-        in: query
-        name: order
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 专栏列表（含分页信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 查询专栏列表
-      tags:
-      - Bilibili 数据查询
-  /bilibili/articles/:cvid/snapshots:
-    get:
-      description: 返回专栏统计数据的时间序列快照
-      parameters:
-      - description: 专栏 CV 号
-        in: path
-        name: cvid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 快照列表
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "400":
-          description: 无效的 cvid
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取专栏快照
-      tags:
-      - Bilibili 数据查询
-  /bilibili/articles/{cvid}:
-    get:
-      description: 根据 CV 号获取单个专栏文章的基本信息
-      parameters:
-      - description: 专栏 CV 号
-        in: path
-        name: cvid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 专栏详情
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "404":
-          description: 专栏不存在
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取专栏详情
-      tags:
-      - Bilibili 数据查询
-  /bilibili/crawlers:
-    get:
-      description: 返回所有 Bilibili 爬虫（视频/专栏/用户）的启用状态、入库数据量和窗口扫描进度
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 爬虫状态列表（stored_count / window_base / window_scanned / window_progress_pct）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取爬虫状态列表
-      tags:
-      - Bilibili 爬虫
-  /bilibili/crawlers/{type}:
-    patch:
-      consumes:
-      - application/json
-      description: 修改 config.json 中指定爬虫模块的 enabled 字段并触发热重载
-      parameters:
-      - description: 爬虫类型：video / article / user
-        in: path
-        name: type
-        required: true
-        type: string
-      - description: '{ enabled: bool }'
-        in: body
-        name: request
-        required: true
-        schema:
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 切换成功
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "400":
-          description: 无效的爬虫类型
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 切换爬虫开关
-      tags:
-      - Bilibili 爬虫
-  /bilibili/fetch/article/:cvid:
-    post:
-      description: 根据 CV 号即时调用 Bilibili API 抓取单个专栏文章信息，写入数据库。若已存在则更新
-      parameters:
-      - description: 专栏 CV 号
-        format: int64
-        in: path
-        name: cvid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 抓取结果（created / updated / skipped）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "400":
-          description: 无效的 cvid
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 抓取失败
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 按需抓取专栏
-      tags:
-      - Bilibili 爬虫
-  /bilibili/fetch/video/:aid:
-    post:
-      description: 根据 AV 号即时调用 Bilibili API 抓取单个视频及其分 P 信息，写入数据库。若已存在则更新
-      parameters:
-      - description: 视频 AV 号
-        format: int64
-        in: path
-        name: aid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 抓取结果（created / updated / skipped）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "400":
-          description: 无效的 aid
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 抓取失败
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 按需抓取视频
-      tags:
-      - Bilibili 爬虫
-  /bilibili/stats:
-    get:
-      description: 返回 Bilibili 爬虫各板块的存储统计（视频/分P/专栏/用户行数和预估大小）以及各爬虫的进度信息
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 爬虫统计信息
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取爬虫统计
-      tags:
-      - Bilibili 爬虫
-  /bilibili/stats/lifecycle:
-    get:
-      description: 返回各生命周期阶段 (newborn/growing/mature/archived) 的视频/专栏/用户数量
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 生命周期分布
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取生命周期统计
-      tags:
-      - Bilibili 爬虫
-  /bilibili/users:
-    get:
-      description: 分页查询已抓取的 Bilibili 用户，支持关键词搜索、等级/VIP状态筛选和排序
-      parameters:
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页数量（默认 20）
-        in: query
-        name: per_page
-        type: integer
-      - description: 搜索关键词（匹配昵称）
-        in: query
-        name: q
-        type: string
-      - description: 用户等级筛选
-        in: query
-        name: level
-        type: integer
-      - description: VIP 等级筛选（0=非会员, 1=月度/3=年度/7=十年/15=百年, -1=全部）
-        in: query
-        name: vip_role
-        type: integer
-      - description: 排序字段（默认 fetched_at）
-        in: query
-        name: sort
-        type: string
-      - description: 排序方向：asc / desc（默认 desc）
-        in: query
-        name: order
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 用户列表（含分页信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 查询用户列表
-      tags:
-      - Bilibili 数据查询
-  /bilibili/users/{mid}:
-    get:
-      description: 根据 MID 获取单个 Bilibili 用户的详细信息
-      parameters:
-      - description: 用户 MID
-        in: path
-        name: mid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 用户详情
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "404":
-          description: 用户不存在
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取用户详情
-      tags:
-      - Bilibili 数据查询
-  /bilibili/users/{mid}/articles:
-    get:
-      description: 分页查询指定 Bilibili 用户的所有已抓取专栏文章
-      parameters:
-      - description: 用户 MID
-        in: path
-        name: mid
-        required: true
-        type: integer
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页数量（默认 20）
-        in: query
-        name: per_page
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 用户专栏列表（含分页信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取用户的专栏列表
-      tags:
-      - Bilibili 数据查询
-  /bilibili/users/{mid}/videos:
-    get:
-      description: 分页查询指定 Bilibili 用户的所有已抓取视频
-      parameters:
-      - description: 用户 MID
-        in: path
-        name: mid
-        required: true
-        type: integer
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页数量（默认 20）
-        in: query
-        name: per_page
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 用户视频列表（含分页信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取用户的视频列表
-      tags:
-      - Bilibili 数据查询
-  /bilibili/videos:
-    get:
-      description: 分页查询已抓取的 Bilibili 视频，支持关键词搜索、AV号/BV号/UP主/分区筛选和排序
-      parameters:
-      - description: 页码（默认 1）
-        in: query
-        name: page
-        type: integer
-      - description: 每页数量（默认 20）
-        in: query
-        name: per_page
-        type: integer
-      - description: 搜索关键词（匹配标题和简介）
-        in: query
-        name: q
-        type: string
-      - description: 精确 AV 号筛选
-        in: query
-        name: aid
-        type: integer
-      - description: 精确 BV 号筛选
-        in: query
-        name: bvid
-        type: string
-      - description: UP 主 MID 筛选
-        in: query
-        name: owner_mid
-        type: integer
-      - description: 分区 TID 筛选
-        in: query
-        name: tid
-        type: integer
-      - description: 排序字段（默认 fetched_at）
-        in: query
-        name: sort
-        type: string
-      - description: 排序方向：asc / desc（默认 desc）
-        in: query
-        name: order
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 视频列表（含分页信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "500":
-          description: 服务器内部错误
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 查询视频列表
-      tags:
-      - Bilibili 数据查询
-  /bilibili/videos/:aid/snapshots:
-    get:
-      description: 返回视频播放量等统计字段的时间序列快照
-      parameters:
-      - description: 视频 AV 号
-        in: path
-        name: aid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 快照列表
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "400":
-          description: 无效的 aid
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取视频快照
-      tags:
-      - Bilibili 数据查询
-  /bilibili/videos/{aid}:
-    get:
-      description: 根据 AV 号获取单个视频的基本信息和所有分 P 列表
-      parameters:
-      - description: 视频 AV 号
-        in: path
-        name: aid
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: 视频详情（含分 P 信息）
-          schema:
-            $ref: '#/definitions/handler.Response'
-        "404":
-          description: 视频不存在
-          schema:
-            $ref: '#/definitions/handler.Response'
-      summary: 获取视频详情
-      tags:
-      - Bilibili 数据查询
   /bookmark-groups:
     get:
       description: 返回所有分组及其下书签的嵌套列表
@@ -2162,11 +1752,16 @@ paths:
       - 剪贴板
   /pastes/{id}:
     delete:
-      description: 根据公开 ID 删除粘贴。无需认证，无需密钥。
+      description: 根据公开 ID 删除粘贴，需同时提供创建时返回的 delete_token。无需登录。
       parameters:
       - description: 公开 ID
         in: path
         name: id
+        required: true
+        type: string
+      - description: 创建时返回的 delete_token
+        in: query
+        name: token
         required: true
         type: string
       produces:
@@ -2177,7 +1772,7 @@ paths:
           schema:
             $ref: '#/definitions/handler.Response'
         "404":
-          description: 不存在
+          description: 不存在、已过期或密钥不匹配
           schema:
             $ref: '#/definitions/handler.Response'
       summary: 删除粘贴
@@ -2553,14 +2148,14 @@ paths:
       - RSS 订阅
   /search:
     get:
-      description: 跨书签和 Bilibili 爬虫数据（视频/专栏/用户）进行全文搜索，支持指定数据源范围
+      description: 在书签与 RSS 条目中执行全文搜索，支持指定数据源范围
       parameters:
       - description: 搜索关键词
         in: query
         name: q
         required: true
         type: string
-      - description: 搜索范围：all / bookmarks / videos / articles / users（默认 all）
+      - description: 搜索范围：all / bookmarks / rss（默认 all）
         in: query
         name: scope
         type: string

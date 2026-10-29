@@ -1,7 +1,7 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、Bilibili 爬虫与数据查询、系统日志、配置管理等功能。",
+        "description": "个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、系统日志、配置管理等功能。",
         "title": "HomeHub API",
         "contact": {
             "name": "HomeHub"
@@ -70,6 +70,50 @@
                         "description": "服务器内部错误",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除所有系统日志记录（仅管理员）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "系统日志"
+                ],
+                "summary": "清除全部日志",
+                "responses": {
+                    "200": {
+                        "description": "清除成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/logs/stream": {
+            "get": {
+                "description": "通过 Server-Sent Events 实时推送系统日志（仅管理员）",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "系统日志"
+                ],
+                "summary": "实时日志推送",
+                "responses": {
+                    "200": {
+                        "description": "SSE 事件流",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -916,694 +960,6 @@
                 }
             }
         },
-        "/bilibili/articles": {
-            "get": {
-                "description": "分页查询已抓取的 Bilibili 专栏文章，支持关键词搜索、作者筛选和排序",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "查询专栏列表",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "页码（默认 1）",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "每页数量（默认 20）",
-                        "name": "per_page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "搜索关键词（匹配标题）",
-                        "name": "q",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "作者 MID 筛选",
-                        "name": "mid",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序字段（默认 fetched_at）",
-                        "name": "sort",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序方向：asc / desc（默认 desc）",
-                        "name": "order",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "专栏列表（含分页信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/articles/:cvid/snapshots": {
-            "get": {
-                "description": "返回专栏统计数据的时间序列快照",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取专栏快照",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "专栏 CV 号",
-                        "name": "cvid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "快照列表",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "400": {
-                        "description": "无效的 cvid",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/articles/{cvid}": {
-            "get": {
-                "description": "根据 CV 号获取单个专栏文章的基本信息",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取专栏详情",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "专栏 CV 号",
-                        "name": "cvid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "专栏详情",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "404": {
-                        "description": "专栏不存在",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/crawlers": {
-            "get": {
-                "description": "返回所有 Bilibili 爬虫（视频/专栏/用户）的启用状态、入库数据量和窗口扫描进度",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "获取爬虫状态列表",
-                "responses": {
-                    "200": {
-                        "description": "爬虫状态列表（stored_count / window_base / window_scanned / window_progress_pct）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/crawlers/{type}": {
-            "patch": {
-                "description": "修改 config.json 中指定爬虫模块的 enabled 字段并触发热重载",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "切换爬虫开关",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "爬虫类型：video / article / user",
-                        "name": "type",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "{ enabled: bool }",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "切换成功",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "400": {
-                        "description": "无效的爬虫类型",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/fetch/article/:cvid": {
-            "post": {
-                "description": "根据 CV 号即时调用 Bilibili API 抓取单个专栏文章信息，写入数据库。若已存在则更新",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "按需抓取专栏",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "format": "int64",
-                        "description": "专栏 CV 号",
-                        "name": "cvid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "抓取结果（created / updated / skipped）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "400": {
-                        "description": "无效的 cvid",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "抓取失败",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/fetch/video/:aid": {
-            "post": {
-                "description": "根据 AV 号即时调用 Bilibili API 抓取单个视频及其分 P 信息，写入数据库。若已存在则更新",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "按需抓取视频",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "format": "int64",
-                        "description": "视频 AV 号",
-                        "name": "aid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "抓取结果（created / updated / skipped）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "400": {
-                        "description": "无效的 aid",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "抓取失败",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/stats": {
-            "get": {
-                "description": "返回 Bilibili 爬虫各板块的存储统计（视频/分P/专栏/用户行数和预估大小）以及各爬虫的进度信息",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "获取爬虫统计",
-                "responses": {
-                    "200": {
-                        "description": "爬虫统计信息",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/stats/lifecycle": {
-            "get": {
-                "description": "返回各生命周期阶段 (newborn/growing/mature/archived) 的视频/专栏/用户数量",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 爬虫"
-                ],
-                "summary": "获取生命周期统计",
-                "responses": {
-                    "200": {
-                        "description": "生命周期分布",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/users": {
-            "get": {
-                "description": "分页查询已抓取的 Bilibili 用户，支持关键词搜索、等级/VIP状态筛选和排序",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "查询用户列表",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "页码（默认 1）",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "每页数量（默认 20）",
-                        "name": "per_page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "搜索关键词（匹配昵称）",
-                        "name": "q",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "用户等级筛选",
-                        "name": "level",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "VIP 等级筛选（0=非会员, 1=月度/3=年度/7=十年/15=百年, -1=全部）",
-                        "name": "vip_role",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序字段（默认 fetched_at）",
-                        "name": "sort",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序方向：asc / desc（默认 desc）",
-                        "name": "order",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "用户列表（含分页信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/users/{mid}": {
-            "get": {
-                "description": "根据 MID 获取单个 Bilibili 用户的详细信息",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取用户详情",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "用户 MID",
-                        "name": "mid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "用户详情",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "404": {
-                        "description": "用户不存在",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/users/{mid}/articles": {
-            "get": {
-                "description": "分页查询指定 Bilibili 用户的所有已抓取专栏文章",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取用户的专栏列表",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "用户 MID",
-                        "name": "mid",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "页码（默认 1）",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "每页数量（默认 20）",
-                        "name": "per_page",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "用户专栏列表（含分页信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/users/{mid}/videos": {
-            "get": {
-                "description": "分页查询指定 Bilibili 用户的所有已抓取视频",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取用户的视频列表",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "用户 MID",
-                        "name": "mid",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "页码（默认 1）",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "每页数量（默认 20）",
-                        "name": "per_page",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "用户视频列表（含分页信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/videos": {
-            "get": {
-                "description": "分页查询已抓取的 Bilibili 视频，支持关键词搜索、AV号/BV号/UP主/分区筛选和排序",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "查询视频列表",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "页码（默认 1）",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "每页数量（默认 20）",
-                        "name": "per_page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "搜索关键词（匹配标题和简介）",
-                        "name": "q",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "精确 AV 号筛选",
-                        "name": "aid",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "精确 BV 号筛选",
-                        "name": "bvid",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "UP 主 MID 筛选",
-                        "name": "owner_mid",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "分区 TID 筛选",
-                        "name": "tid",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序字段（默认 fetched_at）",
-                        "name": "sort",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "排序方向：asc / desc（默认 desc）",
-                        "name": "order",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "视频列表（含分页信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "500": {
-                        "description": "服务器内部错误",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/videos/:aid/snapshots": {
-            "get": {
-                "description": "返回视频播放量等统计字段的时间序列快照",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取视频快照",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "视频 AV 号",
-                        "name": "aid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "快照列表",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "400": {
-                        "description": "无效的 aid",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
-        "/bilibili/videos/{aid}": {
-            "get": {
-                "description": "根据 AV 号获取单个视频的基本信息和所有分 P 列表",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Bilibili 数据查询"
-                ],
-                "summary": "获取视频详情",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "视频 AV 号",
-                        "name": "aid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "视频详情（含分 P 信息）",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
-                    "404": {
-                        "description": "视频不存在",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    }
-                }
-            }
-        },
         "/bookmark-groups": {
             "get": {
                 "description": "返回所有分组及其下书签的嵌套列表",
@@ -2264,6 +1620,27 @@
             }
         },
         "/pastes": {
+            "get": {
+                "description": "返回最近 50 条未过期粘贴的摘要（不含完整内容和删除密钥）。无需认证。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "剪贴板"
+                ],
+                "summary": "获取粘贴列表",
+                "responses": {
+                    "200": {
+                        "description": "粘贴摘要列表",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handler.pasteSummary"
+                            }
+                        }
+                    }
+                }
+            },
             "post": {
                 "description": "上传文本内容，返回公开 ID 和删除密钥。无需认证。",
                 "consumes": [
@@ -2368,7 +1745,7 @@
                 }
             },
             "delete": {
-                "description": "提供创建时返回的 delete_token 以删除粘贴。无需认证。",
+                "description": "根据公开 ID 删除粘贴，需同时提供创建时返回的 delete_token。无需登录。",
                 "produces": [
                     "application/json"
                 ],
@@ -2386,7 +1763,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "删除密钥",
+                        "description": "创建时返回的 delete_token",
                         "name": "token",
                         "in": "query",
                         "required": true
@@ -2399,14 +1776,8 @@
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
-                    "400": {
-                        "description": "缺少 token",
-                        "schema": {
-                            "$ref": "#/definitions/handler.Response"
-                        }
-                    },
                     "404": {
-                        "description": "不存在或 token 错误",
+                        "description": "不存在、已过期或密钥不匹配",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2933,7 +2304,7 @@
         },
         "/search": {
             "get": {
-                "description": "跨书签和 Bilibili 爬虫数据（视频/专栏/用户）进行全文搜索，支持指定数据源范围",
+                "description": "在书签与 RSS 条目中执行全文搜索，支持指定数据源范围",
                 "produces": [
                     "application/json"
                 ],
@@ -2951,7 +2322,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "搜索范围：all / bookmarks / videos / articles / users（默认 all）",
+                        "description": "搜索范围：all / bookmarks / rss（默认 all）",
                         "name": "scope",
                         "in": "query"
                     }
@@ -3455,6 +2826,30 @@
                     "description": "后台抓取间隔（秒），默认 300",
                     "type": "integer"
                 },
+                "extension_token": {
+                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
+                    "type": "string"
+                },
+                "extension_url": {
+                    "description": "ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。\n\n为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：\nHomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。",
+                    "type": "string"
+                },
+                "fetch_concurrency": {
+                    "description": "FetchConcurrency 同时抓取的订阅源数量，默认 4。\n单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。",
+                    "type": "integer"
+                },
+                "fetch_timeout_seconds": {
+                    "description": "FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。\n超时只影响该订阅源，其他订阅源继续抓取。",
+                    "type": "integer"
+                },
+                "image_cache_concurrency": {
+                    "description": "ImageCacheConcurrency 图片并发下载数，默认 6。",
+                    "type": "integer"
+                },
+                "image_cache_enabled": {
+                    "description": "ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。\n关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。",
+                    "type": "boolean"
+                },
                 "proxy_names": {
                     "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
                     "type": "array",
@@ -3465,6 +2860,10 @@
                 "retention_count": {
                     "description": "每个订阅源保留条目数，默认 5000",
                     "type": "integer"
+                },
+                "user_agent": {
+                    "description": "自定义 User-Agent，空则默认 Chrome 150",
+                    "type": "string"
                 }
             }
         },
@@ -3680,6 +3079,23 @@
                 }
             }
         },
+        "handler.pasteSummary": {
+            "type": "object",
+            "properties": {
+                "content_preview": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            }
+        },
         "handler.reorderBookmarksRequest": {
             "type": "object",
             "required": [
@@ -3871,7 +3287,6 @@
                     "type": "integer"
                 },
                 "priority": {
-                    "description": "展示优先级，值越大越靠前",
                     "type": "integer"
                 },
                 "sort_order": {
@@ -3910,7 +3325,6 @@
                     "type": "string"
                 },
                 "priority": {
-                    "description": "展示优先级，值越大越靠前",
                     "type": "integer"
                 },
                 "sort_order": {
@@ -4103,34 +3517,11 @@
                 }
             }
         },
-        "service.SafeBilibiliConfig": {
-            "type": "object",
-            "properties": {
-                "article_enabled": {
-                    "type": "boolean"
-                },
-                "enabled": {
-                    "type": "boolean"
-                },
-                "user_agent": {
-                    "type": "string"
-                },
-                "user_enabled": {
-                    "type": "boolean"
-                },
-                "video_enabled": {
-                    "type": "boolean"
-                }
-            }
-        },
         "service.SafeConfig": {
             "type": "object",
             "properties": {
                 "auth": {
                     "$ref": "#/definitions/service.SafeAuthConfig"
-                },
-                "bilibili": {
-                    "$ref": "#/definitions/service.SafeBilibiliConfig"
                 },
                 "bookmark": {
                     "$ref": "#/definitions/config.BookmarkConfig"
