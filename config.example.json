@@ -1,0 +1,105 @@
+{
+    "auth": {
+        "_comment": "session_secret 至少 32 字符，建议用 openssl rand -hex 32 生成；password 仅用于首次创建管理员，启动后会被自动清空",
+        "password": "",
+        "session_secret": "CHANGE_ME_generate_with_openssl_rand_hex_32",
+        "username": "admin"
+    },
+    "balance_monitor": {
+        "_comment": "===== 余额监控（仅内存缓存，不入库）=====",
+        "_comment_targets": "type 目前仅支持 deepseek",
+        "enabled": false,
+        "refresh_interval_seconds": 60,
+        "targets": []
+    },
+    "bookmark": {
+        "proxy_names": [
+            "router"
+        ]
+    },
+    "database": {
+        "dbname": "homehub",
+        "host": "127.0.0.1",
+        "password": "",
+        "port": 5432,
+        "sslmode": "disable",
+        "user": "homehub"
+    },
+    "gravatar": {
+        "default_size": 1024,
+        "default_style": "identicon",
+        "enabled": true,
+        "proxy_names": [
+            "router"
+        ],
+        "rating": "g"
+    },
+    "log": {
+        "db_writer": true,
+        "format": "colored",
+        "level": "info"
+    },
+    "pastebin": {
+        "_comment": "===== 剪贴板（公开 API，无需认证）=====",
+        "cleanup_interval_hours": 24,
+        "default_ttl_hours": 168,
+        "enabled": true,
+        "max_content_length": 1048576
+    },
+    "proxy": [
+        {
+            "enabled": false,
+            "http_url": "http://127.0.0.1:7890",
+            "https_url": "http://127.0.0.1:7890",
+            "name": "dev",
+            "type": "http"
+        },
+        {
+            "enabled": false,
+            "http_url": "http://127.0.0.1:7890",
+            "https_url": "http://127.0.0.1:7890",
+            "name": "router",
+            "type": "http"
+        }
+    ],
+    "rss": {
+        "background_fetch_enabled": true,
+        "background_fetch_interval": 300,
+        "proxy_names": [
+            "router"
+        ],
+        "retention_count": 5000,
+        "user_agent": "",
+        "fetch_concurrency": 4,
+        "fetch_timeout_seconds": 30,
+        "image_cache_enabled": true,
+        "image_cache_concurrency": 6,
+        "extension_url": "",
+        "extension_token": ""
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 8080
+    },
+    "webui": {
+        "home": {
+            "background": {
+                "fade_duration_ms": 1000,
+                "interval_seconds": 30,
+                "mode": "single",
+                "selected_asset_ids": [],
+                "transition_effect": "fade"
+            }
+        },
+        "login": {
+            "background": {
+                "fade_duration_ms": 1000,
+                "interval_seconds": 30,
+                "mode": "single",
+                "selected_asset_ids": [],
+                "transition_effect": "fade"
+            },
+            "layout": "center"
+        }
+    }
+}

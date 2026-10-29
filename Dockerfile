@@ -2,10 +2,15 @@
 #
 # 所有编译在本地完成，Docker 只负责打包：
 #   1. 前端：cd web && pnpm install && pnpm build
-#   2. 后端：GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o homehub .
+#   2. 后端：GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o homehub ./cmd/homehub
 #   3. Docker：docker build -t homehub .
 #
-# 运行: docker run -d -p 8080:8080 -v /宿主机/uploads:/app/web/static/uploads homehub
+# 配置文件不打包进镜像（避免凭据泄露），运行时通过挂载提供：
+#   docker run -d -p 8080:8080 \
+#     -v "$(pwd)/config.json:/app/config.json" \
+#     -v /宿主机/uploads:/app/web/static/uploads homehub
+#
+# config.json 需可写：首次创建用户后会清除 auth.password，Web 端配置更新也会写回该文件。
 
 FROM alpine:latest
 
@@ -17,9 +22,6 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/re
 
 # 复制预编译的 Go 二进制（本地交叉编译好了，不用在 Docker 里装 Go）
 COPY homehub .
-
-# 复制配置文件
-COPY config.json .
 
 # 复制前端构建产物
 COPY web/dist ./web/dist

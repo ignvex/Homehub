@@ -9,12 +9,23 @@ bin/
 *.out
 HomeHub.exe
 
+# ── 本地配置（含凭据，不进入构建上下文）──
+config.json
+config.local.json
+.env
+.env.*
+
 # ── 依赖与缓存 ──
 node_modules/
 web/node_modules/
 
 # ── 前端依赖与废弃构建产物 ──
 web/dist-ssr/
+
+# ── 运行时上传与 RSS 图片缓存（镜像内由 mkdir 创建，运行时卷挂载）──
+# 只忽略内容，保留目录与 .gitkeep，保证 COPY web/static 有可复制内容
+web/static/uploads/*
+!web/static/uploads/.gitkeep
 
 # ── IDE / OS ──
 .idea/
@@ -34,12 +45,11 @@ web/.gitignore
 data/
 *.local
 *.log
+*.lnk
 
 # ── 文档与工具（非运行时必需） ──
 docs/
-crawler/
 architecture.json
 cache.json
 readme.json
 README.md
-*.lnk

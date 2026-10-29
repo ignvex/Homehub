@@ -19,6 +19,9 @@ Dockerfile  text
 *.js        text eol=lf
 *.svg       text eol=lf
 
+# 数据库迁移（跨平台保持 LF）
+*.sql       text eol=lf
+
 # 二进制文件（不转换）
 *.exe       binary
 *.dll       binary
