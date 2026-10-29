@@ -57,21 +57,6 @@ func (s *BookmarkService) CreateGroup(name string) (*model.BookmarkGroup, error)
 	return &group, nil
 }
 
-// UpdateGroup 更新分组名称。
-func (s *BookmarkService) UpdateGroup(id uint64, name string) error {
-	if name == "" {
-		return errors.New("分组名称不能为空")
-	}
-	result := s.db.Model(&model.BookmarkGroup{}).Where("id = ?", id).Update("name", name)
-	if result.Error != nil {
-		return fmt.Errorf("更新分组失败: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrGroupNotFound
-	}
-	return nil
-}
-
 // DeleteGroup 删除分组及其下所有书签。
 func (s *BookmarkService) DeleteGroup(id uint64) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -163,32 +148,6 @@ func (s *BookmarkService) CreateBookmark(groupID uint64, title, url, icon string
 		return nil, fmt.Errorf("创建书签失败: %w", err)
 	}
 	return &bookmark, nil
-}
-
-// UpdateBookmark 更新书签信息。
-func (s *BookmarkService) UpdateBookmark(id uint64, title, url, icon string) error {
-	updates := map[string]interface{}{}
-	if title != "" {
-		updates["title"] = title
-	}
-	if url != "" {
-		updates["url"] = url
-	}
-	// icon 可为空字符串，允许清空图标
-	updates["icon"] = icon
-
-	if len(updates) == 0 {
-		return nil
-	}
-
-	result := s.db.Model(&model.Bookmark{}).Where("id = ?", id).Updates(updates)
-	if result.Error != nil {
-		return fmt.Errorf("更新书签失败: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrBookmarkNotFound
-	}
-	return nil
 }
 
 // UpdateBookmarkWithPriority 更新书签信息（含优先级）。

@@ -16,10 +16,8 @@ const (
 	CodeBadRequest       = 10001 // 请求参数错误
 	CodeUnauthorized     = 10003 // 未认证
 	CodeNotFound         = 10005 // 资源不存在
-	CodeConflict         = 10006 // 资源冲突
 	CodeInternalError    = 10007 // 服务器内部错误
 	CodeAuthFailed       = 20001 // 用户名或密码错误
-	CodeSessionExpired   = 20002 // 会话已过期
 	CodePasswordTooWeak  = 20003 // 密码强度不足
 	CodeGroupNotFound    = 50001 // 书签分组不存在
 	CodeBookmarkNotFound = 50002 // 书签不存在

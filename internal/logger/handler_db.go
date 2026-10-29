@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,10 +141,23 @@ func (h *dbHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &dbHandlerWithAttrs{parent: h, attrs: attrs}
 }
 
-// dbHandlerWithAttrs 带预置属性的 DB handler 包装器。
+// dbHandlerWithAttrs 带预置属性（及可选分组前缀）的 DB handler 包装器。
+//
+// groups 保存 WithGroup 累积的分组名，按 slog 语义把后续所有属性的
+// key 渲染为 "g1.g2.key"。
 type dbHandlerWithAttrs struct {
 	parent *dbHandler
 	attrs  []slog.Attr
+	groups []string
+}
+
+// prefixKey 按分组层级给属性 key 加前缀。
+func (h *dbHandlerWithAttrs) prefixKey(a slog.Attr) slog.Attr {
+	if len(h.groups) == 0 {
+		return a
+	}
+	a.Key = strings.Join(h.groups, ".") + "." + a.Key
+	return a
 }
 
 func (h *dbHandlerWithAttrs) Enabled(ctx context.Context, level slog.Level) bool {
@@ -151,46 +165,48 @@ func (h *dbHandlerWithAttrs) Enabled(ctx context.Context, level slog.Level) bool
 }
 
 func (h *dbHandlerWithAttrs) Handle(ctx context.Context, r slog.Record) error {
-	r.AddAttrs(h.attrs...)
-	return h.parent.Handle(ctx, r)
+	if len(h.groups) == 0 && len(h.attrs) == 0 {
+		return h.parent.Handle(ctx, r)
+	}
+
+	// 重建 record，把原有属性与预置属性统一加分组前缀后再交给 parent。
+	// 空 Attr 按 slog 语义丢弃（Attr 为零值时 key 为空）。
+	nr := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		if !a.Equal(slog.Attr{}) {
+			nr.AddAttrs(h.prefixKey(a))
+		}
+		return true
+	})
+	for _, a := range h.attrs {
+		if !a.Equal(slog.Attr{}) {
+			nr.AddAttrs(h.prefixKey(a))
+		}
+	}
+	return h.parent.Handle(ctx, nr)
 }
 
 func (h *dbHandlerWithAttrs) WithAttrs(attrs []slog.Attr) slog.Handler {
-	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
-	copy(newAttrs, h.attrs)
-	copy(newAttrs[len(h.attrs):], attrs)
-	return &dbHandlerWithAttrs{parent: h.parent, attrs: newAttrs}
+	combined := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	combined = append(combined, h.attrs...)
+	combined = append(combined, attrs...)
+	return &dbHandlerWithAttrs{parent: h.parent, attrs: combined, groups: h.groups}
 }
 
+// WithGroup 返回带分组的新 handler，后续属性的 key 会加上分组前缀。
 func (h *dbHandlerWithAttrs) WithGroup(name string) slog.Handler {
-	return h.parent.WithGroup(name)
+	if name == "" {
+		return h
+	}
+	groups := make([]string, 0, len(h.groups)+1)
+	groups = append(groups, h.groups...)
+	groups = append(groups, name)
+	return &dbHandlerWithAttrs{parent: h.parent, attrs: h.attrs, groups: groups}
 }
 
-// WithGroup 返回带分组的新 handler，group 名称存储在日志字段命名中。
+// WithGroup 返回带分组的新 handler，后续属性的 key 会加上分组前缀。
 func (h *dbHandler) WithGroup(name string) slog.Handler {
-	return &dbHandlerWithGroup{parent: h, group: name}
-}
-
-// dbHandlerWithGroup 带分组的 DB handler 包装器。
-type dbHandlerWithGroup struct {
-	parent *dbHandler
-	group  string
-}
-
-func (h *dbHandlerWithGroup) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.parent.Enabled(ctx, level)
-}
-
-func (h *dbHandlerWithGroup) Handle(ctx context.Context, r slog.Record) error {
-	return h.parent.Handle(ctx, r)
-}
-
-func (h *dbHandlerWithGroup) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &dbHandlerWithGroup{parent: h.parent, group: h.group}
-}
-
-func (h *dbHandlerWithGroup) WithGroup(name string) slog.Handler {
-	return &dbHandlerWithGroup{parent: h.parent, group: name}
+	return (&dbHandlerWithAttrs{parent: h}).WithGroup(name)
 }
 
 // Close 关闭 DB handler，等待后台写入完成。

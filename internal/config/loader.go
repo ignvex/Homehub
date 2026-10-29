@@ -4,13 +4,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // 哨兵错误：首次启动时 config.json 不存在，已生成默认配置文件。
 var ErrConfigGenerated = errors.New("默认配置文件已生成，请编辑后重新启动")
+
+// loadedPath 记录当前生效的配置文件路径（由 Load 设置）。
+//
+// 供需要回写配置的模块使用，保证 HOMEHUB_CONFIG 指向自定义路径时
+// Web 端配置更新与密码清除写入的是同一个文件。
+var loadedPath atomic.Value
+
+// Path 返回当前生效的配置文件路径；尚未加载时返回 "config.json"。
+func Path() string {
+	if v, ok := loadedPath.Load().(string); ok && v != "" {
+		return v
+	}
+	return "config.json"
+}
 
 // 允许的日志级别枚举。
 var validLogLevels = []string{"debug", "info", "warn", "error"}
@@ -43,11 +59,13 @@ func Load(path string) error {
 	}
 
 	applyDefaults(&cfg)
+	applyExplicitBoolOverrides(data, &cfg)
 
 	if err := validate(&cfg); err != nil {
 		return err
 	}
 
+	loadedPath.Store(path)
 	atomicStore(&cfg)
 	return nil
 }
@@ -56,6 +74,8 @@ func Load(path string) error {
 func createDefaultConfig(path string) error {
 	cfg := Config{}
 	applyDefaults(&cfg)
+	// 无原始 JSON：所有开关取 fallback（模块默认启用）
+	applyBoolDefaults(nil, &cfg)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -129,7 +149,16 @@ func applyDefaults(cfg *Config) {
 		}
 	}
 
-	// Bilibili 子开关默认关闭（用户需显式开启，避免误启动大规模抓取）
+	// RSS 抓取参数默认值
+	if cfg.RSS.FetchConcurrency == 0 {
+		cfg.RSS.FetchConcurrency = 4
+	}
+	if cfg.RSS.FetchTimeoutSeconds == 0 {
+		cfg.RSS.FetchTimeoutSeconds = 30
+	}
+	if cfg.RSS.ImageCacheConcurrency == 0 {
+		cfg.RSS.ImageCacheConcurrency = 6
+	}
 
 	// Balance Monitor 默认值
 	if cfg.BalanceMonitor.RefreshIntervalSeconds == 0 {
@@ -151,6 +180,78 @@ func applyDefaults(cfg *Config) {
 	if cfg.Pastebin.CleanupIntervalHours == 0 {
 		cfg.Pastebin.CleanupIntervalHours = 24
 	}
+}
+
+// applyMissingBoolDefaults 为"缺省即启用"的布尔开关补默认值。
+//
+// 这几个模块的 enabled 字段若在 JSON 中缺失，反序列化会得到 false，
+// 表现为功能静默不可用——比"关不掉"更难排查。因此显式区分
+// “键不存在”与“显式写 false”：前者补 true，后者尊重用户选择。
+// boolFlag 描述一个"缺省有默认值"的布尔开关。
+//
+// bool 零值永远是 false，无法区分"字段缺失"与"显式写 false"。
+// 不处理就会导致：配置里漏写一项，功能静默关闭 —— 比"关不掉"更难排查。
+type boolFlag struct {
+	section  string // 顶层段名
+	field    string // 段内键名
+	target   *bool
+	fallback bool // 键缺失时的取值
+}
+
+// boolFlags 汇总所有需要区分"缺失"与"显式 false"的开关。
+//
+// 加新开关时在这里登记一行，而不是在 applyDefaults 里写赋值 ——
+// 后者对显式 false 无效（会被覆盖）。
+func (cfg *Config) boolFlags() []boolFlag {
+	return []boolFlag{
+		{"gravatar", "enabled", &cfg.Gravatar.Enabled, true},
+		{"pastebin", "enabled", &cfg.Pastebin.Enabled, true},
+		{"rss", "background_fetch_enabled", &cfg.RSS.BackgroundFetchEnabled, true},
+		{"rss", "image_cache_enabled", &cfg.RSS.ImageCacheEnabled, true},
+		// 下面两项默认关闭：开启会额外消耗资源，交给用户主动选择。
+		{"balance_monitor", "enabled", &cfg.BalanceMonitor.Enabled, false},
+		{"log", "db_writer", &cfg.Log.DBWriter, false},
+	}
+}
+
+// applyBoolDefaults 为缺失的布尔开关填入默认值。
+//
+// raw 为 nil 表示没有原始 JSON（新建配置文件），全部使用 fallback；
+// 否则按"键存在则尊重显式值，缺失则用 fallback"处理。
+func applyBoolDefaults(raw map[string]json.RawMessage, cfg *Config) {
+	for _, f := range cfg.boolFlags() {
+		*f.target = f.fallback
+		if raw == nil {
+			continue
+		}
+
+		body, ok := raw[f.section]
+		if !ok {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			continue
+		}
+		rawVal, ok := fields[f.field]
+		if !ok {
+			continue
+		}
+		var v bool
+		if err := json.Unmarshal(rawVal, &v); err != nil {
+			continue
+		}
+		*f.target = v
+	}
+}
+
+// applyExplicitBoolOverrides 从原始 JSON 恢复显式设置的布尔开关。
+func applyExplicitBoolOverrides(data []byte, cfg *Config) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return // 已通过结构体解析，这里失败说明数据异常，交给后续校验
+	}
+	applyBoolDefaults(raw, cfg)
 }
 
 func applyBackgroundDefaults(background *BackgroundConfig) {
@@ -241,16 +342,6 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Bilibili：如果填了 SESSDATA，必须配对 bili_jct
-	if cfg.Bilibili.SESSDATA != "" {
-		if cfg.Bilibili.BiliJCT == "" {
-			errs = append(errs, "bilibili.bili_jct 不能为空（SESSDATA 已配置时必须填写）")
-		}
-		if cfg.Bilibili.DedeUserID == "" {
-			errs = append(errs, "bilibili.dede_user_id 不能为空（SESSDATA 已配置时必须填写）")
-		}
-	}
-
 	// Balance Monitor 校验
 	validBalanceTypes := []string{"deepseek"}
 	if cfg.BalanceMonitor.RefreshIntervalSeconds < 10 || cfg.BalanceMonitor.RefreshIntervalSeconds > 3600 {
@@ -270,6 +361,23 @@ func validate(cfg *Config) error {
 			errs = append(errs, fmt.Sprintf("balance_monitor.targets[%d].api_key 不能为空", i))
 		}
 
+	}
+
+	// RSS 抓取参数校验
+	if cfg.RSS.FetchConcurrency < 1 || cfg.RSS.FetchConcurrency > 32 {
+		errs = append(errs, "rss.fetch_concurrency 必须在 1-32 之间")
+	}
+	if cfg.RSS.FetchTimeoutSeconds < 5 || cfg.RSS.FetchTimeoutSeconds > 600 {
+		errs = append(errs, "rss.fetch_timeout_seconds 必须在 5-600 之间")
+	}
+	if cfg.RSS.ImageCacheConcurrency < 1 || cfg.RSS.ImageCacheConcurrency > 32 {
+		errs = append(errs, "rss.image_cache_concurrency 必须在 1-32 之间")
+	}
+	if cfg.RSS.ExtensionURL != "" {
+		u, err := url.Parse(cfg.RSS.ExtensionURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, "rss.extension_url 必须是完整的 http(s) 地址")
+		}
 	}
 
 	// Pastebin 校验

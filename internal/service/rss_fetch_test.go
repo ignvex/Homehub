@@ -1,0 +1,210 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/mmcdole/gofeed"
+)
+
+// fakeFetcher 是可控的 RSSFetcher 测试替身。
+type fakeFetcher struct {
+	calls   atomic.Int32
+	delay   time.Duration
+	delayBy map[string]time.Duration
+	failFor map[string]bool
+}
+
+func (f *fakeFetcher) Fetch(ctx context.Context, url string) (*gofeed.Feed, error) {
+	f.calls.Add(1)
+
+	wait := f.delay
+	if d, ok := f.delayBy[url]; ok {
+		wait = d
+	}
+	if wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if f.failFor[url] {
+		return nil, fmt.Errorf("模拟抓取失败: %s", url)
+	}
+	return &gofeed.Feed{
+		Title: "test",
+		Items: []*gofeed.Item{{Title: "item", Link: url + "/item"}},
+	}, nil
+}
+
+// withTempCacheDir 把图片缓存目录指向临时目录，并在测试结束后还原。
+func withTempCacheDir(t *testing.T) string {
+	t.Helper()
+	bak := cacheDir
+	dir := t.TempDir()
+	cacheDir = dir
+	t.Cleanup(func() { cacheDir = bak })
+	return dir
+}
+
+// TestSanitizeContentImageCacheDisabled 确认关闭图片缓存后保留原始外链。
+//
+// 这是"抓取变快"的主要开关：源站图片可直连时无需本地中转。
+func TestSanitizeContentImageCacheDisabled(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": false}`)
+	withTempCacheDir(t)
+
+	s := &RSSService{}
+	content := `<p>hello</p><img src="http://example.com/pic.png">`
+
+	got := s.sanitizeContent(context.Background(), content)
+
+	if !strings.Contains(got, "http://example.com/pic.png") {
+		t.Errorf("关闭缓存后应保留原始外链，实际: %s", got)
+	}
+}
+
+// TestSanitizeContentCachesImages 确认开启时把外链改写为站内路径。
+func TestSanitizeContentCachesImages(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	dir := withTempCacheDir(t)
+
+	// 假图片服务器
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+	}))
+	defer srv.Close()
+
+	s := &RSSService{}
+	content := fmt.Sprintf(`<img src="%s/a.png">`, srv.URL)
+
+	got := s.sanitizeContent(context.Background(), content)
+
+	if strings.Contains(got, srv.URL) {
+		t.Errorf("应改写为站内 URL，实际: %s", got)
+	}
+	if !strings.Contains(got, "/static/uploads/rss_img/rss_") {
+		t.Errorf("缺少站内图片路径，实际: %s", got)
+	}
+	if hits.Load() == 0 {
+		t.Error("没有发起图片下载请求")
+	}
+
+	// 文件确实落盘
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读取缓存目录失败: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Error("缓存目录为空，图片未落盘")
+	}
+}
+
+// TestSanitizeContentDownloadsConcurrently 确认多张图片并发下载。
+//
+// 串行实现下 4 张各 100ms 的图片需要 400ms；并发（>=2）应明显更快。
+// 这里用较宽松的阈值避免 CI 抖动导致误报。
+func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	withTempCacheDir(t)
+
+	var inFlight, maxInFlight atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			old := maxInFlight.Load()
+			if cur <= old || maxInFlight.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(80 * time.Millisecond)
+		inFlight.Add(-1)
+		_, _ = w.Write([]byte("img"))
+	}))
+	defer srv.Close()
+
+	var b strings.Builder
+	for i := 0; i < 4; i++ {
+		fmt.Fprintf(&b, `<img src="%s/%d.png">`, srv.URL, i)
+	}
+
+	s := &RSSService{}
+	start := time.Now()
+	s.sanitizeContent(context.Background(), b.String())
+	elapsed := time.Since(start)
+
+	if maxInFlight.Load() < 2 {
+		t.Errorf("最大并发数 = %d，期望 >= 2（实现仍是串行？）", maxInFlight.Load())
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("4 张图耗时 %v，接近串行的 320ms，并发未生效", elapsed)
+	}
+}
+
+// TestSanitizeContentRespectsBudget 确认超时预算是硬约束。
+//
+// 图片服务器比预算还慢时，抓取不应被拖住：预算耗尽后放弃图片、
+// 条目照常入库（图片标签被移除）。
+func TestSanitizeContentRespectsBudget(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	withTempCacheDir(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte("slow"))
+	}))
+	defer srv.Close()
+
+	s := &RSSService{}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	got := s.sanitizeContent(ctx, fmt.Sprintf(`<p>keep</p><img src="%s/a.png">`, srv.URL))
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Errorf("预算 150ms，实际耗时 %v", elapsed)
+	}
+	if !strings.Contains(got, "keep") {
+		t.Error("文本内容不应被丢弃")
+	}
+	if strings.Contains(got, srv.URL) {
+		t.Error("超时的图片应被移除，而不是保留外链")
+	}
+}
+
+// TestRSSFetcherCanBeReplaced 确认 SetFetcher 允许替换实现（extension 接入点）。
+func TestRSSFetcherCanBeReplaced(t *testing.T) {
+	fake := &fakeFetcher{}
+	s := NewRSSService(nil)
+	s.SetFetcher(fake)
+
+	feed, err := s.fetcher.Fetch(context.Background(), "http://example.com/feed")
+	if err != nil {
+		t.Fatalf("Fetch 失败: %v", err)
+	}
+	if feed.Title != "test" {
+		t.Errorf("未使用替换后的 fetcher，title = %q", feed.Title)
+	}
+	if fake.calls.Load() != 1 {
+		t.Errorf("fake fetcher 调用次数 = %d，期望 1", fake.calls.Load())
+	}
+
+	// 传 nil 应恢复为按配置自动选择
+	s.SetFetcher(nil)
+	if _, ok := s.fetcher.(*autoFetcher); !ok {
+		t.Errorf("SetFetcher(nil) 应恢复 autoFetcher，实际 %T", s.fetcher)
+	}
+}

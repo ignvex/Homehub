@@ -3,7 +3,6 @@ package model
 import (
 	"crypto/md5"
 	"encoding/hex"
-	"fmt"
 	"strings"
 )
 
@@ -37,21 +36,4 @@ func (u *User) GravatarHash() string {
 	}
 	hash := md5.Sum([]byte(email))
 	return hex.EncodeToString(hash[:])
-}
-
-// GravatarURL 根据给定参数生成 Gravatar 头像的外部 URL。
-//
-// 参数：
-//   - size：头像尺寸（像素）
-//   - defaultStyle：无头像时的默认风格（identicon、mp、robohash 等）
-//   - rating：内容分级（g、pg、r、x）
-//
-// 若 email 为空，返回空字符串。
-func (u *User) GravatarURL(size int, defaultStyle, rating string) string {
-	hash := u.GravatarHash()
-	if hash == "" {
-		return ""
-	}
-	return fmt.Sprintf("https://www.gravatar.com/avatar/%s?s=%d&d=%s&r=%s",
-		hash, size, defaultStyle, rating)
 }

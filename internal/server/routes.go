@@ -111,8 +111,9 @@ func registerRoutes(r *gin.Engine) {
 			b.POST("/reorder", handler.BookmarkReorder)
 		}
 
-		// 配置管理
+		// 配置管理（管理员）——可改数据库连接与 session_secret，必须限制角色
 		cfg := authRequired.Group("/config")
+		cfg.Use(middleware.AuthAdminRequired())
 		{
 			cfg.GET("", handler.ConfigGet)
 			cfg.PUT("", handler.ConfigUpdate)

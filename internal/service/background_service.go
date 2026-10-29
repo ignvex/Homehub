@@ -51,10 +51,10 @@ type UpdateBackgroundRequest struct {
 	SelectedAssetIDs *[]uint64 `json:"selected_asset_ids,omitempty" form:"selected_asset_ids"`
 }
 
-// Update 更新首页背景设置并写回 config.json。
+// Update 更新首页背景设置并写回当前配置文件。
 // 使用 AtomicJSONUpdate 保留 JSON 中的非结构体字段（如 _comment）。
 func (s *BackgroundService) Update(req UpdateBackgroundRequest) error {
-	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
+	return config.AtomicJSONUpdate(config.Path(), func(raw map[string]any) error {
 		webui, ok := raw["webui"].(map[string]any)
 		if !ok {
 			raw["webui"] = map[string]any{}

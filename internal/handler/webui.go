@@ -39,7 +39,7 @@ func WebUIConfig(c *gin.Context) {
 	}
 
 	build := func(background config.BackgroundConfig, layout string) (publicPage, error) {
-		resolved, err := svc.Media.ListByIDs(background.SelectedAssetIDs)
+		resolved, err := svc.Media.ListBackgroundAssets(background.SelectedAssetIDs)
 		if err != nil {
 			return publicPage{}, err
 		}

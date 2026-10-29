@@ -2,7 +2,6 @@ package service
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/ignvex/HomeHub/internal/config"
 )
@@ -28,7 +27,6 @@ type SafeConfig struct {
 	Gravatar config.GravatarConfig `json:"gravatar"`
 	Bookmark config.BookmarkConfig `json:"bookmark"`
 	RSS      config.RSSConfig      `json:"rss"`
-	Bilibili SafeBilibiliConfig    `json:"bilibili"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。
@@ -43,15 +41,6 @@ type SafeDatabaseConfig struct {
 // SafeAuthConfig 不含 session_secret 的认证配置。
 type SafeAuthConfig struct {
 	Username string `json:"username"`
-}
-
-// SafeBilibiliConfig 不含 SESSDATA 等敏感字段的 Bilibili 配置视图。
-type SafeBilibiliConfig struct {
-	Enabled        bool   `json:"enabled"`
-	VideoEnabled   bool   `json:"video_enabled"`
-	ArticleEnabled bool   `json:"article_enabled"`
-	UserEnabled    bool   `json:"user_enabled"`
-	UserAgent      string `json:"user_agent"`
 }
 
 // SafeProxyEntry 脱敏后的代理配置，不暴露完整的代理 URL。
@@ -104,13 +93,6 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		Gravatar: cfg.Gravatar,
 		Bookmark: cfg.Bookmark,
 		RSS:      cfg.RSS,
-		Bilibili: SafeBilibiliConfig{
-			Enabled:        cfg.Bilibili.Enabled,
-			VideoEnabled:   cfg.Bilibili.VideoEnabled,
-			ArticleEnabled: cfg.Bilibili.ArticleEnabled,
-			UserEnabled:    cfg.Bilibili.UserEnabled,
-			UserAgent:      cfg.Bilibili.UserAgent,
-		},
 	}
 }
 
@@ -164,7 +146,7 @@ type LogUpdate struct {
 // 使用 AtomicJSONUpdate 保留 JSON 中的非结构体字段（如 _comment）。
 // 写回成功后触发热重载。
 func (s *ConfigService) Update(req UpdateConfigRequest) error {
-	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
+	return config.AtomicJSONUpdate(config.Path(), func(raw map[string]any) error {
 		if req.Server != nil {
 			ensureMap(raw, "server")
 			srv := raw["server"].(map[string]any)
@@ -255,31 +237,4 @@ func structToMap(v any) any {
 	var result any
 	json.Unmarshal(data, &result)
 	return result
-}
-
-// ToggleBilibiliCrawler 切换指定 Bilibili 爬虫模块的启用状态。
-//
-// 通过修改 config.json 中对应的 _enabled 字段并触发热重载实现。
-// 启用子模块时总开关自动开启。使用 AtomicJSONUpdate 保留 _comment 字段。
-func (s *ConfigService) ToggleBilibiliCrawler(crawlerType string, enabled bool) error {
-	return config.AtomicJSONUpdate("config.json", func(raw map[string]any) error {
-		ensureMap(raw, "bilibili")
-		bili := raw["bilibili"].(map[string]any)
-
-		if enabled {
-			bili["enabled"] = true
-		}
-
-		switch crawlerType {
-		case "video":
-			bili["video_enabled"] = enabled
-		case "article":
-			bili["article_enabled"] = enabled
-		case "user":
-			bili["user_enabled"] = enabled
-		default:
-			return fmt.Errorf("无效的爬虫类型: %s", crawlerType)
-		}
-		return nil
-	})
 }

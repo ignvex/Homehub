@@ -49,6 +49,8 @@ func Run() error {
 	// 全局中间件
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logger())
+	// 安全响应头：nosniff + 上传目录的 SVG/PDF 加固
+	r.Use(middleware.SecurityHeaders())
 
 	// 静态文件
 	r.Static("/static", "./web/static")

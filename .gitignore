@@ -4,7 +4,9 @@
 bin/
 *.exe
 *.exe~
-homehub
+# 仅匹配仓库根目录的编译产物；不能写裸 `homehub`，
+# 否则会把入口目录 cmd/homehub/ 一并忽略掉。
+/homehub
 
 # 数据目录
 data/

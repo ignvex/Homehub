@@ -44,6 +44,17 @@ func BackgroundUpdate(c *gin.Context) {
 		return
 	}
 
+	// 背景只接受图片与视频：前端即便提交了音频/PDF 的 ID，
+	// 也要在持久化前剔除，否则首页与登录页会渲染出错位画面。
+	if req.SelectedAssetIDs != nil {
+		filtered, err := svc.Media.FilterBackgroundIDs(*req.SelectedAssetIDs)
+		if err != nil {
+			FailInternal(c, "校验背景素材失败")
+			return
+		}
+		req.SelectedAssetIDs = &filtered
+	}
+
 	if err := svc.Background.Update(req); err != nil {
 		FailBadRequest(c, err.Error())
 		return

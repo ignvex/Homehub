@@ -32,5 +32,6 @@ func HealthCheck(c *gin.Context) {
 		"status":         "ok",
 		"db":             dbStatus,
 		"uptime_seconds": int(time.Since(startTime).Seconds()),
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
 	})
 }

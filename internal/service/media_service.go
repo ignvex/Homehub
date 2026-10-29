@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ignvex/HomeHub/internal/model"
 	"gorm.io/gorm"
@@ -18,20 +16,14 @@ import (
 
 // 上传相关常量。
 const (
-	uploadDir     = "web/static/uploads"
 	maxUploadSize = 50 << 20 // 50 MB
-)
-
-var (
-	allowedImageExt = map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true, ".bmp": true}
-	allowedVideoExt = map[string]bool{".mp4": true, ".webm": true, ".ogv": true, ".mov": true}
 )
 
 var (
 	// ErrFileTooLarge 文件超过大小限制。
 	ErrFileTooLarge = errors.New("文件大小不能超过 50MB")
 	// ErrInvalidFileType 不支持的文件类型。
-	ErrInvalidFileType = errors.New("不支持的文件类型，仅支持常见图片和视频格式")
+	ErrInvalidFileType = errors.New("不支持的文件类型，请上传常见图片、视频、音频或 PDF")
 	// ErrAssetNotFound 媒体资源不存在。
 	ErrAssetNotFound = errors.New("媒体资源不存在")
 )
@@ -55,16 +47,54 @@ func (s *MediaService) List() ([]model.MediaAsset, error) {
 	return assets, nil
 }
 
-// GetByID 根据 ID 获取单个媒体资源。
-func (s *MediaService) GetByID(id uint64) (*model.MediaAsset, error) {
-	var asset model.MediaAsset
-	if err := s.db.First(&asset, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAssetNotFound
-		}
-		return nil, fmt.Errorf("查询媒体资源失败: %w", err)
+// BackgroundKinds 是可以用作页面背景的媒体类型。
+//
+// 音频与 PDF 可以上传与展示，但不能当背景：浏览器无法把音频渲染成
+// 背景层，PDF 只能内联打开。前端拿到非这两类的资源会渲染错位，
+// 因此在数据出口就过滤掉，而不是依赖前端判断。
+var BackgroundKinds = []string{string(CategoryImage), string(CategoryVideo)}
+
+// FilterBackgroundIDs 返回 ids 中确实存在、且类型可作背景的那些，保持原顺序。
+//
+// 用于写入背景配置前清洗：即便前端传了音频 ID，也不会被持久化。
+func (s *MediaService) FilterBackgroundIDs(ids []uint64) ([]uint64, error) {
+	// 必须用 ListBackgroundAssets 而不是 ListByIDs：后者不筛类型，
+	// 会让音频/PDF 的 ID 混进背景配置。
+	assets, err := s.ListBackgroundAssets(ids)
+	if err != nil {
+		return nil, err
 	}
-	return &asset, nil
+
+	allowed := make(map[uint64]bool, len(assets))
+	for _, a := range assets {
+		allowed[a.ID] = true
+	}
+
+	out := make([]uint64, 0, len(ids))
+	for _, id := range ids {
+		if allowed[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// ListBackgroundAssets 按 ID 顺序返回可作背景的媒体资源。
+//
+// 与 ListByIDs 的区别是额外过滤类型；用于 /webui 这类对外输出。
+func (s *MediaService) ListBackgroundAssets(ids []uint64) ([]model.MediaAsset, error) {
+	assets, err := s.ListByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]model.MediaAsset, 0, len(assets))
+	for _, a := range assets {
+		if a.MediaType == string(CategoryImage) || a.MediaType == string(CategoryVideo) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // ListByIDs 按传入 ID 的顺序查询媒体资源，不存在的资源会被忽略。
@@ -114,7 +144,7 @@ func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, er
 	}
 
 	// 2. 校验扩展名（拒绝空扩展名，防止绕过检查）
-	ext := strings.ToLower(filepath.Ext(file.Filename))
+	ext := normalizeExt(file.Filename)
 	if ext == "" {
 		return nil, ErrInvalidFileType
 	}
@@ -164,6 +194,12 @@ func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, er
 	}
 
 	// 6. 创建数据库记录
+	// 图片补充像素尺寸（仅标准库可解码的格式），失败留 0 不影响上传。
+	var width, height int
+	if mediaType == string(CategoryImage) {
+		width, height = imageDimensions(destPath)
+	}
+
 	asset := model.MediaAsset{
 		Filename:     filename,
 		OriginalName: file.Filename,
@@ -171,6 +207,8 @@ func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, er
 		FileSize:     file.Size,
 		MimeType:     detectMimeType(ext),
 		MediaType:    mediaType,
+		Width:        width,
+		Height:       height,
 	}
 
 	if err := s.db.Create(&asset).Error; err != nil {
@@ -206,61 +244,6 @@ func (s *MediaService) Delete(id uint64) error {
 // ============================================================
 // 辅助函数
 // ============================================================
-
-// getMediaType 根据扩展名返回媒体类型（精确 map 匹配）。
-func getMediaType(ext string) (string, bool) {
-	if allowedImageExt[ext] {
-		return "image", true
-	}
-	if allowedVideoExt[ext] {
-		return "video", true
-	}
-	return "", false
-}
-
-// validateFileContent 读取文件前 512 字节，使用 net/http 检测真实 MIME 类型，与扩展名对照。
-func validateFileContent(path, ext string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取文件进行内容校验失败: %w", err)
-	}
-
-	detected := http.DetectContentType(data)
-	// 若扩展名为图片类，检测结果应以 "image/" 开头；视频类应以 "video/" 开头
-	if strings.HasPrefix(ext, ".") {
-		expectedPrefix := ""
-		if allowedImageExt[ext] {
-			expectedPrefix = "image/"
-		} else if allowedVideoExt[ext] {
-			expectedPrefix = "video/"
-		}
-		if expectedPrefix != "" && !strings.HasPrefix(detected, expectedPrefix) {
-			return fmt.Errorf("文件内容与扩展名不匹配：扩展名 %s，检测到 %s", ext, detected)
-		}
-	}
-	return nil
-}
-
-// detectMimeType 根据扩展名推断 MIME 类型。
-func detectMimeType(ext string) string {
-	mimeMap := map[string]string{
-		".jpg":  "image/jpeg",
-		".jpeg": "image/jpeg",
-		".png":  "image/png",
-		".gif":  "image/gif",
-		".webp": "image/webp",
-		".bmp":  "image/bmp",
-		".svg":  "image/svg+xml",
-		".mp4":  "video/mp4",
-		".webm": "video/webm",
-		".ogv":  "video/ogg",
-		".mov":  "video/quicktime",
-	}
-	if mime, ok := mimeMap[ext]; ok {
-		return mime
-	}
-	return "application/octet-stream"
-}
 
 // generateUUID 生成 16 字节随机 hex 字符串。
 func generateUUID() (string, error) {

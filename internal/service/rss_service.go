@@ -14,12 +14,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/model"
-	"github.com/imroc/req/v3"
 	"github.com/mmcdole/gofeed"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -31,11 +31,6 @@ var (
 	ErrRSSFeedExists   = errors.New("订阅源已存在")
 )
 
-const rssHTTPTimeout = 30 * time.Second
-
-// rssUserAgent 用于伪装 RSS 抓取请求，避免 Go 默认 UA 被反爬拦截。
-const rssUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-
 // RSSService RSS 订阅业务服务。
 //
 // 负责：
@@ -44,16 +39,29 @@ const rssUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 //   - 定时抓取 RSS 内容并入库（支持代理）
 //   - 条目保留数量控制
 type RSSService struct {
-	db         *gorm.DB
-	httpClient *req.Client
+	db      *gorm.DB
+	fetcher RSSFetcher
 }
 
 // NewRSSService 创建 RSSService 实例。
+//
+// 默认抓取器跟随配置：rss.extension_url 为空时本地抓取，否则交给
+// extension 服务（HomeHub 单向发起请求）。要完全接管，可调用 SetFetcher。
 func NewRSSService(db *gorm.DB) *RSSService {
 	return &RSSService{
-		db:         db,
-		httpClient: buildRSSHTTPClient(),
+		db:      db,
+		fetcher: newAutoFetcher(),
 	}
+}
+
+// SetFetcher 强制指定抓取实现，覆盖按配置的自动选择。
+//
+// 传入 nil 时恢复为自动选择（本地 / extension 跟随配置）。
+func (s *RSSService) SetFetcher(f RSSFetcher) {
+	if f == nil {
+		f = newAutoFetcher()
+	}
+	s.fetcher = f
 }
 
 // ============================================================
@@ -81,8 +89,8 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 		return nil, ErrRSSFeedExists
 	}
 
-	// 解析订阅源获取元数据
-	feed, err := s.fetchAndParse(urlStr)
+	// 解析订阅源获取元数据（此时尚未入库，用请求级 ctx 控制超时）
+	feed, err := s.fetcher.Fetch(context.Background(), urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("解析订阅源失败: %w", err)
 	}
@@ -109,9 +117,12 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 		return nil, fmt.Errorf("创建订阅源失败: %w", err)
 	}
 
-	// 立即执行首次抓取，填充初始条目
+	// 立即执行首次抓取，填充初始条目。
+	// 用独立 ctx：请求返回后仍要继续，但需有超时避免永久挂起。
 	go func() {
-		if err := s.FetchFeed(rssFeed.ID); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), rssFetchBudget())
+		defer cancel()
+		if err := s.FetchFeed(ctx, rssFeed.ID); err != nil {
 			logger.Error("[rss] 首次抓取失败", "feed_id", rssFeed.ID, "error", err)
 		}
 	}()
@@ -246,7 +257,7 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 //  4. 插入条目（ON CONFLICT ON link DO NOTHING）
 //  5. 按 retention_count 清理超量旧条目
 //  6. 更新 LastFetch 和 ErrorMsg
-func (s *RSSService) FetchFeed(id uint64) error {
+func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 	var feed model.RSSFeed
 	if err := s.db.First(&feed, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -260,8 +271,8 @@ func (s *RSSService) FetchFeed(id uint64) error {
 		return fmt.Errorf("订阅源 URL 校验失败: %w", err)
 	}
 
-	// 抓取并解析
-	parsed, err := s.fetchAndParse(feed.URL)
+	// 抓取并解析（超时由调用方的 ctx 控制）
+	parsed, err := s.fetcher.Fetch(ctx, feed.URL)
 	if err != nil {
 		// 更新错误信息
 		errMsg := err.Error()
@@ -279,7 +290,7 @@ func (s *RSSService) FetchFeed(id uint64) error {
 	now := time.Now()
 	entries := make([]model.RSSEntry, 0, len(parsed.Items))
 	for _, item := range parsed.Items {
-		entry := s.itemToEntry(feed.ID, item, now)
+		entry := s.itemToEntry(ctx, feed.ID, item, now)
 		if entry.Link == "" {
 			continue // 跳过无链接条目
 		}
@@ -344,19 +355,40 @@ func (s *RSSService) FetchFeed(id uint64) error {
 	return nil
 }
 
-// FetchAll 抓取所有到期的订阅源。
+// rssConcurrency 返回订阅源抓取并发数（配置热更新即时生效）。
+func rssConcurrency() int {
+	cfg := config.Get()
+	if cfg != nil && cfg.RSS.FetchConcurrency > 0 {
+		return cfg.RSS.FetchConcurrency
+	}
+	return 4
+}
+
+// rssFetchBudget 返回单个订阅源的抓取预算（含图片缓存）。
+func rssFetchBudget() time.Duration {
+	cfg := config.Get()
+	if cfg != nil && cfg.RSS.FetchTimeoutSeconds > 0 {
+		return time.Duration(cfg.RSS.FetchTimeoutSeconds) * time.Second
+	}
+	return rssHTTPTimeout
+}
+
+// FetchAll 并发抓取所有到期的订阅源。
 //
-// 到期判定：now - LastFetch > FetchInterval（秒）。
-func (s *RSSService) FetchAll() error {
+// 并发上限来自 rss.fetch_concurrency，每个订阅源有独立的超时预算：
+// 单个源慢或挂掉只会占用一个并发槽，不会拖住整轮——这是之前串行实现
+// 最大的问题（N 个源各超时 30s 会让后台循环彻底堵死）。
+//
+// 返回所有失败源的聚合错误；成功的源不受影响。
+func (s *RSSService) FetchAll(ctx context.Context) error {
 	var feeds []model.RSSFeed
 	if err := s.db.Find(&feeds).Error; err != nil {
 		return fmt.Errorf("查询订阅源列表失败: %w", err)
 	}
 
 	now := time.Now()
-	var lastErr error
+	due := make([]model.RSSFeed, 0, len(feeds))
 	for _, feed := range feeds {
-		// 判断是否到期
 		interval := feed.FetchInterval
 		if interval <= 0 {
 			interval = 3600
@@ -364,44 +396,104 @@ func (s *RSSService) FetchAll() error {
 		if now.Sub(feed.LastFetch) <= time.Duration(interval)*time.Second {
 			continue
 		}
-
-		if err := s.FetchFeed(feed.ID); err != nil {
-			lastErr = err
-			// 继续处理下一个，不因单个失败中断
-		}
+		due = append(due, feed)
 	}
 
-	return lastErr
+	if len(due) == 0 {
+		return nil
+	}
+
+	budget := rssFetchBudget()
+	sem := make(chan struct{}, rssConcurrency())
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	for _, feed := range due {
+		wg.Add(1)
+		go func(feedID uint64) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			fctx, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+
+			if err := s.FetchFeed(fctx, feedID); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("feed %d: %w", feedID, err))
+				mu.Unlock()
+			}
+		}(feed.ID)
+	}
+
+	wg.Wait()
+
+	if len(errs) > 0 {
+		logger.Warn("[rss] 本轮抓取部分失败", "failed", len(errs), "total", len(due))
+		return errors.Join(errs...)
+	}
+	logger.Info("[rss] 本轮抓取完成", "feeds", len(due))
+	return nil
 }
+
+// backgroundTick 是后台调度器的检查间隔。
+//
+// 用短 tick 轮询而不是"睡满一个 interval"，是为了让配置热更新
+// 在一个 tick 内生效：否则改完抓取间隔要等整轮结束才起作用。
+const backgroundTick = 5 * time.Second
 
 // StartBackgroundFetcher 启动 RSS 后台定时抓取 goroutine。
 //
-// 定期读取当前配置，根据 background_fetch_enabled 和 background_fetch_interval
-// 决定是否抓取。配置热更新后下一轮自动生效，无需重启服务。
-// ctx 用于优雅退出。
+// 每 backgroundTick 检查一次：
+//   - 配置（开关/间隔）变化时重置计时，立即按新配置执行
+//   - 到达下次抓取时间时执行一轮并发抓取
+//
+// ctx 取消时停止。
 func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
-	defaultInterval := 300
-
 	go func() {
+		ticker := time.NewTicker(backgroundTick)
+		defer ticker.Stop()
+
+		var nextRun time.Time
+		var lastPlan string
+
 		for {
 			cfg := config.Get()
 			enabled := cfg != nil && cfg.RSS.BackgroundFetchEnabled
-			interval := defaultInterval
+			interval := 300
 			if cfg != nil && cfg.RSS.BackgroundFetchInterval > 0 {
 				interval = cfg.RSS.BackgroundFetchInterval
 			}
+			if interval < 5 {
+				interval = 5
+			}
 
-			if enabled {
-				if err := s.FetchAll(); err != nil {
-					logger.Error("[rss] 后台定时抓取出错", "error", err)
+			plan := fmt.Sprintf("%v|%d", enabled, interval)
+			if plan != lastPlan {
+				lastPlan = plan
+				// 配置变化：立刻按新配置跑一次，之后按新间隔调度。
+				nextRun = time.Now()
+				logger.Info("[rss] 后台抓取配置已更新", "enabled", enabled, "interval_seconds", interval)
+			}
+
+			if enabled && !time.Now().Before(nextRun) {
+				if err := s.FetchAll(ctx); err != nil {
+					logger.Warn("[rss] 后台抓取完成但有失败项", "error", err)
 				}
+				nextRun = time.Now().Add(time.Duration(interval) * time.Second)
 			}
 
 			select {
 			case <-ctx.Done():
 				logger.Info("[rss] 后台定时抓取已停止")
 				return
-			case <-time.After(time.Duration(interval) * time.Second):
+			case <-ticker.C:
 			}
 		}
 	}()
@@ -411,29 +503,8 @@ func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
 // 内部方法
 // ============================================================
 
-// fetchAndParse 通过 HTTP 客户端获取 RSS 内容并用 gofeed 解析。
-func (s *RSSService) fetchAndParse(urlStr string) (*gofeed.Feed, error) {
-	resp, err := s.httpClient.R().Get(urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
-	}
-
-	parser := gofeed.NewParser()
-	feed, err := parser.Parse(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("RSS 解析失败: %w", err)
-	}
-
-	return feed, nil
-}
-
 // itemToEntry 将 gofeed 条目转换为 RSSEntry 模型。
-func (s *RSSService) itemToEntry(feedID uint64, item *gofeed.Item, fetchedAt time.Time) model.RSSEntry {
+func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofeed.Item, fetchedAt time.Time) model.RSSEntry {
 	entry := model.RSSEntry{
 		FeedID:    feedID,
 		Title:     item.Title,
@@ -458,7 +529,7 @@ func (s *RSSService) itemToEntry(feedID uint64, item *gofeed.Item, fetchedAt tim
 			content = string(runes[:2000]) + "..."
 		}
 	}
-	entry.Content = sanitizeRssContent(content)
+	entry.Content = s.sanitizeContent(ctx, content)
 
 	// 磁力链接：优先从 Enclosures 提取，fallback 正则扫描内容
 	for _, enc := range item.Enclosures {
@@ -650,50 +721,6 @@ func (s *RSSService) DeleteGroup(id uint64) error {
 	})
 }
 
-// buildRSSHTTPClient 根据 RSS 代理配置构建 HTTP 客户端。
-//
-// 通过 config.ResolveProxy 解析 RSS 模块的代理配置，
-// 支持 HTTP 代理。配置为空时直连。
-func buildRSSHTTPClient() *req.Client {
-	transport := &http.Transport{
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	}
-
-	cfg := config.Get()
-	if cfg != nil {
-		proxies := config.ResolveProxy(cfg.RSS.ProxyNames)
-		if len(proxies) > 0 {
-			addr := proxies[0].HTTPURL
-			if addr != "" {
-				transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-					return url.Parse(addr)
-				}
-			}
-		}
-	}
-
-	client := req.C().SetTimeout(rssHTTPTimeout).DisableDebugLog()
-	client.GetClient().Transport = transport
-	// 设置 User-Agent 伪装为浏览器，避免 Go 默认 UA 被 RSS 源拒绝
-	ua := rssUserAgent
-	if cfg != nil && cfg.RSS.UserAgent != "" {
-		ua = cfg.RSS.UserAgent
-	}
-	client.SetCommonHeader("User-Agent", ua)
-	// 禁止自动跟随重定向（防止 SSRF 通过重定向绕过 IP 校验）
-	client.GetClient().CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return errors.New("超过最大重定向次数")
-		}
-		if err := validateFeedURL(req.URL.String()); err != nil {
-			return fmt.Errorf("重定向目标校验失败: %w", err)
-		}
-		return nil
-	}
-	return client
-}
-
 // magnetPattern 匹配 magnet: 协议链接。
 var magnetPattern = regexp.MustCompile(`magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s"<]*`)
 
@@ -728,51 +755,176 @@ var extSrcPattern = regexp.MustCompile(`src=["'](https?://[^"']+)["']`)
 // styleUrlPattern 内联 style 中的外链图片（background-image 等）。
 var styleUrlPattern = regexp.MustCompile(`url\(\s*["']?(https?://[^)"'\s]+)["']?\s*\)`)
 
-// sanitizeRssContent 清洗 RSS 内容：移除危险标签、缓存外链图片、剥离其他外部资源。
-func sanitizeRssContent(content string) string {
+// imgTagPattern 匹配完整的 <img> 标签。
+var imgTagPattern = regexp.MustCompile(`(?i)<img\b[^>]*>`)
+
+// protectImgTags 把 <img> 标签替换为占位符，返回替换后的内容与还原表。
+//
+// 用途：后续要剥离"所有外部 src"，但 img 是允许保留的 —— 关闭图片缓存时
+// 仍需让浏览器直接加载原图。占位符用 NUL 包裹，正常 HTML 里不会出现。
+func protectImgTags(content string) (string, map[string]string) {
+	restore := make(map[string]string)
+	i := 0
+	out := imgTagPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		key := fmt.Sprintf("\x00IMG%d\x00", i)
+		restore[key] = tag
+		i++
+		return key
+	})
+	return out, restore
+}
+
+// restoreImgTags 把占位符还原为原始 <img> 标签。
+func restoreImgTags(content string, restore map[string]string) string {
+	for key, tag := range restore {
+		content = strings.ReplaceAll(content, key, tag)
+	}
+	return content
+}
+
+// sanitizeContent 清洗 RSS 内容：移除危险标签、缓存外链图片、剥离其他外部资源。
+//
+// 图片缓存是抓取耗时的主要来源：一个含 20 张图的条目若串行下载，最坏要
+// 等 20 × 5s。这里改为"先收集、并发下载、再统一替换"，并用 ctx 作为
+// 总体预算 —— 预算耗尽的图片直接放弃，不拖住入库。
+//
+// rss.image_cache_enabled=false 时完全跳过下载，图片保留原始外链由
+// 浏览器直接加载：抓取速度显著提升，也不占用本地磁盘。
+func (s *RSSService) sanitizeContent(ctx context.Context, content string) string {
 	if content == "" {
 		return content
 	}
+
 	// 1. 移除危险标签
 	content = dangerousSelfClosing.ReplaceAllString(content, "")
 	content = dangerousPaired.ReplaceAllString(content, "")
 
-	// 2. <img> 外部图片 → 本地缓存（失败则保留原始 src，不阻断入库）
-	content = rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
-		match := rssImgPattern.FindStringSubmatch(tag)
-		if len(match) < 2 || match[1] == "" {
-			return tag
-		}
-		src := match[1]
-		if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "data:") {
-			return tag
-		}
-		hash := md5.Sum([]byte(src))
-		name := hex.EncodeToString(hash[:])
-		clean := strings.SplitN(src, "?", 2)[0]
-		ext := filepath.Ext(clean)
-		if ext == "" || !isImageExt(ext) {
-			ext = ".png"
-		}
-		filename := "rss_" + name + ext
-		localPath := filepath.Join(cacheDir, filename)
-		localURL := "/static/uploads/rss_img/" + filename
-		if _, err := os.Stat(localPath); err == nil {
-			return strings.Replace(tag, src, localURL, 1)
-		}
-		if err := downloadImage(src, localPath); err != nil {
-			return "" // 无法缓存的图片直接移除
-		}
-		return strings.Replace(tag, src, localURL, 1)
-	})
+	// 2. <img> 外部图片 → 本地缓存（关闭缓存时保持原样）
+	content = s.cacheContentImages(ctx, content)
 
-	// 3. 其他标签的外部 src → 移除 src 属性
+	// 3. 保护 <img> 标签：下面要剥离的"外部 src"不应波及图片本身
+	content, restore := protectImgTags(content)
+
+	// 4. 其他标签的外部 src → 移除 src 属性
 	content = extSrcPattern.ReplaceAllString(content, "")
 
-	// 4. 内联 style 中的外链 url(...) → 移除 url 的值（保留占位）
+	// 5. 内联 style 中的外链 url(...) → 移除 url 的值（保留占位）
 	content = styleUrlPattern.ReplaceAllString(content, "none")
 
-	return content
+	return restoreImgTags(content, restore)
+}
+
+// imageCacheSettings 读取图片缓存相关配置（热更新即时生效）。
+func imageCacheSettings() (enabled bool, concurrency int) {
+	cfg := config.Get()
+	if cfg == nil {
+		return true, 6
+	}
+	concurrency = cfg.RSS.ImageCacheConcurrency
+	if concurrency <= 0 {
+		concurrency = 6
+	}
+	return cfg.RSS.ImageCacheEnabled, concurrency
+}
+
+// cacheContentImages 把内容里的外链图片并发缓存到本地并改写为站内 URL。
+//
+// 已缓存的文件直接命中；下载失败的图片标签被整体移除（与原行为一致）。
+func (s *RSSService) cacheContentImages(ctx context.Context, content string) string {
+	enabled, concurrency := imageCacheSettings()
+	if !enabled {
+		return content
+	}
+
+	// 收集去重后的待缓存 URL
+	seen := make(map[string]bool)
+	var pending []string
+	for _, m := range rssImgPattern.FindAllStringSubmatch(content, -1) {
+		if len(m) < 2 || m[1] == "" {
+			continue
+		}
+		src := m[1]
+		if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "data:") || seen[src] {
+			continue
+		}
+		seen[src] = true
+		pending = append(pending, src)
+	}
+	if len(pending) == 0 {
+		return content
+	}
+
+	// 并发下载，结果写入 localURL / failed
+	var mu sync.Mutex
+	localURL := make(map[string]string, len(pending))
+	failed := make(map[string]bool)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for _, src := range pending {
+		wg.Add(1)
+		go func(src string) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				mu.Lock()
+				failed[src] = true
+				mu.Unlock()
+				return
+			}
+
+			url, err := cacheOneImage(ctx, src)
+			mu.Lock()
+			if err != nil {
+				failed[src] = true
+			} else {
+				localURL[src] = url
+			}
+			mu.Unlock()
+		}(src)
+	}
+	wg.Wait()
+
+	// 统一替换
+	return rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		m := rssImgPattern.FindStringSubmatch(tag)
+		if len(m) < 2 || m[1] == "" {
+			return tag
+		}
+		src := m[1]
+		if u, ok := localURL[src]; ok {
+			return strings.Replace(tag, src, u, 1)
+		}
+		if failed[src] {
+			return "" // 无法缓存的图片直接移除
+		}
+		return tag
+	})
+}
+
+// cacheOneImage 缓存单张图片，返回站内 URL。已存在则直接返回。
+func cacheOneImage(ctx context.Context, src string) (string, error) {
+	hash := md5.Sum([]byte(src))
+	name := hex.EncodeToString(hash[:])
+	clean := strings.SplitN(src, "?", 2)[0]
+	ext := filepath.Ext(clean)
+	if ext == "" || !isImageExt(ext) {
+		ext = ".png"
+	}
+	filename := "rss_" + name + ext
+	localPath := filepath.Join(cacheDir, filename)
+	localURL := "/static/uploads/rss_img/" + filename
+
+	if _, err := os.Stat(localPath); err == nil {
+		return localURL, nil
+	}
+	if err := downloadImage(ctx, src, localPath); err != nil {
+		return "", err
+	}
+	return localURL, nil
 }
 
 // isImageExt 判断扩展名是否为常见图片格式。
@@ -784,20 +936,16 @@ func isImageExt(ext string) bool {
 	return false
 }
 
-// downloadImage 下载单张图片到本地，限制 2MB 和 5s 超时。
-func downloadImage(urlStr, dest string) error {
+// downloadImage 下载单张图片到本地，限定大小与耗时。
+//
+// 复用共享 HTTP 客户端（同一连接池、同一代理与 UA 配置），
+// 并用 ctx 作为预算：整轮图片缓存超时后不再继续尝试。
+func downloadImage(ctx context.Context, urlStr, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("GET", urlStr, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", rssUserAgent)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := rssHTTPClient().R().SetContext(ctx).Get(urlStr)
 	if err != nil {
 		return err
 	}
@@ -815,6 +963,11 @@ func downloadImage(urlStr, dest string) error {
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, limited)
-	return err
+	if _, err := io.Copy(f, limited); err != nil {
+		// 写一半失败会留下残缺文件，删掉避免下次被误判为已缓存。
+		_ = f.Close()
+		_ = os.Remove(dest)
+		return err
+	}
+	return nil
 }

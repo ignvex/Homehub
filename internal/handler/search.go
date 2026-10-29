@@ -6,14 +6,14 @@ import "github.com/gin-gonic/gin"
 // 搜索 API
 // ============================================================
 
-// SearchAll 跨书签和 B 站数据的联合搜索。
+// SearchAll 跨书签和 RSS 条目的联合搜索。
 //
 //	@Summary		联合搜索
-//	@Description	跨书签和 Bilibili 爬虫数据（视频/专栏/用户）进行全文搜索，支持指定数据源范围
+//	@Description	在书签与 RSS 条目中执行全文搜索，支持指定数据源范围
 //	@Tags			搜索
 //	@Produce		json
 //	@Param			q		query		string	true	"搜索关键词"
-//	@Param			scope	query		string	false	"搜索范围：all / bookmarks / videos / articles / users / rss（默认 all）"
+//	@Param			scope	query		string	false	"搜索范围：all / bookmarks / rss（默认 all）"
 //	@Success		200		{object}	Response	"搜索结果"
 //	@Failure		400		{object}	Response	"缺少搜索关键词"
 //	@Failure		500		{object}	Response	"服务器内部错误"

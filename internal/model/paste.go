@@ -9,11 +9,13 @@ import (
 )
 
 // Paste 剪贴板模型。
+//
+// 刻意不包含语言标记等未被使用的字段：这些字段从未被写入，
+// 留着只会让建表 DDL 与模型产生误导。
 type Paste struct {
 	BaseModel
 	PublicID    string    `gorm:"uniqueIndex;size:12;not null" json:"public_id"`
 	Content     string    `gorm:"type:text;not null" json:"content"`
-	Language    string    `gorm:"size:50" json:"language,omitempty"`
 	DeleteToken string    `gorm:"size:64;not null" json:"-"`
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
@@ -33,7 +35,6 @@ func CreatePastesTable(db *gorm.DB) error {
 			deleted_at TIMESTAMPTZ,
 			public_id VARCHAR(12) NOT NULL UNIQUE,
 			content TEXT NOT NULL,
-			language VARCHAR(50) DEFAULT '',
 			delete_token VARCHAR(64) NOT NULL,
 			expires_at TIMESTAMPTZ
 		)

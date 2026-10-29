@@ -112,76 +112,26 @@ type RSSConfig struct {
 	BackgroundFetchEnabled  bool   `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
 	BackgroundFetchInterval int    `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
 	UserAgent               string `json:"user_agent"`                // 自定义 User-Agent，空则默认 Chrome 150
-}
 
-// BilibiliConfig B 站爬虫完整配置。
-//
-// 开关是 config.json 的唯一来源，crawler_state 表仅存储运行时进度。
-type BilibiliConfig struct {
-	// === 开关（唯一来源，不等同于 crawler_state.Enabled） ===
-	Enabled        bool `json:"enabled"`         // 总开关
-	VideoEnabled   bool `json:"video_enabled"`   // 视频子开关
-	ArticleEnabled bool `json:"article_enabled"` // 专栏子开关
-	UserEnabled    bool `json:"user_enabled"`    // 用户子开关
+	// FetchConcurrency 同时抓取的订阅源数量，默认 4。
+	// 单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。
+	FetchConcurrency int `json:"fetch_concurrency"`
+	// FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。
+	// 超时只影响该订阅源，其他订阅源继续抓取。
+	FetchTimeoutSeconds int `json:"fetch_timeout_seconds"`
+	// ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。
+	// 关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。
+	ImageCacheEnabled bool `json:"image_cache_enabled"`
+	// ImageCacheConcurrency 图片并发下载数，默认 6。
+	ImageCacheConcurrency int `json:"image_cache_concurrency"`
 
-	// === 认证 ===
-	SESSDATA   string `json:"sessdata"`     // Cookie SESSDATA（会话令牌）
-	BiliJCT    string `json:"bili_jct"`     // Cookie bili_jct（CSRF Token）
-	DedeUserID string `json:"dede_user_id"` // Cookie DedeUserID（用户 UID）
-	UserAgent  string `json:"user_agent"`   // 自定义 UA（空则用默认 Chrome 桌面端）
-
-	// === 网络 ===
-	ProxyURL string   `json:"proxy_url"` // 代理地址（空=直连），不复用全局 proxy 列表
-	UAPool   []string `json:"ua_pool"`   // UA 轮换池
-
-	// === 调试 ===
-	Debug bool `json:"debug"` // 调试模式：开启后无视工作时间限制，全天候运行
-
-	// === 全局速率 ===
-	RateMs          int `json:"rate_ms"`           // 请求间隔（毫秒），默认 2000
-	ActiveStartHour int `json:"active_start_hour"` // 活跃时段起点，默认 0
-	ActiveEndHour   int `json:"active_end_hour"`   // 活跃时段终点，默认 6
-
-	// === 生命周期 ===
-	Lifecycle LifecycleConfig `json:"lifecycle"`
-
-	// === 发现策略 ===
-	Discovery DiscoveryConfig `json:"discovery"`
-
-	// === 快照策略 ===
-	Snapshot SnapshotConfig `json:"snapshot"`
-}
-
-// LifecycleConfig 内容生命周期策略配置。
-type LifecycleConfig struct {
-	NewbornMaxHours         int `json:"newborn_max_hours"`          // newborn 阶段最大时长（h），默认 2
-	NewbornUpdateIntervalM  int `json:"newborn_update_interval_m"`  // newborn 更新间隔（min），默认 30
-	GrowingMaxHours         int `json:"growing_max_hours"`          // growing 阶段最大时长（h），默认 24
-	GrowingUpdateIntervalM  int `json:"growing_update_interval_m"`  // growing 更新间隔（min），默认 120
-	MatureMaxDays           int `json:"mature_max_days"`            // mature 阶段最大天数，默认 7
-	MatureUpdateIntervalM   int `json:"mature_update_interval_m"`   // mature 更新间隔（min），默认 720
-	ArchivedUpdateIntervalM int `json:"archived_update_interval_m"` // archived 更新间隔（min），默认 10080
-}
-
-// DiscoveryConfig 发现策略配置。
-type DiscoveryConfig struct {
-	IntervalHours        int  `json:"interval_hours"`         // 发现轮询间隔（h），默认 12
-	PopularLimit         int  `json:"popular_limit"`          // 热门榜条数，默认 50
-	RankingRidsPerRound  int  `json:"ranking_rids_per_round"` // 每轮查询几个分区排行榜，默认 5
-	RankingLimit         int  `json:"ranking_limit"`          // 每个分区排行榜条数，默认 100
-	DynamicEnabled       bool `json:"dynamic_enabled"`        // 是否启用动态流入口
-	WeeklyEnabled        bool `json:"weekly_enabled"`         // 每周必看入口
-	WeeklySeriesCount    int  `json:"weekly_series_count"`    // 每周必看取最近几期，默认 3
-	PreciousEnabled      bool `json:"precious_enabled"`       // 入站必刷入口
-	UserContentDiscovery bool `json:"user_content_discovery"` // 发现 UP 主后自动拉取其全部投稿
-}
-
-// SnapshotConfig 快照策略配置。
-type SnapshotConfig struct {
-	MinIntervalM       int     `json:"min_interval_m"`       // 快照最小间隔（min），默认 15
-	MinChangePct       float64 `json:"min_change_pct"`       // 触发快照的最小变化百分比，默认 0.05
-	MaxPerEntity       int     `json:"max_per_entity"`       // 每个实体最多保留快照数，默认 30
-	PurgeIntervalHours int     `json:"purge_interval_hours"` // 清理间隔（h），默认 24
+	// ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。
+	//
+	// 为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：
+	// HomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。
+	ExtensionURL string `json:"extension_url"`
+	// ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
+	ExtensionToken string `json:"extension_token"`
 }
 
 // Config 应用顶层配置，对应 config.json 文件结构。
@@ -195,7 +145,6 @@ type Config struct {
 	Gravatar       GravatarConfig       `json:"gravatar"`
 	Bookmark       BookmarkConfig       `json:"bookmark"`
 	RSS            RSSConfig            `json:"rss"`
-	Bilibili       BilibiliConfig       `json:"bilibili"`
 	BalanceMonitor BalanceMonitorConfig `json:"balance_monitor"`
 	Pastebin       PastebinConfig       `json:"pastebin"`
 }
@@ -267,22 +216,6 @@ func ResolveProxy(proxyNames []string) []ProxyEntry {
 		}
 	}
 
-	return result
-}
-
-// ListEnabledProxies 返回当前所有启用的代理列表。
-func ListEnabledProxies() []ProxyEntry {
-	cfg := Get()
-	if cfg == nil {
-		return nil
-	}
-
-	result := make([]ProxyEntry, 0)
-	for _, p := range cfg.Proxy {
-		if p.Enabled {
-			result = append(result, p)
-		}
-	}
 	return result
 }
 

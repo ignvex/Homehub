@@ -39,6 +39,25 @@ var validLogLevels = map[string]bool{
 	"DEBUG": true,
 }
 
+// clampPerPage 限定每页数量到 1-100，非正值回落到 20。
+func clampPerPage(perPage int) int {
+	if perPage <= 0 {
+		return 20
+	}
+	if perPage > 100 {
+		return 100
+	}
+	return perPage
+}
+
+// normalizePage 保证页码 >= 1。
+func normalizePage(page int) int {
+	if page <= 0 {
+		return 1
+	}
+	return page
+}
+
 // ListLogs 分页查询日志条目，支持按级别、关键词和时间范围筛选。
 func (s *LogService) ListLogs(q LogQuery) ([]model.LogEntry, int64, error) {
 	q.PerPage = clampPerPage(q.PerPage)
@@ -87,23 +106,4 @@ func (s *LogService) DeleteAll() error {
 		return fmt.Errorf("清除日志失败: %w", err)
 	}
 	return nil
-}
-
-// clampPerPage 限定每页数量到 1-100，非正值回落到 20。
-func clampPerPage(perPage int) int {
-	if perPage <= 0 {
-		return 20
-	}
-	if perPage > 100 {
-		return 100
-	}
-	return perPage
-}
-
-// normalizePage 保证页码 >= 1。
-func normalizePage(page int) int {
-	if page <= 0 {
-		return 1
-	}
-	return page
 }

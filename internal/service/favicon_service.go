@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/imroc/req/v3"
 	"gorm.io/gorm"
 )
@@ -119,19 +120,15 @@ func validateFaviconDomain(host string) error {
 
 // buildFaviconHTTPClient 根据书签代理配置构建 HTTP 客户端。
 func buildFaviconHTTPClient() *req.Client {
-	transport := &http.Transport{}
-
-	cfg := config.Get()
-	if cfg != nil {
-		proxies := config.ResolveProxy(cfg.Bookmark.ProxyNames)
-		if len(proxies) > 0 {
-			addr := proxies[0].HTTPURL
-			if addr != "" {
-				transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-					return url.Parse(addr)
-				}
-			}
-		}
+	// 代理构建统一走 config.TransportFor（按 scheme 选择 http/https 地址）
+	var proxyNames []string
+	if cfg := config.Get(); cfg != nil {
+		proxyNames = cfg.Bookmark.ProxyNames
+	}
+	transport, err := config.TransportFor(proxyNames)
+	if err != nil {
+		logger.Warn("[favicon] 代理配置不可用，改为直连", "error", err)
+		transport, _ = config.TransportFor(nil)
 	}
 
 	client := req.C().SetTimeout(faviconHTTPTimeout)

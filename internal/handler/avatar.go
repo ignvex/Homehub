@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/model"
+	"github.com/ignvex/HomeHub/internal/service"
 )
 
 // ============================================================
@@ -97,6 +99,11 @@ func AvatarRefresh(c *gin.Context) {
 
 	updated, err := svc.Gravatar.RefreshAvatar(id)
 	if err != nil {
+		// 开关关闭属于配置状态，不是服务故障，返回 403 而非 500。
+		if errors.Is(err, service.ErrGravatarDisabled) {
+			Fail(c, http.StatusForbidden, CodeForbidden, "Gravatar 头像功能已在配置中关闭")
+			return
+		}
 		FailInternal(c, fmt.Sprintf("刷新头像失败: %v", err))
 		return
 	}

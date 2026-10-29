@@ -12,7 +12,6 @@ type AvatarCache struct {
 	ContentType  string `gorm:"size:50;not null" json:"content_type"` // MIME 类型（如 image/jpeg）
 	ETag         string `gorm:"size:255" json:"etag"`                 // Gravatar 返回的 ETag（用于 304 检测）
 	LastModified string `gorm:"size:100" json:"last_modified"`        // Gravatar 返回的 Last-Modified
-	FileSize     int64  `json:"file_size"`                            // 图片大小（字节）
 }
 
 // TableName 指定表名为 avatar_caches。

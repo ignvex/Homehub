@@ -53,7 +53,6 @@ type BalanceService struct {
 	mu          sync.RWMutex
 	results     map[string]*TargetResult // key = target Name
 	client      *req.Client
-	stopCh      chan struct{}
 	lastRefresh time.Time
 }
 
@@ -73,7 +72,6 @@ func NewBalanceService() *BalanceService {
 	return &BalanceService{
 		results: make(map[string]*TargetResult),
 		client:  client,
-		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -110,9 +108,6 @@ func (s *BalanceService) StartBackgroundRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				logger.Info("[balance] 余额监控后台刷新已停止")
 				return
-			case <-s.stopCh:
-				logger.Info("[balance] 余额监控后台刷新已停止")
-				return
 			case <-ticker.C:
 				// 重新读取配置（支持热加载）
 				cfg := config.Get()
@@ -123,14 +118,6 @@ func (s *BalanceService) StartBackgroundRefresh(ctx context.Context) {
 			}
 		}
 	}()
-}
-
-// Stop 停止后台刷新。
-func (s *BalanceService) Stop() {
-	select {
-	case s.stopCh <- struct{}{}:
-	default:
-	}
 }
 
 // ============================================================

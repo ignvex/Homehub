@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/service"
 )
 
 // ============================================================
@@ -15,6 +17,17 @@ import (
 
 type createPasteRequest struct {
 	Content string `json:"content" binding:"required"`
+}
+
+// failIfPasteDisabled 在剪贴板模块被配置关闭时写出 403。
+//
+// 返回 true 表示已写响应，调用方应立即 return。
+func failIfPasteDisabled(c *gin.Context, err error) bool {
+	if errors.Is(err, service.ErrPasteDisabled) {
+		Fail(c, http.StatusForbidden, CodeForbidden, "剪贴板模块已在配置中关闭")
+		return true
+	}
+	return false
 }
 
 type pasteResponse struct {
@@ -52,6 +65,9 @@ func PasteList(c *gin.Context) {
 	}
 	pastes, err := svc.Paste.ListPastes()
 	if err != nil {
+		if failIfPasteDisabled(c, err) {
+			return
+		}
 		FailInternal(c, "获取粘贴列表失败")
 		return
 	}
@@ -110,6 +126,9 @@ func PasteCreate(c *gin.Context) {
 
 	paste, token, err := svc.Paste.CreatePaste(req.Content)
 	if err != nil {
+		if failIfPasteDisabled(c, err) {
+			return
+		}
 		FailInternal(c, "创建粘贴失败")
 		return
 	}
@@ -147,6 +166,9 @@ func PasteGet(c *gin.Context) {
 
 	paste, err := svc.Paste.GetPaste(id)
 	if err != nil {
+		if failIfPasteDisabled(c, err) {
+			return
+		}
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, Response{
 				Code:    CodeNotFound,
@@ -166,15 +188,16 @@ func PasteGet(c *gin.Context) {
 	})
 }
 
-// PasteDelete 通过公开 ID 删除粘贴。
+// PasteDelete 通过公开 ID + 删除密钥删除粘贴。
 //
 //	@Summary		删除粘贴
-//	@Description	根据公开 ID 删除粘贴。无需认证，无需密钥。
+//	@Description	根据公开 ID 删除粘贴，需同时提供创建时返回的 delete_token。无需登录。
 //	@Tags			剪贴板
 //	@Produce		json
-//	@Param			id	path	string	true	"公开 ID"
+//	@Param			id		path	string	true	"公开 ID"
+//	@Param			token	query	string	true	"创建时返回的 delete_token"
 //	@Success		200	{object}	Response	"删除成功"
-//	@Failure		404	{object}	Response	"不存在"
+//	@Failure		404	{object}	Response	"不存在、已过期或密钥不匹配"
 //	@Router			/pastes/{id} [delete]
 func PasteDelete(c *gin.Context) {
 	if svc.Paste == nil {
@@ -188,11 +211,22 @@ func PasteDelete(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Paste.DeletePaste(id); err != nil {
-		if err == gorm.ErrRecordNotFound {
+	// 支持 query 与请求头两种传递方式：前者便于 curl，
+	// 后者避免 token 出现在访问日志的 URL 里。
+	token := c.Query("token")
+	if token == "" {
+		token = c.GetHeader("X-Paste-Delete-Token")
+	}
+
+	if err := svc.Paste.DeletePaste(id, token); err != nil {
+		if failIfPasteDisabled(c, err) {
+			return
+		}
+		// 密钥错误与不存在统一返回 404，避免被用来探测哪些 ID 存在。
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, service.ErrPasteTokenMismatch) {
 			c.JSON(http.StatusNotFound, Response{
 				Code:    CodeNotFound,
-				Message: "粘贴不存在或 token 不匹配",
+				Message: "粘贴不存在或已过期，或删除密钥不正确",
 			})
 			return
 		}

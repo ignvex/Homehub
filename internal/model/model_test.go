@@ -95,22 +95,3 @@ func TestGravatarHash(t *testing.T) {
 		})
 	}
 }
-
-// TestGravatarURL 验证 Gravatar URL 生成。
-func TestGravatarURL(t *testing.T) {
-	u := User{Email: "MyEmailAddress@example.com"}
-	url := u.GravatarURL(200, "identicon", "g")
-	want := "https://www.gravatar.com/avatar/0bc83cb571cd1c50ba6f3e8a78ef1346?s=200&d=identicon&r=g"
-	if url != want {
-		t.Errorf("GravatarURL() = %q, want %q", url, want)
-	}
-}
-
-// TestGravatarURLEmptyEmail 验证空邮箱返回空 URL。
-func TestGravatarURLEmptyEmail(t *testing.T) {
-	u := User{Email: ""}
-	url := u.GravatarURL(200, "identicon", "g")
-	if url != "" {
-		t.Errorf("GravatarURL with empty email = %q, want empty string", url)
-	}
-}

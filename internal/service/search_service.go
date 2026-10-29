@@ -12,9 +12,9 @@ import (
 
 // SearchService 跨数据源搜索服务。
 //
-// 使用 ILIKE '%keyword%' 进行模糊匹配。为获得索引加速，需预先执行
-// migrations/001_search_trgm_indexes.sql 创建 pg_trgm GIN 索引。
-// 不使用 pg_trgm 时，全表扫描在大数据量下性能急剧下降。
+// 使用 ILIKE '%keyword%' 进行模糊匹配。pg_trgm GIN 索引由
+// database.EnsureSearchIndexes 在启动时自动创建；扩展不可用时
+// 退化为全表扫描，数据量大时性能会明显下降。
 type SearchService struct {
 	db *gorm.DB
 }
@@ -41,9 +41,6 @@ type BookmarkSearchItem struct {
 	GroupName string `json:"group_name"`
 }
 
-// VideoSearchItem 视频搜索结果。
-// ArticleSearchItem 专栏搜索结果。
-// UserSearchItem 用户搜索结果。
 // NewSearchService 创建 SearchService 实例。
 func NewSearchService(db *gorm.DB) *SearchService {
 	return &SearchService{db: db}
@@ -63,7 +60,7 @@ func safeGo(name string, fn func()) {
 	}()
 }
 
-// Search 执行跨源搜索，scope 可选：all/bookmarks/videos/articles/users。
+// Search 执行跨源搜索，scope 可选：all/bookmarks/rss。
 func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 	result := &SearchResult{}
 	pattern := "%" + q + "%"
@@ -106,7 +103,7 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 	}
 
 	dispatch := map[string]func(){
-		"all":       func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
+		"all":       func() { wg.Add(2); safeGo("bookmarks", searchBookmarks); safeGo("rss", searchRssEntries) },
 		"bookmarks": func() { wg.Add(1); safeGo("bookmarks", searchBookmarks) },
 		"rss":       func() { wg.Add(1); safeGo("rss", searchRssEntries) },
 	}

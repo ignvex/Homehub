@@ -188,7 +188,8 @@ func RSSFetchFeed(c *gin.Context) {
 		return
 	}
 
-	if err := svc.RSS.FetchFeed(id); err != nil {
+	// 用请求 ctx：客户端断开时中止抓取，避免无谓占用并发槽。
+	if err := svc.RSS.FetchFeed(c.Request.Context(), id); err != nil {
 		FailInternal(c, "抓取失败")
 		return
 	}
@@ -205,7 +206,7 @@ func RSSFetchFeed(c *gin.Context) {
 //	@Failure		500	{object}	Response	"抓取失败"
 //	@Router			/rss/fetch-all [post]
 func RSSFetchAll(c *gin.Context) {
-	if err := svc.RSS.FetchAll(); err != nil {
+	if err := svc.RSS.FetchAll(c.Request.Context()); err != nil {
 		FailInternal(c, "抓取失败")
 		return
 	}
