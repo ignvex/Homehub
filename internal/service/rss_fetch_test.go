@@ -65,7 +65,7 @@ func TestSanitizeContentImageCacheDisabled(t *testing.T) {
 	s := &RSSService{}
 	content := `<p>hello</p><img src="http://example.com/pic.png">`
 
-	got := s.sanitizeContent(context.Background(), content)
+	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
 
 	if !strings.Contains(got, "http://example.com/pic.png") {
 		t.Errorf("关闭缓存后应保留原始外链，实际: %s", got)
@@ -74,7 +74,7 @@ func TestSanitizeContentImageCacheDisabled(t *testing.T) {
 
 // TestSanitizeContentCachesImages 确认开启时把外链改写为站内路径。
 func TestSanitizeContentCachesImages(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4, "image_allow_private_hosts": true}`)
 	dir := withTempCacheDir(t)
 
 	// 假图片服务器
@@ -89,7 +89,7 @@ func TestSanitizeContentCachesImages(t *testing.T) {
 	s := &RSSService{}
 	content := fmt.Sprintf(`<img src="%s/a.png">`, srv.URL)
 
-	got := s.sanitizeContent(context.Background(), content)
+	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
 
 	if strings.Contains(got, srv.URL) {
 		t.Errorf("应改写为站内 URL，实际: %s", got)
@@ -116,7 +116,7 @@ func TestSanitizeContentCachesImages(t *testing.T) {
 // 串行实现下 4 张各 100ms 的图片需要 400ms；并发（>=2）应明显更快。
 // 这里用较宽松的阈值避免 CI 抖动导致误报。
 func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4, "image_allow_private_hosts": true}`)
 	withTempCacheDir(t)
 
 	var inFlight, maxInFlight atomic.Int32
@@ -130,7 +130,8 @@ func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
 		}
 		time.Sleep(80 * time.Millisecond)
 		inFlight.Add(-1)
-		_, _ = w.Write([]byte("img"))
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
 	}))
 	defer srv.Close()
 
@@ -141,7 +142,7 @@ func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
 
 	s := &RSSService{}
 	start := time.Now()
-	s.sanitizeContent(context.Background(), b.String())
+	s.sanitizeContent(context.Background(), 1, "http://example.com/item", b.String())
 	elapsed := time.Since(start)
 
 	if maxInFlight.Load() < 2 {
@@ -157,7 +158,7 @@ func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
 // 图片服务器比预算还慢时，抓取不应被拖住：预算耗尽后放弃图片、
 // 条目照常入库（图片标签被移除）。
 func TestSanitizeContentRespectsBudget(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4}`)
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_cache_concurrency": 4, "image_allow_private_hosts": true}`)
 	withTempCacheDir(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +172,7 @@ func TestSanitizeContentRespectsBudget(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	got := s.sanitizeContent(ctx, fmt.Sprintf(`<p>keep</p><img src="%s/a.png">`, srv.URL))
+	got := s.sanitizeContent(ctx, 1, "http://example.com/item", fmt.Sprintf(`<p>keep</p><img src="%s/a.png">`, srv.URL))
 	elapsed := time.Since(start)
 
 	if elapsed > time.Second {
@@ -206,5 +207,37 @@ func TestRSSFetcherCanBeReplaced(t *testing.T) {
 	s.SetFetcher(nil)
 	if _, ok := s.fetcher.(*autoFetcher); !ok {
 		t.Errorf("SetFetcher(nil) 应恢复 autoFetcher，实际 %T", s.fetcher)
+	}
+}
+
+// TestSanitizeContentKeepsRelativeImages 确认相对路径/data URL 不会被误删。
+//
+// 只有真正尝试缓存但失败的图片才应移除；/<path> 与 data: 不参与缓存，
+// 必须原样保留。
+func TestSanitizeContentKeepsRelativeImages(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": true, "image_allow_private_hosts": true}`)
+	withTempCacheDir(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	s := &RSSService{}
+	content := fmt.Sprintf(
+		`<p>keep</p><img src="/static/uploads/local.png"><img src="data:image/png;base64,AAAA"><img src="%s/missing.png">`,
+		srv.URL,
+	)
+
+	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
+
+	if !strings.Contains(got, "/static/uploads/local.png") {
+		t.Errorf("相对路径图片应保留，实际: %s", got)
+	}
+	if !strings.Contains(got, "data:image/png;base64,AAAA") {
+		t.Errorf("data URL 应保留，实际: %s", got)
+	}
+	if strings.Contains(got, srv.URL) {
+		t.Errorf("下载失败的外链图片应移除，实际: %s", got)
 	}
 }

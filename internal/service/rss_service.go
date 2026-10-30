@@ -2,15 +2,10 @@ package service
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -41,6 +36,7 @@ var (
 type RSSService struct {
 	db      *gorm.DB
 	fetcher RSSFetcher
+	images  RSSImageCache
 }
 
 // NewRSSService 创建 RSSService 实例。
@@ -51,7 +47,29 @@ func NewRSSService(db *gorm.DB) *RSSService {
 	return &RSSService{
 		db:      db,
 		fetcher: newAutoFetcher(),
+		images:  NewLocalImageCache(db),
 	}
+}
+
+// SetImageCache 替换图片缓存实现。
+//
+// 这是为 homehub-extension 远程预下载预留的接入点：extension 集成方
+// 可以实现 RSSImageCache，或在预下载后复用 LocalImageCache 的登记能力。
+// 传入 nil 时恢复本地下载实现。
+func (s *RSSService) SetImageCache(c RSSImageCache) {
+	if c == nil {
+		c = NewLocalImageCache(s.db)
+	}
+	s.images = c
+}
+
+// imageCache 返回当前图片缓存实现；零值 RSSService（测试中常见）
+// 没有注入实现时回落为本地下载。
+func (s *RSSService) imageCache() RSSImageCache {
+	if s.images != nil {
+		return s.images
+	}
+	return NewLocalImageCache(s.db)
 }
 
 // SetFetcher 强制指定抓取实现，覆盖按配置的自动选择。
@@ -156,15 +174,19 @@ func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, grou
 	return nil
 }
 
-// DeleteFeed 删除订阅源及其所有条目。
+// DeleteFeed 删除订阅源及其所有条目，并回收不再被其他源引用的图片。
 func (s *RSSService) DeleteFeed(id uint64) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// 先删所有条目
-		if err := tx.Where("feed_id = ?", id).Delete(&model.RSSEntry{}).Error; err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 条目/图片引用都做物理删除：软删除会让表无限膨胀，
+		// 而 retention 语义本来就是“真的不要了”。
+		if err := tx.Unscoped().Where("feed_id = ?", id).Delete(&model.RSSEntry{}).Error; err != nil {
 			return fmt.Errorf("删除订阅条目失败: %w", err)
 		}
+		if err := tx.Unscoped().Where("feed_id = ?", id).Delete(&model.RSSImageRef{}).Error; err != nil {
+			return fmt.Errorf("删除图片引用失败: %w", err)
+		}
 		// 再删订阅源
-		result := tx.Delete(&model.RSSFeed{}, id)
+		result := tx.Unscoped().Delete(&model.RSSFeed{}, id)
 		if result.Error != nil {
 			return fmt.Errorf("删除订阅源失败: %w", result.Error)
 		}
@@ -173,6 +195,13 @@ func (s *RSSService) DeleteFeed(id uint64) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// 立即清理不再被任何条目引用的图片文件。
+	s.sweepImages(context.Background(), 0)
+	return nil
 }
 
 // GetFeed 根据 ID 获取订阅源。
@@ -319,7 +348,7 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 	logger.Info("[rss] 抓取完成", "feed_id", feed.ID, "entries", len(entries))
 
 	// 执行保留策略
-	if err := s.enforceRetention(feed.ID); err != nil {
+	if err := s.enforceRetention(ctx, feed.ID); err != nil {
 		errMsg := err.Error()
 		if len(errMsg) > 1024 {
 			errMsg = errMsg[:1024]
@@ -499,6 +528,57 @@ func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
 	}()
 }
 
+// StartImageJanitor 启动图片缓存清理任务。
+//
+// 启动后先跑一次（回收上次进程异常退出留下的临时文件/孤儿记录），
+// 之后按 rss.image_cleanup_interval_hours 周期执行。配置热更新在下一轮
+// 生效。无引用图片保留 rss.image_retention_days 天，避免刚下载、引用
+// 尚未写入的图片被误删。
+func (s *RSSService) StartImageJanitor(ctx context.Context) {
+	go func() {
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+
+		// 回填只需要成功执行一次；失败时下一轮重试。
+		backfilled := false
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Info("[rss] 图片缓存清理任务已停止")
+				return
+			case <-timer.C:
+			}
+
+			// 先回填升级前已有的缓存文件，再开始清理；顺序反了会把它们
+			// 当成孤儿删掉，历史条目图片随即 404。
+			if !backfilled {
+				if backfiller, ok := s.imageCache().(interface {
+					BackfillLegacy(context.Context) error
+				}); ok {
+					if err := backfiller.BackfillLegacy(ctx); err != nil {
+						if ctx.Err() == nil {
+							logger.Warn("[rss] 回填历史图片失败，下一轮重试", "error", err)
+						}
+					} else {
+						backfilled = true
+					}
+				} else {
+					backfilled = true
+				}
+			}
+
+			if cfg := config.Get(); cfg == nil || cfg.RSS.ImageCleanupEnabled {
+				if err := s.imageCache().Sweep(ctx, imageRetentionGrace()); err != nil && ctx.Err() == nil {
+					logger.Warn("[rss] 图片缓存清理失败", "error", err)
+				}
+			}
+
+			timer.Reset(imageCleanupInterval())
+		}
+	}()
+}
+
 // ============================================================
 // 内部方法
 // ============================================================
@@ -529,7 +609,7 @@ func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofee
 			content = string(runes[:2000]) + "..."
 		}
 	}
-	entry.Content = s.sanitizeContent(ctx, content)
+	entry.Content = s.sanitizeContent(ctx, feedID, entry.Link, content)
 
 	// 磁力链接：优先从 Enclosures 提取，fallback 正则扫描内容
 	for _, enc := range item.Enclosures {
@@ -557,9 +637,9 @@ func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofee
 
 // enforceRetention 执行条目保留策略。
 //
-// 从配置读取 retention_count（默认 5000），
-// 超出限制时删除最旧的条目。
-func (s *RSSService) enforceRetention(feedID uint64) error {
+// 从配置读取 retention_count（默认 5000），超出限制时物理删除最旧的条目，
+// 并同步删除这些条目的图片引用；随后回收无人使用的图片文件。
+func (s *RSSService) enforceRetention(ctx context.Context, feedID uint64) error {
 	retention := 5000
 	cfg := config.Get()
 	if cfg != nil && cfg.RSS.RetentionCount > 0 {
@@ -575,20 +655,54 @@ func (s *RSSService) enforceRetention(feedID uint64) error {
 		return nil
 	}
 
-	// 删除超出保留数量的最旧条目
+	// 先取出要删除的条目（需要 link 来定位图片引用）。
 	excess := int(count) - retention
-	if err := s.db.Where("feed_id = ?", feedID).
-		Where("id IN (?)",
-			s.db.Model(&model.RSSEntry{}).
-				Select("id").
-				Where("feed_id = ?", feedID).
-				Order("published ASC").
-				Limit(excess),
-		).Delete(&model.RSSEntry{}).Error; err != nil {
-		return fmt.Errorf("清理旧条目失败: %w", err)
+	var stale []model.RSSEntry
+	if err := s.db.Select("id", "link").
+		Where("feed_id = ?", feedID).
+		Order("published ASC, id ASC").
+		Limit(excess).
+		Find(&stale).Error; err != nil {
+		return fmt.Errorf("查询待清理条目失败: %w", err)
+	}
+	if len(stale) == 0 {
+		return nil
 	}
 
+	ids := make([]uint64, 0, len(stale))
+	hashes := make([]string, 0, len(stale))
+	for _, entry := range stale {
+		ids = append(ids, entry.ID)
+		if hash := sha256Hex(entry.Link); hash != "" {
+			hashes = append(hashes, hash)
+		}
+	}
+
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("id IN ?", ids).Delete(&model.RSSEntry{}).Error; err != nil {
+			return fmt.Errorf("删除旧条目失败: %w", err)
+		}
+		if len(hashes) > 0 {
+			if err := tx.Unscoped().
+				Where("feed_id = ? AND entry_hash IN ?", feedID, hashes).
+				Delete(&model.RSSImageRef{}).Error; err != nil {
+				return fmt.Errorf("删除旧条目图片引用失败: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	s.sweepImages(ctx, 0)
 	return nil
+}
+
+// sweepImages 调用当前图片缓存实现清理孤立文件；失败只告警。
+func (s *RSSService) sweepImages(ctx context.Context, grace time.Duration) {
+	if err := s.imageCache().Sweep(ctx, grace); err != nil {
+		logger.Warn("[rss] 图片缓存清理失败", "error", err)
+	}
 }
 
 // ============================================================
@@ -622,15 +736,8 @@ func validateFeedURL(rawURL string) error {
 	// 解析 IP
 	ip := net.ParseIP(host)
 	if ip != nil {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if isBlockedIP(ip) {
 			return fmt.Errorf("禁止访问内部地址: %s", host)
-		}
-		if ip.IsPrivate() {
-			return fmt.Errorf("禁止访问内网地址: %s", host)
-		}
-		// 云元数据端点
-		if ip.Equal(net.IPv4(169, 254, 169, 254)) {
-			return fmt.Errorf("禁止访问云元数据端点: %s", host)
 		}
 		return nil
 	}
@@ -790,7 +897,7 @@ func restoreImgTags(content string, restore map[string]string) string {
 //
 // rss.image_cache_enabled=false 时完全跳过下载，图片保留原始外链由
 // 浏览器直接加载：抓取速度显著提升，也不占用本地磁盘。
-func (s *RSSService) sanitizeContent(ctx context.Context, content string) string {
+func (s *RSSService) sanitizeContent(ctx context.Context, feedID uint64, entryLink, content string) string {
 	if content == "" {
 		return content
 	}
@@ -800,7 +907,7 @@ func (s *RSSService) sanitizeContent(ctx context.Context, content string) string
 	content = dangerousPaired.ReplaceAllString(content, "")
 
 	// 2. <img> 外部图片 → 本地缓存（关闭缓存时保持原样）
-	content = s.cacheContentImages(ctx, content)
+	content = s.cacheContentImages(ctx, feedID, entryLink, content)
 
 	// 3. 保护 <img> 标签：下面要剥离的"外部 src"不应波及图片本身
 	content, restore := protectImgTags(content)
@@ -814,25 +921,21 @@ func (s *RSSService) sanitizeContent(ctx context.Context, content string) string
 	return restoreImgTags(content, restore)
 }
 
-// imageCacheSettings 读取图片缓存相关配置（热更新即时生效）。
-func imageCacheSettings() (enabled bool, concurrency int) {
+// imageCacheEnabled 读取图片缓存开关（配置热更新即时生效）。
+func imageCacheEnabled() bool {
 	cfg := config.Get()
 	if cfg == nil {
-		return true, 6
+		return true
 	}
-	concurrency = cfg.RSS.ImageCacheConcurrency
-	if concurrency <= 0 {
-		concurrency = 6
-	}
-	return cfg.RSS.ImageCacheEnabled, concurrency
+	return cfg.RSS.ImageCacheEnabled
 }
 
-// cacheContentImages 把内容里的外链图片并发缓存到本地并改写为站内 URL。
+// cacheContentImages 把内容里的外链图片缓存到本地并改写为站内 URL。
 //
-// 已缓存的文件直接命中；下载失败的图片标签被整体移除（与原行为一致）。
-func (s *RSSService) cacheContentImages(ctx context.Context, content string) string {
-	enabled, concurrency := imageCacheSettings()
-	if !enabled {
+// 具体下载、类型/大小校验、归属登记与去重都交给 RSSImageCache；
+// 本函数只负责从 HTML 中收集 URL、调用缓存、替换标签。
+func (s *RSSService) cacheContentImages(ctx context.Context, feedID uint64, entryLink, content string) string {
+	if !imageCacheEnabled() {
 		return content
 	}
 
@@ -854,41 +957,9 @@ func (s *RSSService) cacheContentImages(ctx context.Context, content string) str
 		return content
 	}
 
-	// 并发下载，结果写入 localURL / failed
-	var mu sync.Mutex
-	localURL := make(map[string]string, len(pending))
-	failed := make(map[string]bool)
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
+	localURL := s.imageCache().Cache(ctx, feedID, entryLink, pending)
 
-	for _, src := range pending {
-		wg.Add(1)
-		go func(src string) {
-			defer wg.Done()
-
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				mu.Lock()
-				failed[src] = true
-				mu.Unlock()
-				return
-			}
-
-			url, err := cacheOneImage(ctx, src)
-			mu.Lock()
-			if err != nil {
-				failed[src] = true
-			} else {
-				localURL[src] = url
-			}
-			mu.Unlock()
-		}(src)
-	}
-	wg.Wait()
-
-	// 统一替换
+	// 统一替换：成功改写的用站内 URL，失败/跳过的图片标签整体移除。
 	return rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
 		m := rssImgPattern.FindStringSubmatch(tag)
 		if len(m) < 2 || m[1] == "" {
@@ -898,33 +969,13 @@ func (s *RSSService) cacheContentImages(ctx context.Context, content string) str
 		if u, ok := localURL[src]; ok {
 			return strings.Replace(tag, src, u, 1)
 		}
-		if failed[src] {
-			return "" // 无法缓存的图片直接移除
+		// 只删除真正尝试过缓存的失败图片；相对路径 / data URL 等
+		// 本来就没列入 pending，应保留原样。
+		if seen[src] {
+			return ""
 		}
 		return tag
 	})
-}
-
-// cacheOneImage 缓存单张图片，返回站内 URL。已存在则直接返回。
-func cacheOneImage(ctx context.Context, src string) (string, error) {
-	hash := md5.Sum([]byte(src))
-	name := hex.EncodeToString(hash[:])
-	clean := strings.SplitN(src, "?", 2)[0]
-	ext := filepath.Ext(clean)
-	if ext == "" || !isImageExt(ext) {
-		ext = ".png"
-	}
-	filename := "rss_" + name + ext
-	localPath := filepath.Join(cacheDir, filename)
-	localURL := "/static/uploads/rss_img/" + filename
-
-	if _, err := os.Stat(localPath); err == nil {
-		return localURL, nil
-	}
-	if err := downloadImage(ctx, src, localPath); err != nil {
-		return "", err
-	}
-	return localURL, nil
 }
 
 // isImageExt 判断扩展名是否为常见图片格式。
@@ -934,40 +985,4 @@ func isImageExt(ext string) bool {
 		return true
 	}
 	return false
-}
-
-// downloadImage 下载单张图片到本地，限定大小与耗时。
-//
-// 复用共享 HTTP 客户端（同一连接池、同一代理与 UA 配置），
-// 并用 ctx 作为预算：整轮图片缓存超时后不再继续尝试。
-func downloadImage(ctx context.Context, urlStr, dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return err
-	}
-
-	resp, err := rssHTTPClient().R().SetContext(ctx).Get(urlStr)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	// 限制 2MB
-	limited := io.LimitReader(resp.Body, 2<<20)
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if _, err := io.Copy(f, limited); err != nil {
-		// 写一半失败会留下残缺文件，删掉避免下次被误判为已缓存。
-		_ = f.Close()
-		_ = os.Remove(dest)
-		return err
-	}
-	return nil
 }

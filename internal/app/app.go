@@ -96,6 +96,8 @@ func Run(opts Options) error {
 		&model.RSSGroup{},
 		&model.RSSFeed{},
 		&model.RSSEntry{},
+		&model.RSSImage{},
+		&model.RSSImageRef{},
 		&model.Todo{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
@@ -134,6 +136,7 @@ func Run(opts Options) error {
 
 	go service.CleanupExpiredSessions(ctx, db)
 	svc.RSS.StartBackgroundFetcher(ctx)
+	svc.RSS.StartImageJanitor(ctx)
 	svc.Balance.StartBackgroundRefresh(ctx)
 	svc.Paste.StartPurgeLoop(ctx)
 
