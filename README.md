@@ -7,7 +7,7 @@
 | 文档 | 内容 |
 |------|------|
 | [docs/features.md](docs/features.md) | 各功能模块的行为、配置、接口与已知限制 |
-| [docs/extension.md](docs/extension.md) | 外部抓取加速服务的通信契约 |
+| [docs/extension.md](docs/extension.md) | 外部资源代理服务（RSS 抓取 / Gravatar 头像）的通信契约 |
 | [docs/swagger.yaml](docs/swagger.yaml) | API 请求/响应结构（运行时 `/swagger/index.html`） |
 
 > swagger 由 `swag init -g cmd/homehub/main.go --parseDependency --parseInternal -o docs` 生成，新增路由后需重新生成。
@@ -211,6 +211,25 @@ curl http://localhost:8080/api/v1/health
 
 > `config.json` 是单文件 bind mount。若宿主机上该文件不存在，Docker 会创建同名**目录**，导致启动失败——务必先 `cp config.example.json config.json`。
 
+### 升级（替换二进制）
+
+镜像只负责打包运行，不含 Go / Node.js 工具链（基础镜像 `debian:trixie-slim`）。因此升级不需要重新克隆仓库，也不会动到 `config.json` 与 `uploads/`：
+
+```bash
+# 1. 在开发机上重新编译（改动仅涉前端时也要重新 pnpm build）
+cd web && pnpm install && pnpm build && cd ..
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o homehub ./cmd/homehub
+
+# 2. 同步两个产物（首次部署才需要整份源码，因为要有 Dockerfile）
+scp homehub root@nas:/mnt/user/appdata/homehub/
+scp -r web/dist root@nas:/mnt/user/appdata/homehub/web/
+
+# 3. 在部署目录重建并重启
+docker compose up -d --build
+```
+
+> `pull_policy: build` 保证 `up --build` 总是用本地 Dockerfile 和刚换上的二进制，不会去远端拉同名镜像。
+
 ### Unraid 部署要点
 
 1. 安装 **Compose** 插件（Community Applications → 搜索 "compose"）
@@ -222,7 +241,7 @@ curl http://localhost:8080/api/v1/health
      - /mnt/user/appdata/homehub/uploads:/app/web/static/uploads
    ```
 4. 若容器无法连接 NAS 上的数据库，在 `docker-compose.yml` 中启用 `network_mode: host`
-5. Unraid 通常不装 Node.js/Go：在开发机上构建 `web/dist` 和 `homehub` 二进制，再复制整个项目：
+5. Unraid 通常不装 Node.js/Go：在开发机上构建 `web/dist` 和 `homehub` 二进制后同步过去。首次部署需要整份源码（Dockerfile 与 compose 文件）：
    ```bash
    # 在开发机上
    cd web && pnpm install && pnpm build && cd ..
@@ -230,6 +249,7 @@ curl http://localhost:8080/api/v1/health
    # 复制整个项目到 Unraid（web/dist/ 与 homehub 会一起过去）
    scp -r ../HomeHub root@unraid:/mnt/user/appdata/homehub/
    ```
+   后续升级只同步 `homehub` 和 `web/dist` 即可（见上一节）。
 6. Unraid 终端执行：
    ```bash
    cd /mnt/user/appdata/homehub
@@ -299,14 +319,25 @@ curl http://localhost:8080/api/v1/health
 | `fetch_timeout_seconds` | 30 | 单源抓取预算（秒） |
 | `image_cache_enabled` | true | 关闭后图片保留外链，抓取明显更快、不占磁盘 |
 | `image_cache_concurrency` | 6 | 单条目图片并发下载数 |
+| `image_max_bytes` | 10485760 | 单张图片上限，超限丢弃，不截断 |
+| `image_cleanup_enabled` | true | 自动回收无引用图片 |
+| `image_retention_days` | 30 | 无引用图片保留天数 |
+| `image_cleanup_interval_hours` | 24 | 后台清理间隔 |
+| `image_allow_private_hosts` | false | 允许图片源访问内网/回环（会削弱 SSRF 防护） |
 | `background_fetch_interval` | 300 | 后台轮询间隔（秒），改动 5 秒内生效 |
 
 如果源站图片本身可直连，把 `image_cache_enabled` 设为 `false` 是最省事的提速手段。
 
+图片缓存按源 URL 全局共享文件，归属与清理由 `homehub_rss_images` /
+`homehub_rss_image_refs` 记录：删除订阅源或 retention 删除条目后会回收
+无引用文件。完整机制、表关系与 Mermaid 图见
+[docs/rss-architecture.md](docs/rss-architecture.md)。
+
 ### 交给外部服务抓取
 
 抓取实现被抽成了 `service.RSSFetcher` 接口，可通过 `SetFetcher` 替换。
-计划中的 `homehub-extension` 项目（独立进程/容器，集中做并发、缓存与去重）
+计划中的 `homehub-extension` 项目（独立进程/容器，集中做并发、缓存与去重；
+同时可作为 Gravatar 头像的代理出口）
 就是从这里接入的。完整契约、已就绪部分与待补空缺见
 [docs/extension.md](docs/extension.md)。
 

@@ -397,7 +397,7 @@
         },
         "/admin/users/{id}/refresh-avatar": {
             "post": {
-                "description": "检查 Gravatar 是否有更新，若有则重新下载并更新缓存",
+                "description": "检查上游是否有更新，有变化则重新下载，上游确认无头像则清除缓存",
                 "produces": [
                     "application/json"
                 ],
@@ -416,7 +416,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "刷新结果（updated 表示是否有更新）",
+                        "description": "刷新结果（updated 表示缓存是否变化）",
                         "schema": {
                             "allOf": [
                                 {
@@ -434,13 +434,25 @@
                         }
                     },
                     "400": {
-                        "description": "无效的用户 ID",
+                        "description": "无效的用户 ID 或用户未设置邮箱",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
                     "403": {
-                        "description": "权限不足",
+                        "description": "权限不足或 Gravatar 已关闭",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "用户不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "头像上游不可用",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -741,7 +753,7 @@
         },
         "/avatar/me": {
             "get": {
-                "description": "返回当前登录用户的缓存 Gravatar 头像",
+                "description": "返回当前登录用户的缓存头像",
                 "produces": [
                     "image/*"
                 ],
@@ -761,13 +773,25 @@
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
+                    },
+                    "404": {
+                        "description": "未设置邮箱或上游无头像",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "头像上游不可用",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
                     }
                 }
             }
         },
         "/avatar/{id}": {
             "get": {
-                "description": "返回缓存的 Gravatar 头像图片",
+                "description": "返回缓存的头像图片，尺寸由配置 gravatar.default_size 决定",
                 "produces": [
                     "image/*"
                 ],
@@ -791,6 +815,9 @@
                             "type": "file"
                         }
                     },
+                    "304": {
+                        "description": "头像未变化（If-None-Match 命中）"
+                    },
                     "400": {
                         "description": "无效的用户 ID",
                         "schema": {
@@ -798,7 +825,13 @@
                         }
                     },
                     "404": {
-                        "description": "用户不存在或无头像",
+                        "description": "用户不存在、未设置邮箱或上游无头像",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "头像上游不可用",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2729,7 +2762,7 @@
             "type": "object",
             "properties": {
                 "default_size": {
-                    "description": "头像尺寸（像素），默认 200",
+                    "description": "头像缓存尺寸（像素），默认 256，范围 16-512",
                     "type": "integer"
                 },
                 "default_style": {
@@ -2740,8 +2773,20 @@
                     "description": "是否启用以 Gravatar 生成头像",
                     "type": "boolean"
                 },
+                "extension_token": {
+                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
+                    "type": "string"
+                },
+                "extension_url": {
+                    "description": "ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。\n\n为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：\nHomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=\u0026d=\u0026r=，\nextension 不反向连接、不需要数据库凭据。",
+                    "type": "string"
+                },
+                "max_bytes": {
+                    "description": "MaxBytes 单张头像的大小上限（字节），默认 2MB。\n超过上限的响应直接丢弃，不截断写入缓存。",
+                    "type": "integer"
+                },
                 "proxy_names": {
-                    "description": "代理名称列表（引用 proxy 池），空=直连",
+                    "description": "直连模式下的代理名称列表（引用 proxy 池），空=直连",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -2750,6 +2795,10 @@
                 "rating": {
                     "description": "内容分级：g / pg / r / x",
                     "type": "string"
+                },
+                "timeout_seconds": {
+                    "description": "TimeoutSeconds 单次上游请求超时（秒），默认 10。",
+                    "type": "integer"
                 }
             }
         },
@@ -2842,6 +2891,10 @@
                     "description": "FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。\n超时只影响该订阅源，其他订阅源继续抓取。",
                     "type": "integer"
                 },
+                "image_allow_private_hosts": {
+                    "description": "ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。\n仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。",
+                    "type": "boolean"
+                },
                 "image_cache_concurrency": {
                     "description": "ImageCacheConcurrency 图片并发下载数，默认 6。",
                     "type": "integer"
@@ -2849,6 +2902,22 @@
                 "image_cache_enabled": {
                     "description": "ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。\n关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。",
                     "type": "boolean"
+                },
+                "image_cleanup_enabled": {
+                    "description": "ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。",
+                    "type": "boolean"
+                },
+                "image_cleanup_interval_hours": {
+                    "description": "ImageCleanupIntervalHours 后台清理间隔（小时），默认 24。",
+                    "type": "integer"
+                },
+                "image_max_bytes": {
+                    "description": "ImageMaxBytes 单张图片的大小上限（字节），默认 10MB。\n超过上限的图片会被丢弃，而不是截断后写坏文件。",
+                    "type": "integer"
+                },
+                "image_retention_days": {
+                    "description": "ImageRetentionDays 无引用图片的保留天数，默认 30。\n只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。",
+                    "type": "integer"
                 },
                 "proxy_names": {
                     "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
