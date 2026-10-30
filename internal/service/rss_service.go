@@ -340,44 +340,42 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 		return []RSSEntryView{}, 0, nil
 	}
 
-	// 按源筛选时用该源的时间排序，否则用条目首次发布时间。
-	orderExpr := "e.published DESC, e.id DESC"
-	groupExpr := "e.id, e.title, e.link, e.author, e.content, e.magnet_url, e.published, e.fetched_at"
+	// 分两步：先只取主键分页，再按主键取正文。
+	//
+	// 一步写完需要 GROUP BY 全部展示列，而 content 是 text —— PostgreSQL
+	// 无法用索引完成这种分组，会退化成全量排序。只分页主键则可以走
+	// entry_feeds 上的索引。
+	idQuery := baseQuery.Select("e.id")
 	if feedID > 0 {
-		orderExpr = "MIN(ef.published) DESC, e.id DESC"
+		// 按源筛选时用该源给出的时间排序。
+		idQuery = idQuery.
+			Group("e.id").
+			Order("MIN(ef.published) DESC, e.id DESC")
+	} else {
+		idQuery = idQuery.
+			Group("e.id, e.published").
+			Order("e.published DESC, e.id DESC")
 	}
 
-	type row struct {
-		ID        uint64
-		Title     string
-		Link      string
-		Author    string
-		Content   string
-		MagnetURL string
-		Published time.Time
-		FetchedAt time.Time
-	}
-
-	var rows []row
+	var ids []uint64
 	offset := (page - 1) * perPage
-	if err := baseQuery.
-		Select(groupExpr).
-		Group(groupExpr).
-		Order(orderExpr).
-		Offset(offset).
-		Limit(perPage).
-		Scan(&rows).Error; err != nil {
+	if err := idQuery.Offset(offset).Limit(perPage).Pluck("e.id", &ids).Error; err != nil {
 		return nil, 0, fmt.Errorf("查询条目列表失败: %w", err)
 	}
-	if len(rows) == 0 {
+	if len(ids) == 0 {
 		return []RSSEntryView{}, total, nil
 	}
 
-	// 一次性补齐这些条目的全部来源，避免 N+1。
-	ids := make([]uint64, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.ID)
+	var entries []model.RSSEntry
+	if err := s.db.Where("id IN ?", ids).Find(&entries).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询条目详情失败: %w", err)
 	}
+	byID := make(map[uint64]model.RSSEntry, len(entries))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+
+	// 一次性补齐这些条目的全部来源，避免 N+1。
 	var links []model.RSSEntryFeed
 	if err := s.db.Select("entry_id", "feed_id").
 		Where("entry_id IN ?", ids).
@@ -390,21 +388,26 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 		feedsByEntry[link.EntryID] = append(feedsByEntry[link.EntryID], link.FeedID)
 	}
 
-	views := make([]RSSEntryView, 0, len(rows))
-	for _, r := range rows {
-		feedIDs := feedsByEntry[r.ID]
+	// 按分页顺序输出：IN 查询不保证顺序。
+	views := make([]RSSEntryView, 0, len(ids))
+	for _, id := range ids {
+		entry, ok := byID[id]
+		if !ok {
+			continue
+		}
+		feedIDs := feedsByEntry[id]
 		if feedIDs == nil {
 			feedIDs = []uint64{}
 		}
 		views = append(views, RSSEntryView{
-			ID:        r.ID,
-			Title:     r.Title,
-			Link:      r.Link,
-			Author:    r.Author,
-			Content:   r.Content,
-			MagnetURL: r.MagnetURL,
-			Published: r.Published,
-			FetchedAt: r.FetchedAt,
+			ID:        entry.ID,
+			Title:     entry.Title,
+			Link:      entry.Link,
+			Author:    entry.Author,
+			Content:   entry.Content,
+			MagnetURL: entry.MagnetURL,
+			Published: entry.Published,
+			FetchedAt: entry.FetchedAt,
 			FeedIDs:   feedIDs,
 		})
 	}

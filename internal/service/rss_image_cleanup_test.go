@@ -164,8 +164,6 @@ func TestSweepRemovesOrphanFileAndRecord(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM "homehub_rss_image_refs" WHERE feed_id NOT IN`).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	// 立即清理（grace=0）不跑引用对账，避免误删正在入库的条目引用。
 	rows := sqlmock.NewRows([]string{
 		"id", "created_at", "updated_at", "deleted_at",
@@ -298,8 +296,6 @@ func TestSweepSkipsPendingKeys(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(`DELETE FROM "homehub_rss_image_refs" WHERE feed_id NOT IN`).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT \* FROM "homehub_rss_images" WHERE last_seen_at <`).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "created_at", "updated_at", "deleted_at",

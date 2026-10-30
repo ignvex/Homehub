@@ -343,7 +343,7 @@ type RSSImageCache interface {
 - `Sweep` 负责回收；远程实现可以 no-op，也可以清理 extension 侧缓存。
 - `RSSService.SetImageCache` 可以整体替换实现，`RSSService` 其余代码不需要改。
 - `LocalImageCache.Adopt` 是给远程预下载的低层登记入口：extension 把图片
-  原子写入 HomeHub 缓存目录后，调用 `Adopt(feedID, entryLink, items)`
+  原子写入 HomeHub 缓存目录后，调用 `Adopt(entryID, items)`
   登记资源与引用，后续 `resolve` 会直接命中文件。
 
 ### 5.2 建议的 extension 契约（下一步实现）

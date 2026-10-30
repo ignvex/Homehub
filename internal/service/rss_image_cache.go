@@ -527,20 +527,11 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 	c.dbMu.Lock()
 	defer c.dbMu.Unlock()
 
-	// 1. 清理指向已删除订阅源的悬挂引用。
-	if err := c.db.Unscoped().
-		Where("feed_id NOT IN (SELECT id FROM homehub_rss_feeds WHERE deleted_at IS NULL)").
-		Delete(&model.RSSImageRef{}).Error; err != nil {
-		return fmt.Errorf("清理悬挂图片引用失败: %w", err)
-	}
-
-	// 2. 对账引用：删除没有对应条目的引用。
+	// 1. 对账引用：删除没有对应条目的引用。
 	//
-	// 引用在条目入库之前写入（图片必须跟着 content 一起落库），因此
-	// 两种情况下会留下"没有条目"的脏引用：
-	//   - 跨源同 link：B 源的条目被 A 源占用，B 的引用永远没有对应条目；
-	//   - 条目批量插入失败：图片和引用已落库，条目不存在。
-	// 脏引用会让图片永远"有引用"、无法回收。
+	// 引用只挂在条目上（不区分源），所以"找不到条目"是唯一的脏数据
+	// 形态：条目被删除时引用删除中断，或历史数据遗留。脏引用会让图片
+	// 永远"有引用"、无法回收。
 	//
 	// 只在定期清理时做：抓取流程是"处理完所有条目再批量入库"，
 	// 中间可能持续几十秒。删除源/retention 触发的立即回收若在此刻
@@ -551,7 +542,7 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 		}
 	}
 
-	// 3. 数据库里"无人引用且已过保留期"的图片。
+	// 2. 数据库里"无人引用且已过保留期"的图片。
 	var orphaned []model.RSSImage
 	if err := c.db.
 		Where("last_seen_at < ?", cutoff).
@@ -581,7 +572,7 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 		removed++
 	}
 
-	// 4. 目录中没有任何数据库记录的历史文件。
+	// 3. 目录中没有任何数据库记录的历史文件。
 	//
 	// 只在定期清理（grace>0）时执行：删除源后的立即回收可能和并发抓取
 	// 的"下载完成、尚未登记"窗口重叠，此时按 mtime 判断会误删新文件。
@@ -869,14 +860,6 @@ func imageRetentionGrace() time.Duration {
 
 func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-func sha256Hex(s string) string {
-	if s == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
