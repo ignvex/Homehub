@@ -43,12 +43,13 @@ type sharedRSSClient struct {
 	fingerprint string
 }
 
-// 包级单例：抓取与图片下载共用同一连接池，避免重复建连。
-// imageClient 是图片专用的严格版本：连接层校验目标 IP。
+// 两个固定槽位：feed 抓取与图片下载。两者都启用连接层 IP 校验，
+// 区别只在 allowPrivate（图片可由配置放行内网，feed 不允许）。
 var (
-	rssClientMu        sync.Mutex
-	rssClientInst      sharedRSSClient
-	rssImageClientInst sharedRSSClient
+	rssClientMu       sync.Mutex
+	rssFeedClientInst sharedRSSClient
+	rssImageClientSt  sharedRSSClient
+	rssLooseClientIn  sharedRSSClient
 )
 
 // rssClientFingerprint 计算影响客户端行为的配置指纹。
@@ -63,36 +64,47 @@ func rssClientFingerprint(cfg *config.Config) string {
 	return fmt.Sprintf("%s|%v", ua, cfg.RSS.ProxyNames)
 }
 
-// rssHTTPClient 返回与当前配置匹配的共享 HTTP 客户端（用于抓取 feed）。
-func rssHTTPClient() *req.Client { return rssClient(false) }
-
-// rssImageHTTPClient 返回图片下载用的严格客户端。
+// rssHTTPClient 返回抓取订阅源用的客户端。
 //
-// 与 rssHTTPClient 的差别：连接层校验解析后的 IP，重定向逐跳校验。
-// RSS 内容里的图片 URL 完全由第三方控制，比用户自己配置的 feed URL
-// 危险得多，因此单独加严。配置（UA/代理）与抓取保持一致。
-func rssImageHTTPClient() *req.Client { return rssClient(true) }
+// feed URL 由用户自己配置，但仍可能是被劫持的域名，因此同样启用
+// 连接层 IP 校验；不允许内网目标。
+func rssHTTPClient() *req.Client { return rssClient(&rssFeedClientInst, "feed", false) }
+
+// rssImageHTTPClient 返回图片下载用的客户端。
+//
+// 图片 URL 完全由第三方 RSS 内容控制，风险高于 feed URL：连接层校验
+// 解析后的 IP、重定向逐跳校验。是否允许内网由
+// rss.image_allow_private_hosts 决定。
+func rssImageHTTPClient() *req.Client {
+	if imageAllowPrivate() {
+		return rssLooseHTTPClient()
+	}
+	return rssClient(&rssImageClientSt, "image", false)
+}
+
+// rssLooseHTTPClient 返回显式放行内网时使用的客户端（不做连接层校验）。
+//
+// 只应由 rss.image_allow_private_hosts=true 或内部显式允许的场景使用。
+func rssLooseHTTPClient() *req.Client {
+	return rssClient(&rssLooseClientIn, "loose", true)
+}
 
 // rssClient 返回与当前配置匹配的共享客户端。
-func rssClient(strict bool) *req.Client {
+func rssClient(slot *sharedRSSClient, kind string, allowPrivate bool) *req.Client {
 	cfg := config.Get()
-	fp := rssClientFingerprint(cfg)
-	if strict {
-		fp += "|strict"
-	}
+	fp := fmt.Sprintf("%s|%s|%v", rssClientFingerprint(cfg), kind, allowPrivate)
 
 	rssClientMu.Lock()
 	defer rssClientMu.Unlock()
 
-	inst := &rssClientInst
-	if strict {
-		inst = &rssImageClientInst
+	if slot.client != nil && slot.fingerprint == fp {
+		return slot.client
 	}
-	if inst.client != nil && inst.fingerprint == fp {
-		return inst.client
+	*slot = sharedRSSClient{
+		client:      buildRSSHTTPClientWith(cfg, allowPrivate),
+		fingerprint: fp,
 	}
-	*inst = sharedRSSClient{client: buildRSSHTTPClientWith(cfg, strict), fingerprint: fp}
-	return inst.client
+	return slot.client
 }
 
 // httpFeedFetcher 直接通过 HTTP 抓取订阅源，是默认实现。
@@ -135,9 +147,10 @@ func (httpFeedFetcher) Fetch(ctx context.Context, urlStr string) (*gofeed.Feed, 
 
 // buildRSSHTTPClient 根据配置构建 HTTP 客户端。
 //
-// 通过 config.ResolveProxy 解析 RSS 模块的代理配置，支持 HTTP 代理；
-// 配置为空时直连。strict=true 时额外加连接层 IP 校验（图片下载用）。
-func buildRSSHTTPClientWith(cfg *config.Config, strict bool) *req.Client {
+// 通过 config.TransportFor 解析 RSS 模块的代理配置，支持 HTTP 代理；
+// 配置为空时直连。allowPrivate=false 时在连接层校验解析后的 IP，
+// 并逐跳校验重定向目标。
+func buildRSSHTTPClientWith(cfg *config.Config, allowPrivate bool) *req.Client {
 	// 代理构建统一走 config.TransportFor：它按请求 scheme 选择
 	// http_url / https_url，并支持 socks5。
 	var proxyNames []string
@@ -152,7 +165,7 @@ func buildRSSHTTPClientWith(cfg *config.Config, strict bool) *req.Client {
 	}
 
 	client := req.C().SetTimeout(rssHTTPTimeout).DisableDebugLog()
-	if strict {
+	if !allowPrivate {
 		transport = guardDial(transport)
 	}
 	client.GetClient().Transport = transport
@@ -168,14 +181,8 @@ func buildRSSHTTPClientWith(cfg *config.Config, strict bool) *req.Client {
 		if len(via) >= 3 {
 			return fmt.Errorf("超过最大重定向次数")
 		}
-		if strict {
-			// 图片可能被重定向到内网：每一跳都做带 DNS 的完整校验。
-			if err := validateImageURL(req.Context(), req.URL.String(), imageAllowPrivate()); err != nil {
-				return fmt.Errorf("重定向目标校验失败: %w", err)
-			}
-			return nil
-		}
-		if err := validateFeedURL(req.URL.String()); err != nil {
+		// 重定向后的目标是一个全新连接，必须重新校验（DNS 解析在内）。
+		if err := validateRemoteURL(req.Context(), req.URL.String(), allowPrivate); err != nil {
 			return fmt.Errorf("重定向目标校验失败: %w", err)
 		}
 		return nil

@@ -260,15 +260,15 @@ func (c *LocalImageCache) findCachedFile(key string) (string, os.FileInfo) {
 // 旧实现用 io.LimitReader(body, 2MB) 直接写目标文件，超过 2MB 的图片
 // 会被截断却仍被当作成功，磁盘上留下无法解码的坏文件。
 func (c *LocalImageCache) download(ctx context.Context, src, key string, maxBytes int64, allowPrivate bool) (*imageResult, error) {
-	if err := validateImageURL(ctx, src, allowPrivate); err != nil {
+	if err := validateRemoteURL(ctx, src, allowPrivate); err != nil {
 		return nil, err
 	}
 
-	// 图片 URL 来自第三方 RSS 内容，用连接层校验的严格客户端；
-	// 显式放行内网时退回普通客户端，避免校验开关两处不一致。
+	// 图片 URL 来自第三方 RSS 内容，默认走连接层校验的严格客户端；
+	// 显式放行内网时才换用不校验的客户端。
 	client := rssImageHTTPClient()
 	if allowPrivate {
-		client = rssHTTPClient()
+		client = rssLooseHTTPClient()
 	}
 	resp, err := client.R().SetContext(ctx).Get(src)
 	if err != nil {
@@ -988,11 +988,12 @@ func contentTypeForExt(ext string) string {
 	return "application/octet-stream"
 }
 
-// validateImageURL 校验图片 URL，防止 RSS 内容把 HomeHub 当成 SSRF 跳板。
+// validateRemoteURL 校验即将访问的远程地址，防止把 HomeHub 当成 SSRF 跳板。
 //
-// allowPrivate 为 true 时跳过内网/回环限制（仅用于确实引用内网图片的
-// 自建源，默认关闭）。
-func validateImageURL(ctx context.Context, rawURL string, allowPrivate bool) error {
+// 除了字面 IP 与主机名黑名单，还会解析域名并校验全部 A/AAAA 记录：
+// 只查字面 IP 会被 DNS rebinding 绕过。allowPrivate 为 true 时跳过内网
+// 限制（图片可由 rss.image_allow_private_hosts 放行，feed 不允许）。
+func validateRemoteURL(ctx context.Context, rawURL string, allowPrivate bool) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("无效的图片 URL: %w", err)

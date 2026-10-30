@@ -319,7 +319,7 @@ docker compose up -d --build
 | `fetch_timeout_seconds` | 30 | 单源抓取预算（秒） |
 | `image_cache_enabled` | true | 关闭后图片保留外链，抓取明显更快、不占磁盘 |
 | `image_cache_concurrency` | 6 | 单条目图片并发下载数 |
-| `image_max_bytes` | 10485760 | 单张图片上限，超限丢弃，不截断 |
+| `image_max_bytes` | 134217728 | 单张图片上限（64KB–2GB），超限丢弃，不截断 |
 | `image_cleanup_enabled` | true | 自动回收无引用图片 |
 | `image_retention_days` | 30 | 无引用图片保留天数 |
 | `image_cleanup_interval_hours` | 24 | 后台清理间隔 |

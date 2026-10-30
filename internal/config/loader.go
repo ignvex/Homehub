@@ -166,7 +166,7 @@ func applyDefaults(cfg *Config) {
 		cfg.RSS.ImageCacheConcurrency = 6
 	}
 	if cfg.RSS.ImageMaxBytes == 0 {
-		cfg.RSS.ImageMaxBytes = 10 * 1024 * 1024 // 10MB
+		cfg.RSS.ImageMaxBytes = 128 * 1024 * 1024 // 128MB
 	}
 	if cfg.RSS.ImageRetentionDays == 0 {
 		cfg.RSS.ImageRetentionDays = 30
@@ -404,8 +404,8 @@ func validate(cfg *Config) error {
 	if cfg.RSS.ImageCacheConcurrency < 1 || cfg.RSS.ImageCacheConcurrency > 32 {
 		errs = append(errs, "rss.image_cache_concurrency 必须在 1-32 之间")
 	}
-	if cfg.RSS.ImageMaxBytes < 64*1024 || cfg.RSS.ImageMaxBytes > 50*1024*1024 {
-		errs = append(errs, "rss.image_max_bytes 必须在 65536-52428800 (64KB-50MB) 之间")
+	if cfg.RSS.ImageMaxBytes < 64*1024 || cfg.RSS.ImageMaxBytes > 2*1024*1024*1024 {
+		errs = append(errs, "rss.image_max_bytes 必须在 65536-2147483648 (64KB-2GB) 之间")
 	}
 	if cfg.RSS.ImageRetentionDays < 1 || cfg.RSS.ImageRetentionDays > 3650 {
 		errs = append(errs, "rss.image_retention_days 必须在 1-3650 之间")

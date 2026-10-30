@@ -78,7 +78,7 @@
         "fetch_timeout_seconds": 30,
         "image_cache_enabled": true,
         "image_cache_concurrency": 6,
-        "image_max_bytes": 10485760,
+        "image_max_bytes": 134217728,
         "image_cleanup_enabled": true,
         "image_retention_days": 30,
         "image_cleanup_interval_hours": 24,

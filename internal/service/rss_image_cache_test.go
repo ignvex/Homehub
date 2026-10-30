@@ -195,11 +195,11 @@ func TestValidateImageURLBlocksPrivateHosts(t *testing.T) {
 		"http://169.254.169.254/latest/meta-data",
 	}
 	for _, raw := range blocked {
-		if err := validateImageURL(context.Background(), raw, false); err == nil {
+		if err := validateRemoteURL(context.Background(), raw, false); err == nil {
 			t.Errorf("%s 应被拒绝", raw)
 		}
 	}
-	if err := validateImageURL(context.Background(), "http://127.0.0.1/a.png", true); err != nil {
+	if err := validateRemoteURL(context.Background(), "http://127.0.0.1/a.png", true); err != nil {
 		t.Errorf("显式允许内网时应放行，实际: %v", err)
 	}
 }

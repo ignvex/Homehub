@@ -859,81 +859,36 @@ func truncateStr(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-// rssImgPattern 匹配 HTML 中的 <img> 标签。
-var rssImgPattern = regexp.MustCompile(`<img[^>]+src=["']([^"']+)["'][^>]*/?>`)
-
 // cacheDir 图片缓存目录。
 var cacheDir = filepath.Join("web", "static", "uploads", "rss_img")
 
-// dangerousSelfClosing 自闭合或单标签形式的危险标签。
-var dangerousSelfClosing = regexp.MustCompile(`<(script|iframe|link|embed|object|frame)\b[^>]*/?>`)
-
-// dangerousPaired 成对出现的危险标签（含内容），逐标签匹配（RE2 不支持 backreference）。
-var dangerousPaired = regexp.MustCompile(`(?s)<script\b[^>]*>.*?</script>|<iframe\b[^>]*>.*?</iframe>|<embed\b[^>]*>.*?</embed>|<object\b[^>]*>.*?</object>|<frame\b[^>]*>.*?</frame>`)
-
-// extSrcPattern 任意标签中带外部 URL 的 src 属性。
-var extSrcPattern = regexp.MustCompile(`src=["'](https?://[^"']+)["']`)
-
-// styleUrlPattern 内联 style 中的外链图片（background-image 等）。
-var styleUrlPattern = regexp.MustCompile(`url\(\s*["']?(https?://[^)"'\s]+)["']?\s*\)`)
-
-// imgTagPattern 匹配完整的 <img> 标签。
-var imgTagPattern = regexp.MustCompile(`(?i)<img\b[^>]*>`)
-
-// protectImgTags 把 <img> 标签替换为占位符，返回替换后的内容与还原表。
+// sanitizeContent 清洗 RSS 正文并按需缓存图片。
 //
-// 用途：后续要剥离"所有外部 src"，但 img 是允许保留的 —— 关闭图片缓存时
-// 仍需让浏览器直接加载原图。占位符用 NUL 包裹，正常 HTML 里不会出现。
-func protectImgTags(content string) (string, map[string]string) {
-	restore := make(map[string]string)
-	i := 0
-	out := imgTagPattern.ReplaceAllStringFunc(content, func(tag string) string {
-		key := fmt.Sprintf("\x00IMG%d\x00", i)
-		restore[key] = tag
-		i++
-		return key
-	})
-	return out, restore
-}
-
-// restoreImgTags 把占位符还原为原始 <img> 标签。
-func restoreImgTags(content string, restore map[string]string) string {
-	for key, tag := range restore {
-		content = strings.ReplaceAll(content, key, tag)
-	}
-	return content
-}
-
-// sanitizeContent 清洗 RSS 内容：移除危险标签、缓存外链图片、剥离其他外部资源。
+// 解析交给 rss_sanitize.go 的白名单实现：危险标签整棵删除、未知标签保留
+// 文字、属性按白名单过滤。这里只负责图片这一步 —— 先收集外链地址，
+// 交给 RSSImageCache 并发下载，再用结果改写或删除 <img>。
 //
-// 图片缓存是抓取耗时的主要来源：一个含 20 张图的条目若串行下载，最坏要
-// 等 20 × 5s。这里改为"先收集、并发下载、再统一替换"，并用 ctx 作为
-// 总体预算 —— 预算耗尽的图片直接放弃，不拖住入库。
-//
-// rss.image_cache_enabled=false 时完全跳过下载，图片保留原始外链由
-// 浏览器直接加载：抓取速度显著提升，也不占用本地磁盘。
+// rss.image_cache_enabled=false 时跳过下载，图片保留原始外链由浏览器
+// 直接加载：抓取速度显著提升，也不占用本地磁盘。
 func (s *RSSService) sanitizeContent(ctx context.Context, feedID uint64, entryLink, content string) string {
 	if content == "" {
 		return content
 	}
 
-	// 1. 移除危险标签
-	content = dangerousSelfClosing.ReplaceAllString(content, "")
-	content = dangerousPaired.ReplaceAllString(content, "")
+	doc, ok := parseContent(content)
+	if !ok {
+		// 解析不出 HTML 时按纯文本输出，绝不原样透传。
+		return escapeFallback(content)
+	}
 
-	// 2. <img> 外部图片 → 本地缓存（关闭缓存时保持原样）
-	content = s.cacheContentImages(ctx, feedID, entryLink, content)
+	if !imageCacheEnabled() {
+		return doc.render()
+	}
 
-	// 3. 保护 <img> 标签：下面要剥离的"外部 src"不应波及图片本身
-	content, restore := protectImgTags(content)
-
-	// 4. 其他标签的外部 src → 移除 src 属性
-	content = extSrcPattern.ReplaceAllString(content, "")
-
-	// 5. 内联 style 中的外链 url(...) → 移除 url 的值（保留占位）
-	content = styleUrlPattern.ReplaceAllString(content, "none")
-
-	return restoreImgTags(content, restore)
+	if urls := doc.externalImageSources(); len(urls) > 0 {
+		doc.applyImageMapping(s.imageCache().Cache(ctx, feedID, entryLink, urls))
+	}
+	return doc.render()
 }
 
 // imageCacheEnabled 读取图片缓存开关（配置热更新即时生效）。
@@ -943,54 +898,6 @@ func imageCacheEnabled() bool {
 		return true
 	}
 	return cfg.RSS.ImageCacheEnabled
-}
-
-// cacheContentImages 把内容里的外链图片缓存到本地并改写为站内 URL。
-//
-// 具体下载、类型/大小校验、归属登记与去重都交给 RSSImageCache；
-// 本函数只负责从 HTML 中收集 URL、调用缓存、替换标签。
-func (s *RSSService) cacheContentImages(ctx context.Context, feedID uint64, entryLink, content string) string {
-	if !imageCacheEnabled() {
-		return content
-	}
-
-	// 收集去重后的待缓存 URL
-	seen := make(map[string]bool)
-	var pending []string
-	for _, m := range rssImgPattern.FindAllStringSubmatch(content, -1) {
-		if len(m) < 2 || m[1] == "" {
-			continue
-		}
-		src := m[1]
-		if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "data:") || seen[src] {
-			continue
-		}
-		seen[src] = true
-		pending = append(pending, src)
-	}
-	if len(pending) == 0 {
-		return content
-	}
-
-	localURL := s.imageCache().Cache(ctx, feedID, entryLink, pending)
-
-	// 统一替换：成功改写的用站内 URL，失败/跳过的图片标签整体移除。
-	return rssImgPattern.ReplaceAllStringFunc(content, func(tag string) string {
-		m := rssImgPattern.FindStringSubmatch(tag)
-		if len(m) < 2 || m[1] == "" {
-			return tag
-		}
-		src := m[1]
-		if u, ok := localURL[src]; ok {
-			return strings.Replace(tag, src, u, 1)
-		}
-		// 只删除真正尝试过缓存的失败图片；相对路径 / data URL 等
-		// 本来就没列入 pending，应保留原样。
-		if seen[src] {
-			return ""
-		}
-		return tag
-	})
 }
 
 // isImageExt 判断扩展名是否为常见图片格式。

@@ -167,9 +167,7 @@ PDF 带 `Content-Disposition: inline`，由浏览器内建阅读器打开。
 后台调度（每 5s 检查）
   └─ FetchAll：并发抓取到期的订阅源（fetch_concurrency）
        └─ FetchFeed：单源抓取（fetch_timeout_seconds 预算）
-            └─ sanitizeContent：收集图片 → RSSImageCache
-                 ├─ 本地实现：校验/原子写/登记引用
-                 └─ 远程实现：extension 预下载后拉取（预留接口）
+            └─ sanitizeContent：并发缓存条目内图片（image_cache_concurrency）
 ```
 
 关键点：**单个源超时只占用一个并发槽**，不会拖住整轮。旧实现是串行的，
@@ -188,11 +186,6 @@ N 个源各超时 30s 会让后台循环彻底堵死。
 | `fetch_timeout_seconds` | 30 | 单源预算（秒），5–600 |
 | `image_cache_enabled` | true | 是否本地缓存条目图片 |
 | `image_cache_concurrency` | 6 | 单条目图片并发数，1–32 |
-| `image_max_bytes` | 10485760 | 单张图片上限，64KB–50MB；超限丢弃，不截断 |
-| `image_cleanup_enabled` | true | 是否自动回收无引用图片 |
-| `image_retention_days` | 30 | 无引用图片保留天数，1–3650 |
-| `image_cleanup_interval_hours` | 24 | 后台清理间隔，1–168 |
-| `image_allow_private_hosts` | false | 允许图片源访问内网/回环，默认关闭 |
 | `proxy_names` | — | 代理链，按优先级 |
 | `user_agent` | Chrome UA | 自定义 UA |
 
@@ -203,38 +196,29 @@ N 个源各超时 30s 会让后台循环彻底堵死。
 抓取耗时的主要来源是条目内嵌图片。缓存开启时：
 
 1. 收集条目内所有外链图片，按 URL 去重
-2. 先查 `homehub_rss_images` / 本地文件，命中则复用
-3. 未命中则下载：校验 Content-Type 与大小，写临时文件后原子 rename
-4. 登记 `RSSImage` 与 `RSSImageRef`（哪个源的哪个条目引用了它）
-5. 改写为 `/static/uploads/rss_img/<md5>.<ext>`
-6. 下载失败/超限/非图片的标签整体移除
+2. 并发下载（受该源的超时预算约束）
+3. 改写为 `/static/uploads/rss_img/<md5>.<ext>`
+4. 下载失败的图片标签整体移除
+
+正文清洗走白名单 DOM 重建（不是正则）：`script`/`iframe`/`svg` 等标签连同
+内容删除，未登记的标签去掉标签保留文字，`on*`/`style`/`srcset` 等属性一律
+丢弃，`javascript:`/`vbscript:`/协议相对 URL 被拒绝；`target="_blank"` 自动
+补 `rel="noopener noreferrer"`。
 
 `image_cache_enabled=false` 时完全跳过，图片保留原始外链由浏览器加载。
 **如果源站图片本身可直连，这是最省事的提速手段。**
-
-缓存文件按 `md5(源 URL)` 全局共享，多个源引用同一张图不会重复下载；
-归属与清理由 `homehub_rss_image_refs` 记录。删除订阅源或 retention 删除
-条目后，对应引用被删除，无引用的文件会被回收。完整机制、表关系与
-Mermaid 图见 [rss-architecture.md](rss-architecture.md)。
 
 ### 已知限制
 
 - 重新抓取只更新 `magnet_url`（`ON CONFLICT DO UPDATE`），**不会重建
   content**。所以历史条目的内嵌图片若被删除，重新抓取也不会恢复。
-- `homehub_rss_entries.link` 是全局唯一索引：两个源收录同一链接时，
-  后抓到的源不会新增条目，条目仍归属先抓到的源。彻底修复需要改成
-  `(feed_id, link)` 复合唯一键，属于人工迁移。
 - 单个源失败只记 `rss_feeds.error_msg`，下一轮按 `fetch_interval` 重来，
   没有指数退避。
-- 升级前没有数据库记录的历史图片文件，会在超过
-  `image_retention_days` 后被清理；期间历史条目仍可访问。
 
 ### 交给外部服务
 
-抓取实现被抽成 `service.RSSFetcher` 接口，可通过 `SetFetcher` 替换；
-图片缓存抽成 `service.RSSImageCache`，可通过 `SetImageCache` 替换。
-契约与接入方式见 [extension.md](extension.md)，远程预下载的适配建议见
-[rss-architecture.md](rss-architecture.md)。
+抓取实现被抽成 `service.RSSFetcher` 接口，可通过 `SetFetcher` 替换。
+契约与接入方式见 [extension.md](extension.md)。
 
 ---
 
@@ -299,15 +283,6 @@ Mermaid 图见 [rss-architecture.md](rss-architecture.md)。
 - 登录：用户名 + 密码（bcrypt），成功后发 `homehub_session` Cookie
 - 会话存数据库，每小时清理过期记录
 - 角色：`admin` / `user`。`/admin/*` 与 `/config` 需要管理员
-- 头像：由邮箱对应的 Gravatar 生成，缓存在数据库（每用户一张，尺寸由
-  `gravatar.default_size` 决定，范围 16-512）。
+- 头像：由邮箱对应的 Gravatar 生成，缓存在数据库。
   `gravatar.enabled=false` 时接口返回 404，前端降级为首字母占位
-- 头像接口：
-  - `GET /api/v1/avatar/{id}`：公开，带 `ETag` 与 `Cache-Control: private, no-cache`
-    （可缓存但每次校验，管理员刷新后立即生效）
-  - `GET /api/v1/avatar/me`：需登录，`Cache-Control: no-store`（URL 不区分用户，
-    任何缓存都会在切换账号时串号）
-  - 失败语义：用户不存在/无邮箱/上游 404 → 404；上游故障或返回非图片 → 502
-- 头像上游可切到 extension（`gravatar.extension_url`），契约见
-  [extension.md](extension.md#gravatar-头像代理)。改配置即时生效，不自动回退
 - 初始管理员由 `config.json` 的 `auth.password` 创建，创建后该字段被清空

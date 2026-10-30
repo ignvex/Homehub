@@ -138,8 +138,10 @@ type RSSConfig struct {
 	ImageCacheEnabled bool `json:"image_cache_enabled"`
 	// ImageCacheConcurrency 图片并发下载数，默认 6。
 	ImageCacheConcurrency int `json:"image_cache_concurrency"`
-	// ImageMaxBytes 单张图片的大小上限（字节），默认 10MB。
+	// ImageMaxBytes 单张图片的大小上限（字节），默认 128MB。
 	// 超过上限的图片会被丢弃，而不是截断后写坏文件。
+	// 上限放到 2GB 是为高分辨率原图留余量；真正的约束是抓取预算，
+	// 单张图太大时会先撞上 fetch_timeout_seconds。
 	ImageMaxBytes int64 `json:"image_max_bytes"`
 	// ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。
 	ImageCleanupEnabled bool `json:"image_cleanup_enabled"`
