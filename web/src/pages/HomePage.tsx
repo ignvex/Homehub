@@ -120,7 +120,7 @@ export function HomePage() {
       <a href="/paste" className="pastebin-link">Pastebin</a>
       <div className="header-actions">
         {auth.logged_in
-          ? <><a href="/profile" className="home-avatar-link"><UserAvatar username={auth.username} size={32} /></a><div className="panel-dropdown"><a className="login-button console-button" href="/dashboard">进入面板</a><div className="panel-dropdown-menu"><a href="/dashboard">进入面板</a><a href="/settings">系统设置</a><a href="/appearance">界面外观</a><button onClick={logout}>退出登录</button></div></div></>
+          ? <><a href="/profile" className="home-avatar-link"><UserAvatar username={auth.username} size={32} userId={auth.id} /></a><div className="panel-dropdown"><a className="login-button console-button" href="/dashboard">进入面板</a><div className="panel-dropdown-menu"><a href="/dashboard">进入面板</a><a href="/settings">系统设置</a><a href="/appearance">界面外观</a><button onClick={logout}>退出登录</button></div></div></>
           : <a className="login-button" href="/login?returnTo=%2Fdashboard">登录</a>}
       </div>
     </header>

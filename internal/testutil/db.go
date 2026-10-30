@@ -43,6 +43,33 @@ func NewMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock, func()) {
 	return db, mock, cleanup
 }
 
+// NewUnorderedMockDB 与 NewMockDB 相同，但关闭 SQL 期望的顺序匹配。
+//
+// 只用于并发场景：多个 goroutine 的查询会交错执行，严格顺序匹配会让
+// 期望队列互相阻塞（表现为测试永久挂起）。单线程用例请继续用 NewMockDB，
+// 顺序匹配能更早发现意外的额外查询。
+func NewUnorderedMockDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock, func()) {
+	t.Helper()
+
+	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("创建 sqlmock 失败: %v", err)
+	}
+	mock.MatchExpectationsInOrder(false)
+
+	dialector := postgres.New(postgres.Config{Conn: sqlDB})
+	db, err := gorm.Open(dialector, &gorm.Config{SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatalf("创建 gorm 实例失败: %v", err)
+	}
+
+	cleanup := func() {
+		sqlDB.Close()
+	}
+
+	return db, mock, cleanup
+}
+
 // CreateTestUser 在 mock DB 上创建一个测试用户记录（不涉及真实 DB）。
 func CreateTestUser(t *testing.T, username, role, email string) *model.User {
 	t.Helper()

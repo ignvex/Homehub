@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -90,13 +91,11 @@ func TestGravatarDisabledRejectsFetch(t *testing.T) {
 	defer cleanup()
 	svc := NewGravatarService(db)
 
-	if _, _, err := svc.GetAvatarData(1); !errors.Is(err, ErrGravatarDisabled) {
+	ctx := context.Background()
+	if _, err := svc.GetAvatarData(ctx, 1); !errors.Is(err, ErrGravatarDisabled) {
 		t.Errorf("GetAvatarData 错误 = %v，期望 ErrGravatarDisabled", err)
 	}
-	if _, err := svc.RefreshAvatar(1); !errors.Is(err, ErrGravatarDisabled) {
+	if _, err := svc.RefreshAvatar(ctx, 1); !errors.Is(err, ErrGravatarDisabled) {
 		t.Errorf("RefreshAvatar 错误 = %v，期望 ErrGravatarDisabled", err)
-	}
-	if got := svc.URL("a@b.c"); got != "" {
-		t.Errorf("禁用时 URL 应为空，实际 %q", got)
 	}
 }

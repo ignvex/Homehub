@@ -172,6 +172,7 @@ func AuthStatus(c *gin.Context) {
 		user := u.(*model.User)
 		c.JSON(http.StatusOK, gin.H{
 			"logged_in":  true,
+			"id":         user.ID,
 			"username":   user.Username,
 			"role":       user.Role,
 			"email":      user.Email,

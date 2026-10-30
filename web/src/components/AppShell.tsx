@@ -202,7 +202,7 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
           })}
         </nav>
         <a href="/profile" className="shell-account">
-          <UserAvatar username={auth.username} size={36} />
+          <UserAvatar username={auth.username} size={36} userId={auth.id} />
           <div>
             <strong>{auth.username || '用户'}</strong>
             <span>账户与个人资料</span>
