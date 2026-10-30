@@ -95,9 +95,23 @@ type ProxyServiceConfig struct {
 type GravatarConfig struct {
 	Enabled      bool     `json:"enabled"`       // 是否启用以 Gravatar 生成头像
 	DefaultStyle string   `json:"default_style"` // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
-	DefaultSize  int      `json:"default_size"`  // 头像尺寸（像素），默认 200
+	DefaultSize  int      `json:"default_size"`  // 头像缓存尺寸（像素），默认 256，范围 16-512
 	Rating       string   `json:"rating"`        // 内容分级：g / pg / r / x
-	ProxyNames   []string `json:"proxy_names"`   // 代理名称列表（引用 proxy 池），空=直连
+	ProxyNames   []string `json:"proxy_names"`   // 直连模式下的代理名称列表（引用 proxy 池），空=直连
+
+	// ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。
+	//
+	// 为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：
+	// HomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=&d=&r=，
+	// extension 不反向连接、不需要数据库凭据。
+	ExtensionURL string `json:"extension_url"`
+	// ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
+	ExtensionToken string `json:"extension_token"`
+	// TimeoutSeconds 单次上游请求超时（秒），默认 10。
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// MaxBytes 单张头像的大小上限（字节），默认 2MB。
+	// 超过上限的响应直接丢弃，不截断写入缓存。
+	MaxBytes int64 `json:"max_bytes"`
 }
 
 // BookmarkConfig 书签模块配置。
@@ -124,6 +138,19 @@ type RSSConfig struct {
 	ImageCacheEnabled bool `json:"image_cache_enabled"`
 	// ImageCacheConcurrency 图片并发下载数，默认 6。
 	ImageCacheConcurrency int `json:"image_cache_concurrency"`
+	// ImageMaxBytes 单张图片的大小上限（字节），默认 10MB。
+	// 超过上限的图片会被丢弃，而不是截断后写坏文件。
+	ImageMaxBytes int64 `json:"image_max_bytes"`
+	// ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。
+	ImageCleanupEnabled bool `json:"image_cleanup_enabled"`
+	// ImageRetentionDays 无引用图片的保留天数，默认 30。
+	// 只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。
+	ImageRetentionDays int `json:"image_retention_days"`
+	// ImageCleanupIntervalHours 后台清理间隔（小时），默认 24。
+	ImageCleanupIntervalHours int `json:"image_cleanup_interval_hours"`
+	// ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。
+	// 仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。
+	ImageAllowPrivateHosts bool `json:"image_allow_private_hosts"`
 
 	// ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。
 	//

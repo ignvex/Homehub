@@ -87,6 +87,7 @@ func TestBoolFlagsDefaults(t *testing.T) {
 		{"pastebin.enabled", cfg.Pastebin.Enabled, true},
 		{"rss.background_fetch_enabled", cfg.RSS.BackgroundFetchEnabled, true},
 		{"rss.image_cache_enabled", cfg.RSS.ImageCacheEnabled, true},
+		{"rss.image_cleanup_enabled", cfg.RSS.ImageCleanupEnabled, true},
 		{"balance_monitor.enabled", cfg.BalanceMonitor.Enabled, false},
 		{"log.db_writer", cfg.Log.DBWriter, false},
 	}
@@ -109,7 +110,7 @@ func TestBoolFlagsExplicitRespected(t *testing.T) {
 		"log": {"level": "info", "format": "json", "db_writer": true},
 		"gravatar": {"enabled": false},
 		"pastebin": {"enabled": false},
-		"rss": {"background_fetch_enabled": false, "image_cache_enabled": false},
+		"rss": {"background_fetch_enabled": false, "image_cache_enabled": false, "image_cleanup_enabled": false},
 		"balance_monitor": {"enabled": true}
 	}`
 	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
@@ -129,6 +130,7 @@ func TestBoolFlagsExplicitRespected(t *testing.T) {
 		{"pastebin.enabled", cfg.Pastebin.Enabled, false},
 		{"rss.background_fetch_enabled", cfg.RSS.BackgroundFetchEnabled, false},
 		{"rss.image_cache_enabled", cfg.RSS.ImageCacheEnabled, false},
+		{"rss.image_cleanup_enabled", cfg.RSS.ImageCleanupEnabled, false},
 		{"balance_monitor.enabled", cfg.BalanceMonitor.Enabled, true},
 		{"log.db_writer", cfg.Log.DBWriter, true},
 	}
@@ -178,5 +180,8 @@ func TestGeneratedDefaultConfigHasFlagsOn(t *testing.T) {
 	}
 	if !get("rss", "image_cache_enabled") {
 		t.Error("生成的默认配置 rss.image_cache_enabled 应为 true")
+	}
+	if !get("rss", "image_cleanup_enabled") {
+		t.Error("生成的默认配置 rss.image_cleanup_enabled 应为 true")
 	}
 }

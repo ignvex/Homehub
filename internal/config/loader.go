@@ -137,10 +137,16 @@ func applyDefaults(cfg *Config) {
 		cfg.Gravatar.DefaultStyle = "identicon"
 	}
 	if cfg.Gravatar.DefaultSize == 0 {
-		cfg.Gravatar.DefaultSize = 200
+		cfg.Gravatar.DefaultSize = 256
 	}
 	if cfg.Gravatar.Rating == "" {
 		cfg.Gravatar.Rating = "g"
+	}
+	if cfg.Gravatar.TimeoutSeconds == 0 {
+		cfg.Gravatar.TimeoutSeconds = 10
+	}
+	if cfg.Gravatar.MaxBytes == 0 {
+		cfg.Gravatar.MaxBytes = 2 * 1024 * 1024 // 2MB
 	}
 
 	for i := range cfg.Proxy {
@@ -158,6 +164,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.RSS.ImageCacheConcurrency == 0 {
 		cfg.RSS.ImageCacheConcurrency = 6
+	}
+	if cfg.RSS.ImageMaxBytes == 0 {
+		cfg.RSS.ImageMaxBytes = 10 * 1024 * 1024 // 10MB
+	}
+	if cfg.RSS.ImageRetentionDays == 0 {
+		cfg.RSS.ImageRetentionDays = 30
+	}
+	if cfg.RSS.ImageCleanupIntervalHours == 0 {
+		cfg.RSS.ImageCleanupIntervalHours = 24
 	}
 
 	// Balance Monitor 默认值
@@ -208,6 +223,7 @@ func (cfg *Config) boolFlags() []boolFlag {
 		{"pastebin", "enabled", &cfg.Pastebin.Enabled, true},
 		{"rss", "background_fetch_enabled", &cfg.RSS.BackgroundFetchEnabled, true},
 		{"rss", "image_cache_enabled", &cfg.RSS.ImageCacheEnabled, true},
+		{"rss", "image_cleanup_enabled", &cfg.RSS.ImageCleanupEnabled, true},
 		// 下面两项默认关闭：开启会额外消耗资源，交给用户主动选择。
 		{"balance_monitor", "enabled", &cfg.BalanceMonitor.Enabled, false},
 		{"log", "db_writer", &cfg.Log.DBWriter, false},
@@ -292,7 +308,9 @@ func validate(cfg *Config) error {
 		errs = append(errs, "database.dbname 不能为空")
 	}
 
-	if len(cfg.Auth.SessionSecret) < 32 {
+	if cfg.Auth.SessionSecret == "" {
+		errs = append(errs, "auth.session_secret 不能为空，请用 openssl rand -hex 32 生成后填入")
+	} else if len(cfg.Auth.SessionSecret) < 32 {
 		errs = append(errs, "auth.session_secret 长度不能少于 32 字符")
 	}
 
@@ -327,12 +345,25 @@ func validate(cfg *Config) error {
 	if !slices.Contains(validGravatarStyles, strings.ToLower(cfg.Gravatar.DefaultStyle)) {
 		errs = append(errs, "gravatar.default_style 必须为 identicon/mp/robohash/retro/wavatar/blank/404 之一")
 	}
-	if cfg.Gravatar.DefaultSize < 1 || cfg.Gravatar.DefaultSize > 2048 {
-		errs = append(errs, "gravatar.default_size 必须在 1-2048 之间")
+	// 尺寸上限与 service 的缓存上限保持一致：更大的图只会白白占用数据库。
+	if cfg.Gravatar.DefaultSize < 16 || cfg.Gravatar.DefaultSize > 512 {
+		errs = append(errs, "gravatar.default_size 必须在 16-512 之间")
 	}
 	validGravatarRatings := []string{"g", "pg", "r", "x"}
 	if !slices.Contains(validGravatarRatings, strings.ToLower(cfg.Gravatar.Rating)) {
 		errs = append(errs, "gravatar.rating 必须为 g/pg/r/x 之一")
+	}
+	if cfg.Gravatar.TimeoutSeconds < 1 || cfg.Gravatar.TimeoutSeconds > 60 {
+		errs = append(errs, "gravatar.timeout_seconds 必须在 1-60 之间")
+	}
+	if cfg.Gravatar.MaxBytes < 64*1024 || cfg.Gravatar.MaxBytes > 10*1024*1024 {
+		errs = append(errs, "gravatar.max_bytes 必须在 65536-10485760 (64KB-10MB) 之间")
+	}
+	if cfg.Gravatar.ExtensionURL != "" {
+		u, err := url.Parse(cfg.Gravatar.ExtensionURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, "gravatar.extension_url 必须是完整的 http(s) 地址")
+		}
 	}
 
 	validProxyTypes := []string{"http", "socks5"}
@@ -372,6 +403,15 @@ func validate(cfg *Config) error {
 	}
 	if cfg.RSS.ImageCacheConcurrency < 1 || cfg.RSS.ImageCacheConcurrency > 32 {
 		errs = append(errs, "rss.image_cache_concurrency 必须在 1-32 之间")
+	}
+	if cfg.RSS.ImageMaxBytes < 64*1024 || cfg.RSS.ImageMaxBytes > 50*1024*1024 {
+		errs = append(errs, "rss.image_max_bytes 必须在 65536-52428800 (64KB-50MB) 之间")
+	}
+	if cfg.RSS.ImageRetentionDays < 1 || cfg.RSS.ImageRetentionDays > 3650 {
+		errs = append(errs, "rss.image_retention_days 必须在 1-3650 之间")
+	}
+	if cfg.RSS.ImageCleanupIntervalHours < 1 || cfg.RSS.ImageCleanupIntervalHours > 168 {
+		errs = append(errs, "rss.image_cleanup_interval_hours 必须在 1-168 之间")
 	}
 	if cfg.RSS.ExtensionURL != "" {
 		u, err := url.Parse(cfg.RSS.ExtensionURL)

@@ -1,6 +1,6 @@
 {
     "auth": {
-        "_comment": "session_secret 至少 32 字符，建议用 openssl rand -hex 32 生成；password 仅用于首次创建管理员，启动后会被自动清空",
+        "_comment": "session_secret 必填，至少 32 字符：用 openssl rand -hex 32 生成后替换下面的示例值，不要沿用；password 仅用于首次创建管理员，启动后会被自动清空",
         "password": "",
         "session_secret": "CHANGE_ME_generate_with_openssl_rand_hex_32",
         "username": "admin"
@@ -26,13 +26,17 @@
         "user": "homehub"
     },
     "gravatar": {
-        "default_size": 1024,
+        "default_size": 256,
         "default_style": "identicon",
         "enabled": true,
+        "extension_token": "",
+        "extension_url": "",
+        "max_bytes": 2097152,
         "proxy_names": [
             "router"
         ],
-        "rating": "g"
+        "rating": "g",
+        "timeout_seconds": 10
     },
     "log": {
         "db_writer": true,
@@ -74,6 +78,11 @@
         "fetch_timeout_seconds": 30,
         "image_cache_enabled": true,
         "image_cache_concurrency": 6,
+        "image_max_bytes": 10485760,
+        "image_cleanup_enabled": true,
+        "image_retention_days": 30,
+        "image_cleanup_interval_hours": 24,
+        "image_allow_private_hosts": false,
         "extension_url": "",
         "extension_token": ""
     },
