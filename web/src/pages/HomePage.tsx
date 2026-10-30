@@ -146,7 +146,7 @@ export function HomePage() {
           </section>
         })}
         {visibleFeeds.map(feed => {
-          const feedEntries = entries.filter(entry => entry.feed_id === feed.id).slice(0, MAX_ENTRIES_PER_FEED)
+          const feedEntries = entries.filter(entry => entry.feed_ids?.includes(feed.id)).slice(0, MAX_ENTRIES_PER_FEED)
           return <section className="content-card rss-section" key={`feed-${feed.id}`}>
             <div className="section-heading"><div><h2>{feed.title || '未命名订阅'}</h2></div><div className="heading-links"><a href={feed.site_url || feed.url} target="_blank" rel="noreferrer">查看站点 ↗</a><span className="heading-sep">·</span><a href="/rss">查看更多 →</a></div></div>
             {feedEntries.length ? <div className="rss-list">{feedEntries.map(entry => <div className="rss-item-row" key={entry.id}><a href={entry.link} target="_blank" rel="noreferrer"><strong>{entry.title}</strong><span>{entry.author || '最新文章'} · {entry.published ? new Date(entry.published).toLocaleDateString('zh-CN') : '最近更新'}</span></a>{entry.magnet_url && <a className="rss-magnet-link" href={entry.magnet_url} title="磁力链接">🧲</a>}</div>)}</div> : <p className="muted">暂无已抓取的文章。</p>}

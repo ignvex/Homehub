@@ -38,7 +38,11 @@ import (
 //   - 返回 sourceURL → 站内 URL 的映射；失败/跳过的 URL 不出现在 map 中
 //   - 对同一 URL 幂等：重复调用不应产生重复文件
 type RSSImageCache interface {
-	Cache(ctx context.Context, feedID uint64, entryLink string, urls []string) map[string]string
+	// Cache 缓存一组图片，返回 sourceURL → 站内 URL。
+	//
+	// entryID 是条目主键：条目按 link 全局唯一、多个源共享同一条内容，
+	// 因此图片引用只挂在条目上，与具体源无关。
+	Cache(ctx context.Context, entryID uint64, urls []string) map[string]string
 	// Sweep 清理没有引用且超过 grace 的缓存文件；grace=0 表示立即清理。
 	Sweep(ctx context.Context, grace time.Duration) error
 }
@@ -125,7 +129,7 @@ func NewLocalImageCache(db *gorm.DB) *LocalImageCache {
 }
 
 // Cache 解析并缓存一组图片，返回 sourceURL → 站内 URL。
-func (c *LocalImageCache) Cache(ctx context.Context, feedID uint64, entryLink string, urls []string) map[string]string {
+func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []string) map[string]string {
 	out := make(map[string]string)
 	if len(urls) == 0 {
 		return out
@@ -188,7 +192,7 @@ func (c *LocalImageCache) Cache(ctx context.Context, feedID uint64, entryLink st
 	if ctx.Err() != nil {
 		return out
 	}
-	c.register(feedID, entryLink, results)
+	c.register(entryID, results)
 
 	for _, res := range results {
 		out[res.sourceURL] = c.publicPrefix + res.filename
@@ -377,7 +381,7 @@ type AdoptedImage struct {
 	SHA256      string // 可留空
 }
 
-// Adopt 登记外部预下载的图片，并建立 feed/条目引用。
+// Adopt 登记外部预下载的图片，并建立条目引用。
 //
 // 这是给远程预下载实现准备的：extension 负责把图片落到 HomeHub 的缓存
 // 目录（原子写入），然后调用 Adopt 登记归属；后续 resolve 会直接命中
@@ -385,7 +389,7 @@ type AdoptedImage struct {
 //
 // 不存在的文件、包含路径分隔符的文件名会被跳过，避免把任意路径写进
 // 资源表。
-func (c *LocalImageCache) Adopt(feedID uint64, entryLink string, items []AdoptedImage) map[string]string {
+func (c *LocalImageCache) Adopt(entryID uint64, items []AdoptedImage) map[string]string {
 	out := make(map[string]string)
 	if len(items) == 0 {
 		return out
@@ -425,7 +429,7 @@ func (c *LocalImageCache) Adopt(feedID uint64, entryLink string, items []Adopted
 	}
 
 	if len(results) > 0 {
-		c.register(feedID, entryLink, results)
+		c.register(entryID, results)
 	}
 	return out
 }
@@ -434,7 +438,7 @@ func (c *LocalImageCache) Adopt(feedID uint64, entryLink string, items []Adopted
 //
 // 数据库不可用时只丢失归属信息，不影响本次抓取的图片展示；下次抓取
 // 会重新登记。
-func (c *LocalImageCache) register(feedID uint64, entryLink string, results []*imageResult) {
+func (c *LocalImageCache) register(entryID uint64, results []*imageResult) {
 	if c.db == nil || len(results) == 0 {
 		return
 	}
@@ -479,9 +483,8 @@ func (c *LocalImageCache) register(feedID uint64, entryLink string, results []*i
 		idByKey[img.CacheKey] = img.ID
 	}
 
-	// 条目链接为空时不登记引用：该条目本身会在入库前被丢弃。
-	entryHash := sha256Hex(entryLink)
-	if feedID == 0 || entryHash == "" {
+	// 没有条目 ID 时无法建立引用（条目还没入库），只登记资源本身。
+	if entryID == 0 {
 		return
 	}
 
@@ -492,9 +495,8 @@ func (c *LocalImageCache) register(feedID uint64, entryLink string, results []*i
 			continue
 		}
 		refs = append(refs, model.RSSImageRef{
-			ImageID:   id,
-			FeedID:    feedID,
-			EntryHash: entryHash,
+			ImageID: id,
+			EntryID: entryID,
 		})
 	}
 	if len(refs) == 0 {
@@ -657,7 +659,7 @@ func (c *LocalImageCache) BackfillLegacy(ctx context.Context) error {
 
 	var entries []model.RSSEntry
 	result := c.db.
-		Select("id", "feed_id", "link", "content", "updated_at").
+		Select("id", "content").
 		Where("content LIKE ?", "%/static/uploads/rss_img/%").
 		FindInBatches(&entries, 500, func(tx *gorm.DB, batch int) error {
 			if err := ctx.Err(); err != nil {
@@ -677,16 +679,14 @@ func (c *LocalImageCache) BackfillLegacy(ctx context.Context) error {
 func (c *LocalImageCache) backfillBatch(entries []model.RSSEntry) {
 	// 1. 收集本批涉及的文件名（同一文件可能被多个条目引用）。
 	type pendingRef struct {
-		filename  string
-		feedID    uint64
-		entryHash string
+		filename string
+		entryID  uint64
 	}
 	var refs []pendingRef
 	fileSet := make(map[string]struct{})
 
 	for _, entry := range entries {
-		hash := sha256Hex(entry.Link)
-		if hash == "" {
+		if entry.ID == 0 {
 			continue
 		}
 		seen := make(map[string]struct{})
@@ -700,7 +700,7 @@ func (c *LocalImageCache) backfillBatch(entries []model.RSSEntry) {
 			}
 			seen[name] = struct{}{}
 			fileSet[name] = struct{}{}
-			refs = append(refs, pendingRef{filename: name, feedID: entry.FeedID, entryHash: hash})
+			refs = append(refs, pendingRef{filename: name, entryID: entry.ID})
 		}
 	}
 	if len(fileSet) == 0 {
@@ -754,13 +754,12 @@ func (c *LocalImageCache) backfillBatch(entries []model.RSSEntry) {
 	rows := make([]model.RSSImageRef, 0, len(refs))
 	for _, ref := range refs {
 		id, ok := idByFile[ref.filename]
-		if !ok || ref.feedID == 0 {
+		if !ok || ref.entryID == 0 {
 			continue
 		}
 		rows = append(rows, model.RSSImageRef{
-			ImageID:   id,
-			FeedID:    ref.feedID,
-			EntryHash: ref.entryHash,
+			ImageID: id,
+			EntryID: ref.entryID,
 		})
 	}
 	if len(rows) == 0 {
@@ -796,63 +795,31 @@ func filenamesOf(images []model.RSSImage) []string {
 // 被误删（条目批量插入在图片处理之后，正常情况下不会超过抓取预算）。
 const refReconcileMinAge = 30 * time.Minute
 
-// reconcileRefs 删除本 feed 中没有对应条目的图片引用。
+// reconcileRefs 删除没有对应条目的图片引用。
 //
-// 按 feed 逐个处理以限制内存：一个 feed 的条目上限是 retention_count
-// （默认 5000），引用数通常是条目数的数倍，单轮几十 MB 以内。
+// 引用在条目入库之后写入，正常不会悬空；但保留策略或孤儿回收如果中途
+// 失败，就可能留下指向已删条目的引用。脏引用会让图片永远"有引用"、
+// 无法回收，所以定期用一条 NOT EXISTS 清掉。
 //
-// 只处理创建超过 refReconcileMinAge 的引用，避免与"图片已登记、条目
-// 尚未批量入库"的窗口重叠。
+// 只处理创建超过 refReconcileMinAge 的引用，避免与"条目刚插入、引用刚
+// 写入"的窗口重叠。
 func (c *LocalImageCache) reconcileRefs(ctx context.Context) error {
-	var feeds []model.RSSFeed
-	if err := c.db.Select("id").Find(&feeds).Error; err != nil {
-		return fmt.Errorf("查询订阅源失败: %w", err)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	for _, feed := range feeds {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		var links []string
-		if err := c.db.Model(&model.RSSEntry{}).
-			Where("feed_id = ?", feed.ID).
-			Pluck("link", &links).Error; err != nil {
-			return fmt.Errorf("查询条目链接失败: %w", err)
-		}
-		valid := make(map[string]struct{}, len(links))
-		for _, link := range links {
-			if hash := sha256Hex(link); hash != "" {
-				valid[hash] = struct{}{}
-			}
-		}
-
-		var refs []model.RSSImageRef
-		if err := c.db.Select("id", "entry_hash").
-			Where("feed_id = ? AND created_at < ?", feed.ID, time.Now().Add(-refReconcileMinAge)).
-			Find(&refs).Error; err != nil {
-			return fmt.Errorf("查询图片引用失败: %w", err)
-		}
-
-		stale := make([]uint64, 0)
-		for _, ref := range refs {
-			if _, ok := valid[ref.EntryHash]; !ok {
-				stale = append(stale, ref.ID)
-			}
-		}
-		if len(stale) == 0 {
-			continue
-		}
-		if err := c.db.Unscoped().Where("id IN ?", stale).Delete(&model.RSSImageRef{}).Error; err != nil {
-			return fmt.Errorf("删除无效图片引用失败: %w", err)
-		}
+	result := c.db.Unscoped().
+		Where("created_at < ?", time.Now().Add(-refReconcileMinAge)).
+		Where("NOT EXISTS (SELECT 1 FROM homehub_rss_entries e WHERE e.id = homehub_rss_image_refs.entry_id)").
+		Delete(&model.RSSImageRef{})
+	if result.Error != nil {
+		return fmt.Errorf("清理无效图片引用失败: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		logger.Info("[rss] 清理无主图片引用", "removed", result.RowsAffected)
 	}
 	return nil
 }
-
-// ============================================================
-// 配置与工具函数
-// ============================================================
 
 // imageCacheLimits 读取图片缓存的运行参数（配置热更新即时生效）。
 func imageCacheLimits() (maxBytes int64, concurrency int, allowPrivate bool) {

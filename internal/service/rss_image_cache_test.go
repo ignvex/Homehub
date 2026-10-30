@@ -107,11 +107,11 @@ func TestCacheReusesDownloadedFile(t *testing.T) {
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
 	src := srv.URL + "/a.png"
 
-	first := c.Cache(context.Background(), 1, "http://example.com/item", []string{src})
+	first := c.Cache(context.Background(), 1, []string{src})
 	if len(first) != 1 {
 		t.Fatalf("首次缓存应返回 1 个映射，实际 %v", first)
 	}
-	second := c.Cache(context.Background(), 2, "http://example.com/other", []string{src})
+	second := c.Cache(context.Background(), 2, []string{src})
 	if len(second) != 1 {
 		t.Fatalf("第二次缓存应命中文件，实际 %v", second)
 	}
@@ -134,7 +134,7 @@ func TestCacheSkipsFailedImages(t *testing.T) {
 	defer srv.Close()
 
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
-	got := c.Cache(context.Background(), 1, "http://example.com/item", []string{srv.URL + "/missing.png"})
+	got := c.Cache(context.Background(), 1, []string{srv.URL + "/missing.png"})
 	if len(got) != 0 {
 		t.Errorf("失败图片不应返回映射，实际 %v", got)
 	}
@@ -235,7 +235,7 @@ func TestCacheWithZeroConcurrencyDoesNotDeadlock(t *testing.T) {
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
 	done := make(chan map[string]string, 1)
 	go func() {
-		done <- c.Cache(context.Background(), 1, "http://example.com/item", []string{srv.URL + "/a.png"})
+		done <- c.Cache(context.Background(), 1, []string{srv.URL + "/a.png"})
 	}()
 
 	select {

@@ -32,23 +32,53 @@ func (RSSFeed) TableName() string {
 // RSSEntry — RSS 条目
 // ============================================================
 
-// RSSEntry RSS 条目模型。
+// RSSEntry RSS 条目模型（纯内容，不归属任何源）。
 //
-// 每个条目属于一个订阅源，按 link 去重。
-// 表名：rss_entries
+// 按 link 全局去重：同一篇文章被多个 feed 收录时只有一行，谁收录了它
+// 由 RSSEntryFeed 记录。这样删除一个源不会带走其他源仍在引用的内容，
+// 正文也不必按源重复存储。
+//
+// Published/FetchedAt 是"首次见到"的时间；每个源自己的发布时间在
+// RSSEntryFeed.Published 上。
+//
+// 表名：homehub_rss_entries
 type RSSEntry struct {
 	BaseModel
-	FeedID    uint64    `gorm:"index;not null" json:"feed_id"`              // 所属订阅源 ID
 	Title     string    `gorm:"size:500;not null" json:"title"`             // 条目标题
-	Link      string    `gorm:"uniqueIndex;size:2048;not null" json:"link"` // 条目链接（唯一，用于去重）
+	Link      string    `gorm:"uniqueIndex;size:2048;not null" json:"link"` // 条目链接（全表唯一）
 	Author    string    `gorm:"size:255" json:"author,omitempty"`           // 作者
-	Content   string    `gorm:"type:text" json:"content,omitempty"`         // 摘要/正文（截断到 2000 字符）
-	MagnetURL string    `gorm:"type:text" json:"magnet_url,omitempty"`      // 磁力链接（从 RSS 附件或内容中提取）
-	Published time.Time `gorm:"index" json:"published"`                     // 发布时间
-	FetchedAt time.Time `gorm:"not null" json:"fetched_at"`                 // 抓取时间
+	Content   string    `gorm:"type:text" json:"content,omitempty"`         // 清洗后的正文
+	MagnetURL string    `gorm:"type:text" json:"magnet_url,omitempty"`      // 磁力链接
+	Published time.Time `gorm:"index" json:"published"`                     // 首次见到的发布时间
+	FetchedAt time.Time `gorm:"not null" json:"fetched_at"`                 // 首次抓取时间
 }
 
 // TableName 指定表名。
 func (RSSEntry) TableName() string {
 	return "homehub_rss_entries"
+}
+
+// ============================================================
+// RSSEntryFeed — 条目与订阅源的收录关系
+// ============================================================
+
+// RSSEntryFeed 记录"某个订阅源收录了某个条目"。
+//
+// 这是条目归属的唯一来源：删除订阅源只删这里的行，只有当一个条目
+// 不再被任何源收录时才回收内容本身。Published 是**该源**给出的发布
+// 时间，不同源可能不一致，按源筛选时按它排序。
+//
+// 表名：homehub_rss_entry_feeds
+type RSSEntryFeed struct {
+	BaseModel
+	EntryID     uint64    `gorm:"not null;uniqueIndex:idx_rss_entry_feed" json:"entry_id"`      // 条目 ID
+	FeedID      uint64    `gorm:"not null;index;uniqueIndex:idx_rss_entry_feed" json:"feed_id"` // 订阅源 ID
+	Published   time.Time `gorm:"index" json:"published"`                                       // 该源给出的发布时间
+	FirstSeenAt time.Time `gorm:"not null" json:"first_seen_at"`                                // 首次被该源收录
+	LastSeenAt  time.Time `gorm:"not null" json:"last_seen_at"`                                 // 最近一次出现在该源
+}
+
+// TableName 指定表名。
+func (RSSEntryFeed) TableName() string {
+	return "homehub_rss_entry_feeds"
 }

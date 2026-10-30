@@ -65,7 +65,7 @@ func TestSanitizeContentImageCacheDisabled(t *testing.T) {
 	s := &RSSService{}
 	content := `<p>hello</p><img src="http://example.com/pic.png">`
 
-	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
+	got := s.sanitizeContent(context.Background(), 1, content)
 
 	if !strings.Contains(got, "http://example.com/pic.png") {
 		t.Errorf("关闭缓存后应保留原始外链，实际: %s", got)
@@ -89,7 +89,7 @@ func TestSanitizeContentCachesImages(t *testing.T) {
 	s := &RSSService{}
 	content := fmt.Sprintf(`<img src="%s/a.png">`, srv.URL)
 
-	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
+	got := s.sanitizeContent(context.Background(), 1, content)
 
 	if strings.Contains(got, srv.URL) {
 		t.Errorf("应改写为站内 URL，实际: %s", got)
@@ -142,7 +142,7 @@ func TestSanitizeContentDownloadsConcurrently(t *testing.T) {
 
 	s := &RSSService{}
 	start := time.Now()
-	s.sanitizeContent(context.Background(), 1, "http://example.com/item", b.String())
+	s.sanitizeContent(context.Background(), 1, b.String())
 	elapsed := time.Since(start)
 
 	if maxInFlight.Load() < 2 {
@@ -172,7 +172,7 @@ func TestSanitizeContentRespectsBudget(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	got := s.sanitizeContent(ctx, 1, "http://example.com/item", fmt.Sprintf(`<p>keep</p><img src="%s/a.png">`, srv.URL))
+	got := s.sanitizeContent(ctx, 1, fmt.Sprintf(`<p>keep</p><img src="%s/a.png">`, srv.URL))
 	elapsed := time.Since(start)
 
 	if elapsed > time.Second {
@@ -229,7 +229,7 @@ func TestSanitizeContentKeepsRelativeImages(t *testing.T) {
 		srv.URL,
 	)
 
-	got := s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
+	got := s.sanitizeContent(context.Background(), 1, content)
 
 	if !strings.Contains(got, "/static/uploads/local.png") {
 		t.Errorf("相对路径图片应保留，实际: %s", got)

@@ -12,7 +12,7 @@ func sanitizePlain(t *testing.T, content string) string {
 	loadConfigWith(t, `,"rss": {"image_cache_enabled": false}`)
 
 	s := &RSSService{}
-	return s.sanitizeContent(context.Background(), 1, "http://example.com/item", content)
+	return s.sanitizeContent(context.Background(), 1, content)
 }
 
 // TestSanitizeDropsScriptAndIframe 确认危险标签连同内容一起删除。

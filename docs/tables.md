@@ -36,9 +36,10 @@ HomeHub 的全部持久化表。用于人工复核与 schema 评审。
 | 表 | 删除语义 | 备注 |
 |----|---------|------|
 | `homehub_sessions` | 软（过期清理未用 `Unscoped`） | 过期行只打标记，不回收 |
-| `homehub_rss_entries` | **物理** | retention 与删源都用 `Unscoped()` |
-| `homehub_rss_image_refs` | **物理** | 同上；软删除会让联合唯一索引无法复用 |
+| `homehub_rss_entries` | **物理** | 仅当条目成为孤儿（没有源收录）时删除 |
+| `homehub_rss_image_refs` | **物理** | 随孤儿条目删除 |
 | `homehub_rss_images` | **物理** | 回收孤儿时用 `Unscoped()`；否则 `cache_key` 唯一键冲突 |
+| `homehub_rss_entry_feeds` | **物理** | 删源 / retention 都删关联行 |
 | `homehub_rss_feeds` | **物理** | 删源用 `Unscoped()` |
 | `homehub_pastes` | **物理** | 过期清理用 `Unscoped()` |
 | `homehub_avatar_caches` | **物理** | 换头像时 `Unscoped()` 删旧行 |
@@ -70,10 +71,10 @@ erDiagram
     homehub_users ||--o| homehub_avatar_caches : "user_id 唯一"
     homehub_bookmark_groups ||--o{ homehub_bookmarks : "group_id"
     homehub_rss_groups ||--o{ homehub_rss_feeds : "group_id 可空"
-    homehub_rss_feeds ||--o{ homehub_rss_entries : "feed_id"
-    homehub_rss_feeds ||--o{ homehub_rss_image_refs : "feed_id"
+    homehub_rss_feeds ||--o{ homehub_rss_entry_feeds : "feed_id"
+    homehub_rss_entries ||--o{ homehub_rss_entry_feeds : "entry_id"
     homehub_rss_images ||--o{ homehub_rss_image_refs : "image_id"
-    homehub_rss_entries }o..o{ homehub_rss_image_refs : "entry_hash = sha256(link)"
+    homehub_rss_entries ||--o{ homehub_rss_image_refs : "entry_id"
 
     homehub_users {
         bigserial id PK
@@ -109,8 +110,14 @@ erDiagram
     }
     homehub_rss_entries {
         bigserial id PK
-        bigint feed_id
         varchar link UK
+        text content
+    }
+    homehub_rss_entry_feeds {
+        bigserial id PK
+        bigint entry_id
+        bigint feed_id
+        timestamptz published
     }
     homehub_rss_images {
         bigserial id PK
@@ -120,14 +127,16 @@ erDiagram
     homehub_rss_image_refs {
         bigserial id PK
         bigint image_id
-        bigint feed_id
-        varchar entry_hash
+        bigint entry_id
     }
 ```
 
-`homehub_rss_entries` 与 `homehub_rss_image_refs` 之间是**逻辑关联**
-（`entry_hash` = `sha256(entry.link)`），刻意不做物理外键：条目 link 最长
-2048 字符，直接进联合唯一索引会超出 B-tree 索引行上限。
+条目是**跨源共享的内容**：`homehub_rss_entries` 只存内容（按 `link` 全表
+唯一），"哪个源收录了它"由 `homehub_rss_entry_feeds` 表达。一条内容可以
+被任意多个源收录，删除其中一个源只删它那一行关联。
+
+图片引用挂在**条目**上：内容被多源共享时图片只有一份引用，删掉任一源
+都不会让图片变成孤儿。
 
 图中未画的三张表与其他表没有关联：`homehub_todos`（全体共享）、
 `homehub_log_entries`（只写日志）、`homehub_media_assets`（只被
@@ -308,7 +317,6 @@ erDiagram
 |----|------|------|------|
 | `id` | `bigserial` | PK | |
 | 公共列 | | | |
-| `feed_id` | `bigint` | NOT NULL | 所属源（**当前设计的问题所在，见 §9**） |
 | `title` | `varchar(500)` | NOT NULL | |
 | `link` | `varchar(2048)` | NOT NULL, **UNIQUE（全表）** | 条目链接 |
 | `author` | `varchar(255)` | | |
@@ -322,10 +330,40 @@ erDiagram
 `idx_homehub_rss_entries_deleted_at`，以及 pg_trgm 索引
 `idx_rss_entries_title_trgm(title)`。
 
-**评审要点**：`link` 的唯一约束是全表级，不是 `(feed_id, link)`。这就是
-"A 源抓过、B 源同链接条目消失"的根因。详见 §9。
+**评审要点**：`link` 全局唯一是**刻意的**。条目是纯内容、跨源共享；
+归属不在这张表上，而在 `homehub_rss_entry_feeds`。同一篇文章被 N 个源
+收录时只有一行内容，`content` 不重复存储。
 
-### 7.4 `homehub_rss_images`
+`feed_id` 列在旧版本中存在，改造后不再写入；列保留（nullable）以便回滚，
+可以用 `DROP COLUMN` 清掉，见 §10。
+
+### 7.4 `homehub_rss_entry_feeds`
+
+条目与订阅源的收录关系，条目归属的**唯一事实源**。
+
+| 列 | 类型 | 约束 | 说明 |
+|----|------|------|------|
+| `id` | `bigserial` | PK | |
+| 公共列 | | | |
+| `entry_id` | `bigint` | NOT NULL | 指向 `homehub_rss_entries.id` |
+| `feed_id` | `bigint` | NOT NULL | 指向 `homehub_rss_feeds.id` |
+| `published` | `timestamptz` | | **该源**给出的发布时间 |
+| `first_seen_at` | `timestamptz` | NOT NULL | 首次被该源收录 |
+| `last_seen_at` | `timestamptz` | NOT NULL | 最近一次出现在该源 |
+
+索引：`idx_rss_entry_feed`（**unique**，`entry_id, feed_id`）、
+`idx_homehub_rss_entry_feeds_feed_id`、`idx_homehub_rss_entry_feeds_published`、
+`idx_homehub_rss_entry_feeds_deleted_at`。
+
+**评审要点**：
+
+- `retention_count` 的计数单位是这张表的行数，不是条目表。每个源各自
+  保留自己的收录份额。
+- `published` 放在这里而不是条目上：同一篇文章在两个源可能给出不同时间。
+- 删除条目时先删关联、再判定孤儿。孤儿判定必须查"当前是否还有关联行"，
+  不能用删除前的候选集。
+
+### 7.5 `homehub_rss_images`
 
 | 列 | 类型 | 约束 | 说明 |
 |----|------|------|------|
@@ -346,30 +384,25 @@ erDiagram
 `cache_key` 唯一决定，实际不会重复。物理文件在
 `web/static/uploads/rss_img/`，与 `homehub_media_assets` 共目录但不共表。
 
-### 7.5 `homehub_rss_image_refs`
+### 7.6 `homehub_rss_image_refs`
 
 | 列 | 类型 | 约束 | 说明 |
 |----|------|------|------|
 | `id` | `bigserial` | PK | |
 | 公共列 | | | |
 | `image_id` | `bigint` | NOT NULL | 指向 `homehub_rss_images.id` |
-| `feed_id` | `bigint` | NOT NULL | 指向 `homehub_rss_feeds.id` |
-| `entry_hash` | `varchar(64)` | NOT NULL | `sha256(条目 link)` |
+| `entry_id` | `bigint` | NOT NULL | 指向 `homehub_rss_entries.id` |
 
-索引：`idx_rss_image_ref`（**unique**，`image_id, feed_id, entry_hash` 三列联合）、
-`idx_homehub_rss_image_refs_feed_id`、`idx_homehub_rss_image_refs_deleted_at`。
+索引：`idx_rss_image_ref`（**unique**，`image_id, entry_id`）、
+`idx_homehub_rss_image_refs_entry_id`、`idx_homehub_rss_image_refs_deleted_at`。
 
 **评审要点**：
 
-- 用 `entry_hash` 而不是 `entry_id`：条目 link 最长 2048 字符，三列联合
-  唯一索引会超 B-tree 限制（单索引行约 2704 字节上限）。
-- 联合索引列序是 `(image_id, feed_id, entry_hash)`，**以 `feed_id` 开头的
-  查询用不上它**（B-tree 只能从最左列匹配），实际走
-  `idx_homehub_rss_image_refs_feed_id` 单列索引。当前查询模式是
-  `WHERE feed_id = ? AND entry_hash IN (...)`，单列索引够用；数据量增长后
-  可考虑补 `(feed_id, entry_hash)` 复合索引。
-- 这张表只增不减的旧行为已修正：现在 `reconcileRefs` 会定期删除没有对应
-  条目的引用。
+- 引用指向条目而不是源：条目已跨源共享，图片因此只有一份引用。删掉 A 源
+  而 B 仍在收录同一条目时，图片引用不受影响。
+- 旧版本用 `(image_id, feed_id, entry_hash)`：`entry_hash` 是为了绕开
+  2048 字符 link 进联合索引的限制，改成 `entry_id` 后不需要了。
+- `reconcileRefs` 定期删除没有对应条目的引用（一条 `NOT EXISTS`）。
 
 ---
 
@@ -431,76 +464,54 @@ token，因此不需要额外索引。
 
 ---
 
-## 9. 已识别的问题（供研判）
+## 9. 条目归属模型（已定：内容表 + 关联表）
 
-### 9.1 `homehub_rss_entries.link` 全局唯一
+### 9.1 为什么不是复合唯一 `(feed_id, link)`
 
-**现状**：`idx_homehub_rss_entries_link` 是单列唯一索引。
+早期考虑过把 `link` 的唯一约束改成 `(feed_id, link)`。那只是"每个源各存
+一份副本"：同一篇文章在 N 个源下存 N 行，正文和图片引用都重复 N 份，
+跨源去重完全失效。
 
-**后果**：两个源收录同一链接（转载、聚合站）时，后抓的源命中
-`ON CONFLICT (link) DO UPDATE magnet_url`，条目仍归属先抓到的源。
-B 源的用户视角里这条内容不存在。
-
-**两个候选修法**：
-
-#### 方案 A：复合唯一 `(feed_id, link)`
+最终采用**内容表 + 关联表**：
 
 ```
-DROP INDEX idx_homehub_rss_entries_link;
-CREATE UNIQUE INDEX idx_homehub_rss_entries_feed_link
-    ON homehub_rss_entries (feed_id, link);
+homehub_rss_entries        纯内容，按 link 全表唯一
+homehub_rss_entry_feeds    哪个源收录了哪个条目 + 该源的发布时间
 ```
 
-- 同一链接在 N 个源下存 N 行，各源看到自己的那份
-- 改动量：**极小**。所有查询仍是 `WHERE feed_id = ?`，代码几乎不动
-- 代价：`content` 重复 N 份（每份最大约 2000 字符 + 清洗后的 HTML），
-  跨源去重失效
-- 语义：仍然是"一条内容属于一个源"，只是允许多个源各存一份
+一条内容只存一份，被 N 个源指向。
 
-#### 方案 B：内容表 + 关联表（真正的一条内容指向多个源）
+### 9.2 删除语义（设计的核心）
 
-```sql
--- entries 变成纯内容表，按 link 去重
-ALTER TABLE homehub_rss_entries DROP COLUMN feed_id;
--- 新建关联表，承载"哪个源收录了它、该源的发布时间"
-CREATE TABLE homehub_rss_entry_feeds (
-    id           BIGSERIAL PRIMARY KEY,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at   TIMESTAMPTZ,
-    entry_id     BIGINT NOT NULL,
-    feed_id      BIGINT NOT NULL,
-    published    TIMESTAMPTZ,
-    first_seen_at TIMESTAMPTZ NOT NULL
-);
-CREATE UNIQUE INDEX idx_rss_entry_feeds_pair
-    ON homehub_rss_entry_feeds (entry_id, feed_id);
-CREATE INDEX idx_rss_entry_feeds_feed_published
-    ON homehub_rss_entry_feeds (feed_id, published DESC);
-```
+需求是：**删 A 源不能带走 B 源仍在用的内容**。三道保证：
 
-- 一条内容只存一份，被 N 个源指向
-- `ListEntries(feed)` 改为 JOIN 关联表；retention 按"关联行"计
-- 代价：改动大；`ALTER TABLE ... DROP COLUMN` 是破坏性 DDL，
-  需要手工执行（`ddl_guard_test.go` 禁止它出现在启动流程）
-- 附带好处：`RSSImageRef` 可以简化为 `(image_id, entry_id)`，
-  不再需要 `feed_id` + `entry_hash` 这种绕路设计
+1. `DeleteFeed` 只删 `homehub_rss_entry_feeds WHERE feed_id = A`，
+   不碰 `homehub_rss_entries`；
+2. 删完关联后用 `NOT EXISTS (SELECT 1 FROM homehub_rss_entry_feeds ...)`
+   判定孤儿 —— 只要 B 还收录，条目就不是孤儿，一行都不会删；
+3. 图片引用挂在条目上（`entry_id`），条目还在 → 引用还在 → 图片不会被
+   `Sweep` 回收。
 
-**待决**：
+`retention_count` 同理：计数单位是"本源收录了多少条"，只删本源的关联行。
 
-1. 选 A 还是 B。若目标是"一条内容被多个源指向"，只有 B 满足；A 只是
-   让每个源各存一份副本。
-2. B 的 `content` 冲突策略。同一链接两个源可能给出不同正文（一个全文、
-   一个摘要）。可选：首次写入优先 / 取更长者 / 按源的可信度排序。
-   当前 `ON CONFLICT (link) DO UPDATE magnet_url` 只更新磁力链接，等价于
-   "首次写优先"。
-3. B 的迁移路径。`ALTER TABLE ... DROP COLUMN` 不可逆，建议分两阶段：
-   **阶段 1** 建关联表 + 回填 + 代码双写（`entries.feed_id` 保留但不再读），
-   **阶段 2** 稳定运行一段后再删列。这样阶段 1 完全可回滚。
-   若走两阶段，阶段 1 只需要 `CREATE TABLE` / `CREATE INDEX` 与一条
-   `INSERT ... SELECT`，不需要授权 `DROP COLUMN`。
+### 9.3 孤儿条目的回收时机
 
-### 9.2 其他已知项
+- 删除订阅源之后（同一事务内）
+- 每次 retention 清理之后（同一事务内）
+- 之后触发一次 `Sweep` 回收失去引用的图片文件
+
+孤儿条目用**物理删除**：软删除会让 `link` 唯一索引一直占位，同一篇文章
+日后重新出现时插入会被 `ON CONFLICT` 静默吞掉。
+
+### 9.4 正文冲突策略
+
+同一链接两个源可能给出不同正文。当前是**首次写入优先**：条目第一次入库
+时清洗后的正文被保留，后续源抓到时只更新 `magnet_url`，不覆盖正文。
+
+理由：重复清洗会重新下载一遍图片（即使命中文件缓存），而且摘要覆盖全文
+是不可逆的信息损失。
+
+### 9.5 其他已知项
 
 | 表 | 问题 | 影响 |
 |----|------|------|
@@ -509,71 +520,61 @@ CREATE INDEX idx_rss_entry_feeds_feed_published
 | `homehub_users` | `username` 唯一索引含软删除行 | 删除后用户名不可复用 |
 | `homehub_media_assets` | `filename` 无唯一约束 | 理论上可重复，实际由 UUID 保证 |
 | `homehub_todos` | `status` 无 CHECK 约束 | 非法值只能靠应用层拦截 |
-| `homehub_rss_entries` | `feed_id` 无外键 | 源被删后可能留下孤儿条目（删源逻辑已处理） |
+| `homehub_rss_entries` | 旧 `feed_id` 列保留为 NULL | 迁移后可 `DROP COLUMN`；不删也无害 |
 
 ---
 
 ## 10. 迁移脚本（需要手工执行，不在启动流程里）
 
 `ddl_guard_test.go` 把 `DROP TABLE` / `DROP INDEX` / `ALTER TABLE` 全部
-判为违规，因此任何破坏性变更都必须由人执行。
+判为违规，因此任何破坏性变更都必须由人执行。启动时会检查迁移状态，未完成
+则拒绝启动（`internal/database/schema_guard.go`）。
 
-### 10.1 方案 A（若采纳）
+### 10.1 本次迁移（001）
 
-```sql
-BEGIN;
+完整脚本：`docs/migrations/001-rss-shared-entries.sql`
 
--- 1. 删除全表唯一索引
-DROP INDEX IF EXISTS idx_homehub_rss_entries_link;
-
--- 2. 建复合唯一索引
-CREATE UNIQUE INDEX IF NOT EXISTS idx_homehub_rss_entries_feed_link
-    ON homehub_rss_entries (feed_id, link);
-
-COMMIT;
+```bash
+psql -h <host> -U <user> -d homehub -f docs/migrations/001-rss-shared-entries.sql
 ```
 
-对应模型改动：把 `RSSEntry.Link` 的 tag 从
-`gorm:"uniqueIndex"` 改为 `gorm:"uniqueIndex:idx_rss_entries_feed_link"`，
-并给 `FeedID` 加同名 `uniqueIndex`。**必须先手工建索引再改模型**，
-否则 AutoMigrate 会先建出新索引、旧索引仍然存在，两个约束同时生效。
+脚本做四件事：
 
-### 10.2 方案 B（若采纳）
+1. 建 `homehub_rss_entry_feeds` 及其索引；
+2. 把现有 `entries.feed_id` 回填成关联行；
+3. 给 `homehub_rss_image_refs` 加 `entry_id`，按 `feed_id + sha256(link)`
+   反查回填，换掉旧的三列唯一索引；
+4. 把三处旧列改为允许 NULL（不删列，便于回滚）。
 
-```sql
-BEGIN;
-
-CREATE TABLE IF NOT EXISTS homehub_rss_entry_feeds (
-    id BIGSERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
-    entry_id BIGINT NOT NULL,
-    feed_id BIGINT NOT NULL,
-    published TIMESTAMPTZ,
-    first_seen_at TIMESTAMPTZ NOT NULL
-);
-
--- 把现有归属搬进关联表
-INSERT INTO homehub_rss_entry_feeds (entry_id, feed_id, published, first_seen_at, created_at, updated_at)
-SELECT id, feed_id, published, fetched_at, created_at, updated_at
-FROM homehub_rss_entries
-WHERE deleted_at IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_entry_feeds_pair
-    ON homehub_rss_entry_feeds (entry_id, feed_id);
-CREATE INDEX IF NOT EXISTS idx_rss_entry_feeds_feed_published
-    ON homehub_rss_entry_feeds (feed_id, published DESC);
-
--- 确认行数一致后再删列（不可逆，先备份）
--- ALTER TABLE homehub_rss_entries DROP COLUMN feed_id;
-
-COMMIT;
-```
-
-删列前务必核对：
+**前置要求**：PostgreSQL 11+（用到内置 `sha256(bytea)`）。低于 11 时第 3 步
+会报错，此时改为：
 
 ```sql
-SELECT count(*) FROM homehub_rss_entries WHERE deleted_at IS NULL;
-SELECT count(DISTINCT entry_id) FROM homehub_rss_entry_feeds;
+DELETE FROM homehub_rss_image_refs;
 ```
+
+图片文件不受影响；应用启动后 `BackfillLegacy` 会按条目正文重建引用。
+
+**数据不可恢复项**：迁移前，两个源收录同一链接时只有一个源能看到条目
+（另一条被 `ON CONFLICT` 吞掉）。迁移只搬运现有行，无法还原当年丢失的
+归属；那些源需要重新抓取一次才会补上关联。
+
+### 10.2 迁移完成后的可选清理
+
+确认稳定后可以删掉不再使用的旧列（不可逆，先备份）：
+
+```sql
+ALTER TABLE homehub_rss_entries DROP COLUMN feed_id;
+ALTER TABLE homehub_rss_image_refs DROP COLUMN feed_id, DROP COLUMN entry_hash;
+```
+
+删掉之后 `schema_guard.go` 的检查会自然通过（列不存在 = 不需要迁移）。
+
+### 10.3 如果将来还要改
+
+新增手工迁移时：
+
+1. 在 `docs/migrations/` 加编号 SQL；
+2. 在 `internal/database/schema_guard.go` 的 `schemaRequirements` 里加一条
+   检查（只描述缺什么，SQL 留在 .sql 文件里，避免被 DDL 守卫误判）；
+3. 同步本文档。

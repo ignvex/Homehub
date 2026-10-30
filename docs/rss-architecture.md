@@ -35,11 +35,15 @@
    - `rss.extension_url` 为空 → `httpFeedFetcher` 直接 HTTP 拉取；
    - 非空 → `remoteFetcher` 请求 `GET {extension_url}/fetch?url=...`；
 4. `gofeed` 解析成 `*gofeed.Feed`；
-5. 逐条 `itemToEntry`：截断内容、提取磁力链接、**清洗 HTML 并缓存图片**；
-6. 批量 `INSERT ... ON CONFLICT (link) DO UPDATE magnet_url`；
-7. `enforceRetention` 按 `retention_count` 物理删除最旧条目；
-8. 删除条目对应的图片引用，回收无引用的图片文件；
-9. 更新 `last_fetch` / `error_msg` / 标题等元数据。
+5. 逐条 `itemToEntry` 构造**不含正文的骨架**（标题、链接、作者、磁力链接）；
+6. 骨架批量 `INSERT ... ON CONFLICT (link) DO UPDATE magnet_url`；
+7. 查回 `link → (entry_id, content)`，**只为正文为空的条目**清洗 HTML 并缓存图片；
+8. 批量 upsert `homehub_rss_entry_feeds`（条目归属 + 该源的发布时间）；
+9. `enforceRetention` 按本源收录数删关联，孤儿条目才回收；
+10. 更新 `last_fetch` / `error_msg` / 标题等元数据。
+
+第 7 步"只为空正文处理"是有意的：同一条内容被 B 源再次抓到时，正文通常
+已由 A 源处理过，重复清洗会白下载一遍图片，还可能用 B 的摘要覆盖 A 的全文。
 
 ### 1.3 流程图
 
@@ -57,21 +61,28 @@ flowchart TD
     G -- 是 --> I[remoteFetcher<br/>GET /fetch?url=]
     H --> J[gofeed 解析]
     I --> J
-    J --> K[itemToEntry<br/>截断/磁力/发布时间]
-    K --> L[sanitizeContent]
+    J --> K[itemToEntry<br/>骨架：标题/链接/磁力/时间]
+    K --> U[upsert entries<br/>ON CONFLICT link 只更 magnet_url]
+    U --> U1[查回 link → entry_id + content]
+    U1 --> U2{正文为空?}
+    U2 -- 否 --> U3[upsert entry_feeds<br/>归属 + 该源发布时间]
+    U2 -- 是 --> L[sanitizeContent]
     L --> M[收集 img src]
     M --> N{image_cache_enabled?}
     N -- 否 --> O[保留原始外链]
     N -- 是 --> P[RSSImageCache.Cache]
     P --> Q{数据库记录或已有文件?}
-    Q -- 是 --> R[登记 RSSImageRef]
+    Q -- 是 --> R[登记 RSSImageRef<br/>entry_id]
     Q -- 否 --> S[下载 → 类型/大小校验 → 临时文件 → rename]
     S --> R
-    R --> T[改写为 /static/uploads/rss_img/...]
-    O --> U[批量 upsert entries<br/>ON CONFLICT link DO UPDATE magnet_url]
-    T --> U
-    U --> V[enforceRetention<br/>物理删除旧条目 + 图片引用]
-    V --> W[Sweep<br/>回收无引用图片]
+    R --> T[写回 content]
+    O --> T
+    T --> U3
+    U3 --> V[enforceRetention<br/>按本源收录数删关联]
+    V --> V2{条目还有人收录?}
+    V2 -- 是 --> W[Sweep<br/>回收无引用图片]
+    V2 -- 否 --> V3[删孤儿条目 + 图片引用]
+    V3 --> W
     W --> X[更新 last_fetch / error_msg]
 ```
 
@@ -83,8 +94,9 @@ flowchart TD
 - 缓存键：`md5(源 URL)`；
 - 文件名：`rss_<md5>.<ext>`；
 - 目录：`web/static/uploads/rss_img/`；
-- 同一 URL 在多个源/条目之间共享同一份物理文件；
-- 归属关系写在 `homehub_rss_image_refs`，而不是文件名里。
+- 同一 URL 在多个条目之间共享同一份物理文件；
+- 归属关系写在 `homehub_rss_image_refs`，指向**条目**而不是源：
+  条目本身已跨源共享，图片因此只有一份引用。
 
 下载路径的关键约束：
 
@@ -109,10 +121,10 @@ flowchart TD
 ```mermaid
 erDiagram
     homehub_rss_groups ||--o{ homehub_rss_feeds : "group_id"
-    homehub_rss_feeds ||--o{ homehub_rss_entries : "feed_id"
-    homehub_rss_feeds ||--o{ homehub_rss_image_refs : "feed_id"
+    homehub_rss_feeds ||--o{ homehub_rss_entry_feeds : "feed_id"
+    homehub_rss_entries ||--o{ homehub_rss_entry_feeds : "entry_id"
     homehub_rss_images ||--o{ homehub_rss_image_refs : "image_id"
-    homehub_rss_entries }o..o{ homehub_rss_image_refs : "entry_hash = sha256(link)"
+    homehub_rss_entries ||--o{ homehub_rss_image_refs : "entry_id"
 
     homehub_rss_groups {
         uint id PK
@@ -131,14 +143,21 @@ erDiagram
     }
     homehub_rss_entries {
         uint id PK
-        uint feed_id FK
         string title
-        string link UK
+        string link UK "全表唯一"
         string author
         text content
         text magnet_url
-        datetime published
+        datetime published "首次见到"
         datetime fetched_at
+    }
+    homehub_rss_entry_feeds {
+        uint id PK
+        uint entry_id FK
+        uint feed_id FK
+        datetime published "该源的时间"
+        datetime first_seen_at
+        datetime last_seen_at
     }
     homehub_rss_images {
         uint id PK
@@ -153,22 +172,23 @@ erDiagram
     homehub_rss_image_refs {
         uint id PK
         uint image_id FK
-        uint feed_id FK
-        string entry_hash "sha256(条目 link)"
+        uint entry_id FK
     }
 ```
 
-> `homehub_rss_entries` 与 `homehub_rss_image_refs` 之间是**逻辑关联**：
-> `entry_hash = sha256(entry.link)`，没有数据库外键。这样条目 link 很长时
-> 不会把联合唯一索引撑爆，也避免跨表级联删除的复杂度。
+> 条目与图片之间是**直接关联**（`entry_id`），不再经过 `entry_hash`。
+> 条目本身已经跨源共享，所以引用只需要指向条目。
 
 ### 2.2 关系说明
 
 - 一个分组包含多个订阅源；删除分组时源被移到“未分组”，不会级联删除。
-- 一个源包含多个条目；条目按 `link` 全局唯一去重（见“已知问题”）。
-- 一张图片可以被多个源、多个条目引用；`RSSImageRef` 每行代表
-  “某源的某条目引用过某图”。
-- 物理文件只有一份；最后一条引用被删除后，图片进入“孤儿”状态。
+- **条目不归属任何源**：`homehub_rss_entries` 只存内容，按 `link` 全表
+  唯一；"哪个源收录了它"由 `homehub_rss_entry_feeds` 表达，一个条目可以
+  被任意多个源收录。
+- 删除一个源只删它自己的关联行。条目必须变成孤儿（没有任何关联）才会
+  被回收 —— 这就是"删 A 不影响 B"的机制。
+- `retention_count` 按关联行计数，每个源各自保留自己的份额。
+- 一张图片可以被多个条目引用；最后一条引用被删除后进入“孤儿”状态。
 
 ### 2.3 资源生命周期
 
@@ -177,53 +197,70 @@ stateDiagram-v2
     [*] --> Downloaded: 下载成功 + 原子写入
     Downloaded --> Referenced: register 写入 RSSImage + RSSImageRef
     Referenced --> Referenced: 再次抓取（复用文件，刷新 last_seen_at）
-    Referenced --> Orphaned: 删除订阅源 / retention 删除条目
+    Referenced --> Referenced: 同一 URL 被其他条目复用
+    Referenced --> Orphaned: 条目成为孤儿（无源收录）后被删
     Orphaned --> Deleted: Sweep 确认无引用且超过 grace
-    Orphaned --> Referenced: 其他源仍在引用
     Deleted --> [*]
 ```
 
 ---
 
-## 3. “A 源抓过，B 源被覆盖”到底是什么
+## 3. 条目归属：一条内容，多个源
 
-这里有**两层**不同的现象，原因不同：
+### 3.1 旧行为（已修复）
 
-### 3.1 条目层：`link` 全局唯一
+旧版 `homehub_rss_entries.link` 是单列唯一索引，`feed_id` 直接存在条目上。
+两个源收录同一链接时，后抓到的源命中 `ON CONFLICT (link)`，只更新
+`magnet_url`，`feed_id` 仍是先抓到的那个：B 的列表里根本看不到这条内容。
 
-`homehub_rss_entries.link` 是全局唯一索引。两个源如果收录了同一个链接
-（转载、聚合站、同一篇文章出现在多个 feed），后抓到的条目会命中
-`ON CONFLICT (link)`，只更新 `magnet_url`，**不会把 `feed_id` 改成 B**。
+### 3.2 现在的模型
 
-结果是：
+```
+homehub_rss_entries        纯内容，link 全表唯一，不存 feed_id
+homehub_rss_entry_feeds    (entry_id, feed_id) + 该源的 published
+```
 
-- A 源先抓到 → 条目归属 A；
-- B 源再抓到同一链接 → 条目仍归属 A，B 源的条目列表里看不到它；
-- 从 B 源的角度看，就是“被 A 覆盖/吞掉”了。
+同一条内容只存一行，被 N 个源指向：
 
-这是当前表设计的已知限制。彻底修复需要把唯一键从 `(link)` 改为
-`(feed_id, link)`，属于破坏性 DDL（删除旧唯一索引），仓库的
-`ddl_guard_test.go` 明确禁止启动流程里做 `DROP INDEX`，需要人工迁移。
-本次没有动它，建议单独排期。
+```
+entries:      id=11  link="https://example.com/post/1"  content="<p>全文</p>"
+entry_feeds:  (11, A)  published=2026-10-01
+              (11, B)  published=2026-10-02
+```
 
-### 3.2 资源层：文件名全局共享
+列表查询按源或分组过滤时 JOIN 关联表；返回给前端的 `feed_ids` 是数组，
+页面上把全部来源列出来。
 
-图片文件名是 `rss_<md5(源 URL)>.<ext>`，**不包含 feed_id**：
+### 3.3 删除语义（关键约束）
 
-- A、B 两个源引用同一张图 → 只有一个物理文件，B 命中 A 下载的文件，
-  不会重复下载；
-- 源站更新了同一 URL 的图片 → 本地已有文件，仍然复用旧图；
-- 删除 A 源 → 以前无法判断这张图是否还被 B 引用，所以只能不删或误删。
+删除 A 源时：
 
-本次改造后：
+1. 只删 `entry_feeds WHERE feed_id = A`；
+2. 用 `NOT EXISTS` 判定孤儿 —— 11 号仍被 B 收录，所以**一行都不删**；
+3. 图片引用挂在条目 11 上，条目还在 → 引用还在 → 图片不会被回收。
 
-- `RSSImageRef` 记录每个源/条目对图片的引用，删除 A 源只会删 A 的引用；
-- 只有“没有任何引用 + 超过保留期”的图片才会被 `Sweep` 删除；
-- B 源仍在引用时，文件会保留。
+只有 A、B 都删掉之后，11 号才成为孤儿，才连同图片引用一起删除，随后
+`Sweep` 回收没有引用的图片文件。
 
-如果你希望**物理隔离**（每个源各存一份，哪怕 URL 相同），需要把缓存键
-改成 `md5(feed_id + "\x00" + URL)`。代价是磁盘占用上升、跨源去重失效。
-当前选择的是“内容去重 + 引用记账”，更适合以省磁盘为目标的个人部署。
+`retention_count` 同样按"本源收录了多少条"计数，删的是关联行。A 源修剪到
+5000 条不会影响 B 源看到的任何内容。
+
+### 3.4 正文冲突
+
+同一链接两个源给出的正文可能不同（一个全文、一个摘要）。当前策略是
+**首次写入优先**：条目第一次入库时清洗后的正文被保留，后续源抓到时只更新
+`magnet_url`，不覆盖正文。
+
+重复清洗会重新下载一遍图片（即使命中文件缓存），而且摘要覆盖全文是不可逆
+的信息损失。
+
+### 3.5 图片文件仍按 URL 全局共享
+
+文件名是 `rss_<md5(源 URL)>.<ext>`，不含 feed_id。同一张图在多个条目之间
+共享一份物理文件，靠 `homehub_rss_image_refs` 记账。
+
+如果希望物理隔离（每个源各存一份），需要把缓存键改成
+`md5(feedID + "\x00" + URL)`。代价是磁盘占用上升、跨源去重失效。
 
 ---
 
@@ -268,16 +305,17 @@ stateDiagram-v2
 
 ### 4.4 行为变化
 
-- **删除订阅源**：条目、图片引用物理删除；随后立即回收无引用图片
+- **条目跨源共享**：`entries` 只存内容，归属移到 `entry_feeds`。删除源
+  只删自己的关联行；条目成为孤儿才回收。
+- **删除订阅源**：只删本源关联 + 孤儿条目；随后立即回收无引用图片
   （带 1 分钟缓冲，避免和并发抓取打架）。
-- **retention 清理**：条目改为物理删除（旧实现是软删除，表会无限膨胀）；
-  同时删除对应图片引用并回收文件。
+- **retention 清理**：按本源收录数计数，删关联行；孤儿条目才物理删除
+  （旧实现连条目一起软删除，表会无限膨胀）。
 - **后台清理**：启动时跑一次，之后每 `image_cleanup_interval_hours` 一次；
   清理“无引用且超过 `image_retention_days`”的图片，以及目录里没有数据库
   记录、mtime 超过保留期的历史文件。
-- **引用对账**：每轮清理会按 feed 对比条目 `link` 与 `entry_hash`，删除
-  没有对应条目的引用。跨源同 link（条目被别的源占用）和条目批量插入失败
-  都会留下这类脏引用，不清理会让图片永远“有引用”、无法回收。
+- **引用对账**：每轮清理用一条 `NOT EXISTS` 删除没有对应条目的图片引用。
+  条目被删而引用残留时，图片会永远"有引用"、无法回收。
 - **进行中保护**：正在解析的缓存键记在内存 pending 集合里，`Sweep` 会跳过
   它们，避免“命中旧文件、引用尚未写入”的窗口被误删。
 - **图片下载**：超过上限失败；非图片响应失败；内网地址默认拒绝；
@@ -295,7 +333,7 @@ stateDiagram-v2
 
 ```go
 type RSSImageCache interface {
-    Cache(ctx context.Context, feedID uint64, entryLink string, urls []string) map[string]string
+    Cache(ctx context.Context, entryID uint64, urls []string) map[string]string
     Sweep(ctx context.Context, grace time.Duration) error
 }
 ```
@@ -402,9 +440,10 @@ extension 的可用性、鉴权、缓存淘汰都会变成 HomeHub 页面的一�
   `web/static/uploads/rss_img/`；再看 `Sweep` 日志是否把它当孤儿删了。
 - 图片不更新：同一 URL 命中已有文件是预期行为；需要强制刷新时删除对应
   文件和记录后重新抓取。
-- 磁盘持续增长：确认 `rss.image_cleanup_enabled=true`。`Sweep` 会清理
-  悬挂引用（`feed_id` 不在 `homehub_rss_feeds` 中）和没有对应条目的脏引用
-  （跨源同 link、条目入库失败留下的）。仍不下降时检查
-  `homehub_rss_images.last_seen_at` 是否一直很新（说明仍在被引用）。
-- 某个源条目“消失”：先检查是否有另一个源收录了相同 `link`（条目层
-  全局唯一），见 3.1。
+- 磁盘持续增长：确认 `rss.image_cleanup_enabled=true`。`Sweep` 会清理没有
+  对应条目的图片引用。仍不下降时检查 `homehub_rss_images.last_seen_at`
+  是否一直很新（说明仍在被引用）。
+- 某个源删了但条目还在：预期行为 —— 其他源仍收录同一内容。查
+  `homehub_rss_entry_feeds` 看还有哪些 `feed_id`。
+- 启动报"RSS 表结构需要手工迁移"：执行
+  `docs/migrations/001-rss-shared-entries.sql`，见 [tables.md](tables.md) 第 10 节。

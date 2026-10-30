@@ -85,6 +85,14 @@ func Run(opts Options) error {
 	// ============================================================
 	// 4. 表结构（AutoMigrate + 少量手工 DDL）
 	// ============================================================
+	//
+	// 先检查手工迁移是否完成：旧表的 feed_id 仍是 NOT NULL 时，
+	// AutoMigrate 尝试新增的 entry_id 列（NOT NULL 无默认值）会失败，
+	// 报错信息也更难懂。提前拦截并给出可执行的指引。
+	if err := database.CheckSchema(db); err != nil {
+		return err
+	}
+
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.Session{},
@@ -96,6 +104,7 @@ func Run(opts Options) error {
 		&model.RSSGroup{},
 		&model.RSSFeed{},
 		&model.RSSEntry{},
+		&model.RSSEntryFeed{},
 		&model.RSSImage{},
 		&model.RSSImageRef{},
 		&model.Todo{},

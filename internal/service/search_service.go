@@ -21,15 +21,15 @@ type SearchService struct {
 
 // SearchResult 搜索结果。
 type SearchResult struct {
-	Bookmarks  []BookmarkSearchItem `json:"bookmarks"`
+	Bookmarks  []BookmarkSearchItem  `json:"bookmarks"`
 	RssEntries []RssEntrySearchItem `json:"rss_entries"`
 }
 
 // RssEntrySearchItem RSS 条目搜索结果。
 type RssEntrySearchItem struct {
-	ID        uint64 `json:"id"`
-	Title     string `json:"title"`
-	Link      string `json:"link"`
+	ID       uint64 `json:"id"`
+	Title    string `json:"title"`
+	Link     string `json:"link"`
 	FeedTitle string `json:"feed_title"`
 }
 
@@ -88,11 +88,17 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 	searchRssEntries := func() {
 		defer wg.Done()
 		var items []RssEntrySearchItem
+		// 条目跨源共享：按 entry_id 去重，feed_title 取首个收录它的源。
 		s.db.Raw(`
-			SELECT re.id, re.title, re.link, rf.title AS feed_title
+			SELECT re.id, re.title, re.link,
+			       (SELECT f.title
+			        FROM homehub_rss_entry_feeds ef
+			        JOIN homehub_rss_feeds f ON f.id = ef.feed_id AND f.deleted_at IS NULL
+			        WHERE ef.entry_id = re.id AND ef.deleted_at IS NULL
+			        ORDER BY ef.id ASC
+			        LIMIT 1) AS feed_title
 			FROM homehub_rss_entries re
-			JOIN homehub_rss_feeds rf ON rf.id = re.feed_id
-			WHERE re.deleted_at IS NULL AND rf.deleted_at IS NULL
+			WHERE re.deleted_at IS NULL
 			  AND re.title ILIKE ?
 			ORDER BY re.published DESC
 			LIMIT ?

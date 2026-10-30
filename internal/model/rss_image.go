@@ -33,18 +33,20 @@ func (RSSImage) TableName() string {
 // RSSImageRef — 图片与订阅源/条目的引用关系
 // ============================================================
 
-// RSSImageRef 记录"某个订阅源的某个条目引用了某张图片"。
+// RSSImageRef 记录"某个条目引用了某张图片"。
 //
-// 同一张图可以被多个源、多个条目引用；清理时必须先删引用，再删
-// 没有任何引用的 RSSImage 与物理文件。EntryHash 是条目链接的
-// sha256，避免 2048 字符链接直接把联合唯一索引撑爆。
+// 条目本身已经是跨源共享的内容（见 RSSEntryFeed），所以引用只需要
+// 指向条目：多个源收录同一篇文章时共用同一份引用，删除其中某个源
+// 不会影响图片。
+//
+// 清理顺序：条目成为孤儿（不再被任何源收录）→ 删除其引用 →
+// 没有任何引用的 RSSImage 与物理文件被回收。
 //
 // 表名：homehub_rss_image_refs
 type RSSImageRef struct {
 	BaseModel
-	ImageID   uint64 `gorm:"not null;uniqueIndex:idx_rss_image_ref" json:"image_id"`           // 图片 ID
-	FeedID    uint64 `gorm:"not null;index;uniqueIndex:idx_rss_image_ref" json:"feed_id"`      // 订阅源 ID
-	EntryHash string `gorm:"size:64;not null;uniqueIndex:idx_rss_image_ref" json:"entry_hash"` // sha256(条目 link)
+	ImageID uint64 `gorm:"not null;uniqueIndex:idx_rss_image_ref" json:"image_id"`       // 图片 ID
+	EntryID uint64 `gorm:"not null;index;uniqueIndex:idx_rss_image_ref" json:"entry_id"` // 条目 ID
 }
 
 // TableName 指定表名。

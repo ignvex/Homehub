@@ -183,33 +183,74 @@ func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, grou
 	return nil
 }
 
-// DeleteFeed 删除订阅源及其所有条目，并回收不再被其他源引用的图片。
+// DeleteFeed 删除订阅源。
+//
+// 条目是跨源共享的，因此这里只删除"该源收录了哪些条目"的关联行；
+// 只有当一个条目不再被任何源收录时，才连同它的图片引用一起回收。
+// 换句话说：删 A 源绝不会带走 B 源仍在用的内容。
 func (s *RSSService) DeleteFeed(id uint64) error {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 条目/图片引用都做物理删除：软删除会让表无限膨胀，
-		// 而 retention 语义本来就是“真的不要了”。
-		if err := tx.Unscoped().Where("feed_id = ?", id).Delete(&model.RSSEntry{}).Error; err != nil {
-			return fmt.Errorf("删除订阅条目失败: %w", err)
+		var feed model.RSSFeed
+		if err := tx.First(&feed, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRSSFeedNotFound
+			}
+			return fmt.Errorf("查询订阅源失败: %w", err)
 		}
-		if err := tx.Unscoped().Where("feed_id = ?", id).Delete(&model.RSSImageRef{}).Error; err != nil {
-			return fmt.Errorf("删除图片引用失败: %w", err)
+
+		// 先记下该源收录的条目，删完关联后据此判断谁成了孤儿。
+		var entryIDs []uint64
+		if err := tx.Model(&model.RSSEntryFeed{}).
+			Where("feed_id = ?", id).
+			Pluck("entry_id", &entryIDs).Error; err != nil {
+			return fmt.Errorf("查询订阅源条目失败: %w", err)
 		}
-		// 再删订阅源
-		result := tx.Unscoped().Delete(&model.RSSFeed{}, id)
-		if result.Error != nil {
-			return fmt.Errorf("删除订阅源失败: %w", result.Error)
+
+		if err := tx.Unscoped().Where("feed_id = ?", id).Delete(&model.RSSEntryFeed{}).Error; err != nil {
+			return fmt.Errorf("删除订阅源条目关联失败: %w", err)
 		}
-		if result.RowsAffected == 0 {
-			return ErrRSSFeedNotFound
+		if err := tx.Unscoped().Delete(&model.RSSFeed{}, id).Error; err != nil {
+			return fmt.Errorf("删除订阅源失败: %w", err)
 		}
-		return nil
+
+		return s.purgeOrphanEntries(tx, entryIDs)
 	})
 	if err != nil {
 		return err
 	}
 
-	// 立即清理不再被任何条目引用的图片文件。
 	s.sweepImages(context.Background(), 0)
+	return nil
+}
+
+// purgeOrphanEntries 删除不再被任何源收录的条目及其图片引用。
+//
+// 传入的 entryIDs 只是候选集：其他源可能仍在引用其中一部分，所以必须
+// 在删完关联之后按"当前是否还有关联行"重新判定，不能按候选集直接删。
+func (s *RSSService) purgeOrphanEntries(tx *gorm.DB, entryIDs []uint64) error {
+	if len(entryIDs) == 0 {
+		return nil
+	}
+
+	var orphans []uint64
+	if err := tx.Model(&model.RSSEntry{}).
+		Where("id IN ?", entryIDs).
+		Where("NOT EXISTS (SELECT 1 FROM homehub_rss_entry_feeds ef WHERE ef.entry_id = homehub_rss_entries.id AND ef.deleted_at IS NULL)").
+		Pluck("id", &orphans).Error; err != nil {
+		return fmt.Errorf("查询孤儿条目失败: %w", err)
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+
+	// 物理删除：软删除会让 link 唯一索引一直占位，同一链接重新出现时
+	// 插入会被 ON CONFLICT 静默吞掉。
+	if err := tx.Unscoped().Where("id IN ?", orphans).Delete(&model.RSSEntry{}).Error; err != nil {
+		return fmt.Errorf("删除孤儿条目失败: %w", err)
+	}
+	if err := tx.Unscoped().Where("entry_id IN ?", orphans).Delete(&model.RSSImageRef{}).Error; err != nil {
+		return fmt.Errorf("删除孤儿条目的图片引用失败: %w", err)
+	}
 	return nil
 }
 
@@ -242,11 +283,35 @@ func (s *RSSService) ListFeeds(groupID *uint64) ([]model.RSSFeed, error) {
 // 条目查询
 // ============================================================
 
-// ListEntries 分页查询指定订阅源的条目，按发布时间倒序。
+// storedEntry 是条目入库后的最小现状：主键、链接、是否已有正文。
+type storedEntry struct {
+	ID      uint64
+	Link    string
+	Content string
+}
+
+// RSSEntryView 是条目列表的展示结构。
+//
+// 条目本身不归属任何源，FeedIDs 列出收录它的全部源；Published 取该源
+// 给出的发布时间（按源筛选时），未筛选时取条目首次发布时间。
+type RSSEntryView struct {
+	ID        uint64    `json:"id"`
+	Title     string    `json:"title"`
+	Link      string    `json:"link"`
+	Author    string    `json:"author,omitempty"`
+	Content   string    `json:"content,omitempty"`
+	MagnetURL string    `json:"magnet_url,omitempty"`
+	Published time.Time `json:"published"`
+	FetchedAt time.Time `json:"fetched_at"`
+	FeedIDs   []uint64  `json:"feed_ids"`
+}
+
+// ListEntries 分页查询条目，按发布时间倒序。
 //
 // page 从 1 开始；perPage <= 0 时默认 20。
-// feedID == 0 表示不过滤，查询全部订阅源的条目。
-func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage int) ([]model.RSSEntry, int64, error) {
+// feedID == 0 表示不按源过滤；groupID > 0 表示只看该分组下的源。
+// 同一个条目被多个源收录时只出现一次，FeedIDs 列出全部来源。
+func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage int) ([]RSSEntryView, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -254,32 +319,96 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 		perPage = 20
 	}
 
-	baseQuery := s.db.Model(&model.RSSEntry{})
+	baseQuery := s.db.Table("homehub_rss_entries AS e").
+		Joins("JOIN homehub_rss_entry_feeds AS ef ON ef.entry_id = e.id AND ef.deleted_at IS NULL").
+		Where("e.deleted_at IS NULL")
+
 	if feedID > 0 {
-		baseQuery = baseQuery.Where("feed_id = ?", feedID)
+		baseQuery = baseQuery.Where("ef.feed_id = ?", feedID)
 	}
 	if groupID > 0 {
 		baseQuery = baseQuery.
-			Joins("JOIN homehub_rss_feeds ON homehub_rss_feeds.id = homehub_rss_entries.feed_id").
-			Where("homehub_rss_feeds.group_id = ?", groupID)
+			Joins("JOIN homehub_rss_feeds AS f ON f.id = ef.feed_id AND f.deleted_at IS NULL").
+			Where("f.group_id = ?", groupID)
 	}
 
 	var total int64
-	if err := baseQuery.Count(&total).Error; err != nil {
+	if err := baseQuery.Distinct("e.id").Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("统计条目数量失败: %w", err)
 	}
-
-	var entries []model.RSSEntry
-	offset := (page - 1) * perPage
-	if err := baseQuery.
-		Order("published DESC").
-		Offset(offset).
-		Limit(perPage).
-		Find(&entries).Error; err != nil {
-		return nil, 0, fmt.Errorf("查询条目列表失败: %w", err)
+	if total == 0 {
+		return []RSSEntryView{}, 0, nil
 	}
 
-	return entries, total, nil
+	// 按源筛选时用该源的时间排序，否则用条目首次发布时间。
+	orderExpr := "e.published DESC, e.id DESC"
+	groupExpr := "e.id, e.title, e.link, e.author, e.content, e.magnet_url, e.published, e.fetched_at"
+	if feedID > 0 {
+		orderExpr = "MIN(ef.published) DESC, e.id DESC"
+	}
+
+	type row struct {
+		ID        uint64
+		Title     string
+		Link      string
+		Author    string
+		Content   string
+		MagnetURL string
+		Published time.Time
+		FetchedAt time.Time
+	}
+
+	var rows []row
+	offset := (page - 1) * perPage
+	if err := baseQuery.
+		Select(groupExpr).
+		Group(groupExpr).
+		Order(orderExpr).
+		Offset(offset).
+		Limit(perPage).
+		Scan(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询条目列表失败: %w", err)
+	}
+	if len(rows) == 0 {
+		return []RSSEntryView{}, total, nil
+	}
+
+	// 一次性补齐这些条目的全部来源，避免 N+1。
+	ids := make([]uint64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	var links []model.RSSEntryFeed
+	if err := s.db.Select("entry_id", "feed_id").
+		Where("entry_id IN ?", ids).
+		Order("feed_id ASC").
+		Find(&links).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询条目来源失败: %w", err)
+	}
+	feedsByEntry := make(map[uint64][]uint64, len(links))
+	for _, link := range links {
+		feedsByEntry[link.EntryID] = append(feedsByEntry[link.EntryID], link.FeedID)
+	}
+
+	views := make([]RSSEntryView, 0, len(rows))
+	for _, r := range rows {
+		feedIDs := feedsByEntry[r.ID]
+		if feedIDs == nil {
+			feedIDs = []uint64{}
+		}
+		views = append(views, RSSEntryView{
+			ID:        r.ID,
+			Title:     r.Title,
+			Link:      r.Link,
+			Author:    r.Author,
+			Content:   r.Content,
+			MagnetURL: r.MagnetURL,
+			Published: r.Published,
+			FetchedAt: r.FetchedAt,
+			FeedIDs:   feedIDs,
+		})
+	}
+	return views, total, nil
 }
 
 // ============================================================
@@ -324,49 +453,87 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 		return fmt.Errorf("抓取订阅源失败: %w", err)
 	}
 
-	// 收集条目
+	// 1. 先把条目骨架写库（不含正文），拿到 entry ID。
+	//
+	// 条目按 link 全局唯一：B 源收录一条已被 A 源收录的内容时命中
+	// ON CONFLICT 只更新磁力链接，不覆盖正文、也不改动归属 —— 归属由
+	// 后面的 entry_feeds 关联行表达。
 	now := time.Now()
 	entries := make([]model.RSSEntry, 0, len(parsed.Items))
+	publishedByLink := make(map[string]time.Time, len(parsed.Items))
 	for _, item := range parsed.Items {
-		entry := s.itemToEntry(ctx, feed.ID, item, now)
+		entry := s.itemToEntry(item, now)
 		if entry.Link == "" {
 			continue // 跳过无链接条目
 		}
 		entries = append(entries, entry)
+		publishedByLink[entry.Link] = entry.Published
 	}
 
-	// 批量插入（ON CONFLICT DO UPDATE magnet_url）
 	if len(entries) > 0 {
 		if err := s.db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "link"}},
 			DoUpdates: clause.AssignmentColumns([]string{"magnet_url"}),
 		}).Create(&entries).Error; err != nil {
-			errMsg := err.Error()
-			if len(errMsg) > 1024 {
-				errMsg = errMsg[:1024]
-			}
-			s.db.Model(&feed).Updates(map[string]interface{}{
-				"last_fetch": now,
-				"error_msg":  errMsg,
-			})
-			return fmt.Errorf("保存条目失败: %w", err)
+			return s.failFeed(feed, now, fmt.Errorf("保存条目失败: %w", err))
 		}
 	}
 
-	// 诊断：记录成功抓取的条目数
+	// 2. 查回 link → (id, 正文是否为空)，用于补正文与建立关联。
+	links := make([]string, 0, len(publishedByLink))
+	for link := range publishedByLink {
+		links = append(links, link)
+	}
+
+	var stored []storedEntry
+	if len(links) > 0 {
+		if err := s.db.Model(&model.RSSEntry{}).
+			Select("id", "link", "content").
+			Where("link IN ?", links).
+			Find(&stored).Error; err != nil {
+			return s.failFeed(feed, now, fmt.Errorf("查询条目失败: %w", err))
+		}
+	}
+
+	// 3. 只为正文为空的条目做清洗与图片缓存。
+	//
+	// 已有正文说明这条内容在别的源（或更早的抓取）已经处理过：重复下载
+	// 图片没有意义，也避免用较短的摘要覆盖别处更完整的正文。
+	if err := s.fillEntryContent(ctx, parsed, stored); err != nil {
+		return s.failFeed(feed, now, err)
+	}
+
+	// 4. 建立"本源收录了这些条目"的关联。
+	if len(stored) > 0 {
+		refs := make([]model.RSSEntryFeed, 0, len(stored))
+		for _, entry := range stored {
+			published := publishedByLink[entry.Link]
+			if published.IsZero() {
+				published = now
+			}
+			refs = append(refs, model.RSSEntryFeed{
+				EntryID:     entry.ID,
+				FeedID:      feed.ID,
+				Published:   published,
+				FirstSeenAt: now,
+				LastSeenAt:  now,
+			})
+		}
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "entry_id"}, {Name: "feed_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"published", "last_seen_at", "updated_at",
+			}),
+		}).Create(&refs).Error; err != nil {
+			return s.failFeed(feed, now, fmt.Errorf("保存条目归属失败: %w", err))
+		}
+	}
+
 	logger.Info("[rss] 抓取完成", "feed_id", feed.ID, "entries", len(entries))
 
-	// 执行保留策略
+	// 5. 执行保留策略
 	if err := s.enforceRetention(ctx, feed.ID); err != nil {
-		errMsg := err.Error()
-		if len(errMsg) > 1024 {
-			errMsg = errMsg[:1024]
-		}
-		s.db.Model(&feed).Updates(map[string]interface{}{
-			"last_fetch": now,
-			"error_msg":  errMsg,
-		})
-		return err
+		return s.failFeed(feed, now, err)
 	}
 
 	// 更新成功状态
@@ -598,10 +765,12 @@ func (s *RSSService) StartImageJanitor(ctx context.Context) {
 // 内部方法
 // ============================================================
 
-// itemToEntry 将 gofeed 条目转换为 RSSEntry 模型。
-func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofeed.Item, fetchedAt time.Time) model.RSSEntry {
+// itemToEntry 把 gofeed 条目转换成不含正文的 RSSEntry 骨架。
+//
+// 正文要等条目入库、拿到 ID 之后才能清洗 —— 图片引用挂在 entry_id 上。
+// 这里只处理不依赖 ID 的字段。
+func (s *RSSService) itemToEntry(item *gofeed.Item, fetchedAt time.Time) model.RSSEntry {
 	entry := model.RSSEntry{
-		FeedID:    feedID,
 		Title:     item.Title,
 		Link:      truncateStr(item.Link, 2048),
 		FetchedAt: fetchedAt,
@@ -624,7 +793,7 @@ func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofee
 			content = string(runes[:2000]) + "..."
 		}
 	}
-	entry.Content = s.sanitizeContent(ctx, feedID, entry.Link, content)
+	entry.Content = content
 
 	// 磁力链接：优先从 Enclosures 提取，fallback 正则扫描内容
 	for _, enc := range item.Enclosures {
@@ -650,10 +819,11 @@ func (s *RSSService) itemToEntry(ctx context.Context, feedID uint64, item *gofee
 	return entry
 }
 
-// enforceRetention 执行条目保留策略。
+// enforceRetention 执行保留策略。
 //
-// 从配置读取 retention_count（默认 5000），超出限制时物理删除最旧的条目，
-// 并同步删除这些条目的图片引用；随后回收无人使用的图片文件。
+// 计数单位是"本源收录了多少条"，而不是"库里有几条"：同一条内容被多个
+// 源收录时，每个源各自保留自己的那份关联。清理时只删本源的关联行，
+// 条目本身只有变成孤儿（不再被任何源收录）才回收。
 func (s *RSSService) enforceRetention(ctx context.Context, feedID uint64) error {
 	retention := 5000
 	cfg := config.Get()
@@ -662,18 +832,16 @@ func (s *RSSService) enforceRetention(ctx context.Context, feedID uint64) error 
 	}
 
 	var count int64
-	if err := s.db.Model(&model.RSSEntry{}).Where("feed_id = ?", feedID).Count(&count).Error; err != nil {
+	if err := s.db.Model(&model.RSSEntryFeed{}).Where("feed_id = ?", feedID).Count(&count).Error; err != nil {
 		return fmt.Errorf("统计条目数量失败: %w", err)
 	}
-
 	if count <= int64(retention) {
 		return nil
 	}
 
-	// 先取出要删除的条目（需要 link 来定位图片引用）。
 	excess := int(count) - retention
-	var stale []model.RSSEntry
-	if err := s.db.Select("id", "link").
+	var stale []model.RSSEntryFeed
+	if err := s.db.Select("id", "entry_id").
 		Where("feed_id = ?", feedID).
 		Order("published ASC, id ASC").
 		Limit(excess).
@@ -684,27 +852,18 @@ func (s *RSSService) enforceRetention(ctx context.Context, feedID uint64) error 
 		return nil
 	}
 
-	ids := make([]uint64, 0, len(stale))
-	hashes := make([]string, 0, len(stale))
-	for _, entry := range stale {
-		ids = append(ids, entry.ID)
-		if hash := sha256Hex(entry.Link); hash != "" {
-			hashes = append(hashes, hash)
-		}
+	refIDs := make([]uint64, 0, len(stale))
+	entryIDs := make([]uint64, 0, len(stale))
+	for _, ref := range stale {
+		refIDs = append(refIDs, ref.ID)
+		entryIDs = append(entryIDs, ref.EntryID)
 	}
 
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Unscoped().Where("id IN ?", ids).Delete(&model.RSSEntry{}).Error; err != nil {
-			return fmt.Errorf("删除旧条目失败: %w", err)
+		if err := tx.Unscoped().Where("id IN ?", refIDs).Delete(&model.RSSEntryFeed{}).Error; err != nil {
+			return fmt.Errorf("删除旧条目关联失败: %w", err)
 		}
-		if len(hashes) > 0 {
-			if err := tx.Unscoped().
-				Where("feed_id = ? AND entry_hash IN ?", feedID, hashes).
-				Delete(&model.RSSImageRef{}).Error; err != nil {
-				return fmt.Errorf("删除旧条目图片引用失败: %w", err)
-			}
-		}
-		return nil
+		return s.purgeOrphanEntries(tx, entryIDs)
 	}); err != nil {
 		return err
 	}
@@ -870,7 +1029,7 @@ var cacheDir = filepath.Join("web", "static", "uploads", "rss_img")
 //
 // rss.image_cache_enabled=false 时跳过下载，图片保留原始外链由浏览器
 // 直接加载：抓取速度显著提升，也不占用本地磁盘。
-func (s *RSSService) sanitizeContent(ctx context.Context, feedID uint64, entryLink, content string) string {
+func (s *RSSService) sanitizeContent(ctx context.Context, entryID uint64, content string) string {
 	if content == "" {
 		return content
 	}
@@ -886,9 +1045,74 @@ func (s *RSSService) sanitizeContent(ctx context.Context, feedID uint64, entryLi
 	}
 
 	if urls := doc.externalImageSources(); len(urls) > 0 {
-		doc.applyImageMapping(s.imageCache().Cache(ctx, feedID, entryLink, urls))
+		doc.applyImageMapping(s.imageCache().Cache(ctx, entryID, urls))
 	}
 	return doc.render()
+}
+
+// failFeed 记录一次抓取失败的状态并返回包装后的错误。
+func (s *RSSService) failFeed(feed model.RSSFeed, at time.Time, err error) error {
+	errMsg := err.Error()
+	if len(errMsg) > 1024 {
+		errMsg = errMsg[:1024]
+	}
+	s.db.Model(&feed).Updates(map[string]interface{}{
+		"last_fetch": at,
+		"error_msg":  errMsg,
+	})
+	return err
+}
+
+// fillEntryContent 为正文为空的条目清洗正文并缓存图片。
+//
+// 只有 content 为空的条目会被处理：已有正文说明这条内容已经处理过，
+// 重复下载图片既浪费流量，也可能用较短的摘要覆盖别处更完整的正文。
+func (s *RSSService) fillEntryContent(ctx context.Context, parsed *gofeed.Feed, stored []storedEntry) error {
+	if len(stored) == 0 {
+		return nil
+	}
+
+	// 按 link 索引源条目，避免嵌套遍历。
+	itemsByLink := make(map[string]*gofeed.Item, len(parsed.Items))
+	for _, item := range parsed.Items {
+		link := truncateStr(item.Link, 2048)
+		if link == "" {
+			continue
+		}
+		if _, exists := itemsByLink[link]; !exists {
+			itemsByLink[link] = item
+		}
+	}
+
+	for _, entry := range stored {
+		if entry.Content != "" || entry.ID == 0 {
+			continue
+		}
+		item, ok := itemsByLink[entry.Link]
+		if !ok {
+			continue
+		}
+
+		// 内容：优先摘要，再取正文，截断到 2000 字符
+		raw := item.Description
+		if raw == "" {
+			raw = item.Content
+		}
+		if len(raw) > 2000 {
+			runes := []rune(raw)
+			if len(runes) > 2000 {
+				raw = string(runes[:2000]) + "..."
+			}
+		}
+
+		sanitized := s.sanitizeContent(ctx, entry.ID, raw)
+		if err := s.db.Model(&model.RSSEntry{}).
+			Where("id = ?", entry.ID).
+			Update("content", sanitized).Error; err != nil {
+			return fmt.Errorf("更新条目正文失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // imageCacheEnabled 读取图片缓存开关（配置热更新即时生效）。

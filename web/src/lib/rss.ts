@@ -20,7 +20,8 @@ export interface RSSGroup extends EntityBase {
 }
 
 export interface RSSEntry extends EntityBase {
-  feed_id: number
+  /** 收录该条目的全部订阅源；同一内容可被多个源收录 */
+  feed_ids: number[]
   title: string
   link: string
   author?: string
