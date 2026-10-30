@@ -9,6 +9,7 @@
 | [docs/features.md](docs/features.md) | 各功能模块的行为、配置、接口与已知限制 |
 | [docs/extension.md](docs/extension.md) | 外部资源代理服务（RSS 抓取 / Gravatar 头像）的通信契约 |
 | [docs/swagger.yaml](docs/swagger.yaml) | API 请求/响应结构（运行时 `/swagger/index.html`） |
+| [docs/tables.md](docs/tables.md) | 全部数据库表的字段、索引、删除语义与已识别问题 |
 
 > swagger 由 `swag init -g cmd/homehub/main.go --parseDependency --parseInternal -o docs` 生成，新增路由后需重新生成。
 
