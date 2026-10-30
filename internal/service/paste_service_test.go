@@ -25,7 +25,7 @@ func TestPurgeExpiredIssuesRealDelete(t *testing.T) {
 	svc := NewPasteService(db)
 
 	// testutil 的 gorm 实例启用了 SkipDefaultTransaction，故无 Begin/Commit
-	mock.ExpectExec(`DELETE FROM "homehub_pastes" WHERE expires_at <= \$1`).
+	mock.ExpectExec(`DELETE FROM "pastes" WHERE expires_at <= \$1`).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
 	n, err := svc.PurgeExpired()
@@ -49,7 +49,7 @@ func TestDeletePasteIssuesRealDelete(t *testing.T) {
 
 	svc := NewPasteService(db)
 
-	mock.ExpectExec(`DELETE FROM "homehub_pastes" WHERE public_id = \$1 AND delete_token = \$2`).
+	mock.ExpectExec(`DELETE FROM "pastes" WHERE public_id = \$1 AND delete_token = \$2`).
 		WithArgs("abc123", "tok").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -63,8 +63,8 @@ func TestDeletePasteIssuesRealDelete(t *testing.T) {
 
 // TestPasteTableName 确认表名与建表 DDL 一致。
 func TestPasteTableName(t *testing.T) {
-	if got := (model.Paste{}).TableName(); got != "homehub_pastes" {
-		t.Errorf("Paste.TableName() = %q，期望 homehub_pastes", got)
+	if got := (model.Paste{}).TableName(); got != "pastes" {
+		t.Errorf("Paste.TableName() = %q，期望 pastes", got)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestDeletePasteRequiresToken(t *testing.T) {
 	}
 
 	// 密钥错误时 SQL 匹配不到行 → 视为不存在
-	mock.ExpectExec(`DELETE FROM "homehub_pastes" WHERE public_id = \$1 AND delete_token = \$2`).
+	mock.ExpectExec(`DELETE FROM "pastes" WHERE public_id = \$1 AND delete_token = \$2`).
 		WithArgs("abc123", "wrong").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -101,7 +101,7 @@ func TestDeletePasteCorrectToken(t *testing.T) {
 	defer cleanup()
 	svc := NewPasteService(db)
 
-	mock.ExpectExec(`DELETE FROM "homehub_pastes" WHERE public_id = \$1 AND delete_token = \$2`).
+	mock.ExpectExec(`DELETE FROM "pastes" WHERE public_id = \$1 AND delete_token = \$2`).
 		WithArgs("abc123", "right").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

@@ -67,7 +67,7 @@ func avatarCacheColumns() []string {
 
 // expectAvatarUser 安排一次用户查询。
 func expectAvatarUser(mock sqlmock.Sqlmock, email string) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_users"`).
+	mock.ExpectQuery(`SELECT \* FROM "users"`).
 		WithArgs(uint64(1), 1).
 		WillReturnRows(sqlmock.NewRows(avatarUserColumns()).
 			AddRow(1, nil, nil, nil, "u", "hash", email, "user", true))
@@ -75,13 +75,13 @@ func expectAvatarUser(mock sqlmock.Sqlmock, email string) {
 
 // expectAvatarCacheEmpty 安排一次空缓存查询（未命中）。
 func expectAvatarCacheEmpty(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_avatar_caches"`).
+	mock.ExpectQuery(`SELECT \* FROM "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows(avatarCacheColumns()))
 }
 
 // expectAvatarCacheHit 安排一次命中的缓存查询。
 func expectAvatarCacheHit(mock sqlmock.Sqlmock, variant, emailHash string, data []byte) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_avatar_caches"`).
+	mock.ExpectQuery(`SELECT \* FROM "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows(avatarCacheColumns()).
 			AddRow(1, nil, nil, nil, 1, variant, emailHash, data, "image/png", `"upstream"`, "lm"))
 }
@@ -89,8 +89,8 @@ func expectAvatarCacheHit(mock sqlmock.Sqlmock, variant, emailHash string, data 
 // expectAvatarInsert 安排写入缓存的事务。
 func expectAvatarInsert(mock sqlmock.Sqlmock) {
 	mock.ExpectBegin()
-	mock.ExpectExec(`DELETE FROM "homehub_avatar_caches"`).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`INSERT INTO "homehub_avatar_caches"`).
+	mock.ExpectExec(`DELETE FROM "avatar_caches"`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`INSERT INTO "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectCommit()
 }
@@ -349,7 +349,7 @@ func TestAvatarRefreshRejectsUnknownUser(t *testing.T) {
 	defer cleanup()
 	svc = &service.Services{Gravatar: service.NewGravatarService(db)}
 
-	mock.ExpectQuery(`SELECT \* FROM "homehub_users"`).
+	mock.ExpectQuery(`SELECT \* FROM "users"`).
 		WithArgs(uint64(9), 1).
 		WillReturnRows(sqlmock.NewRows(avatarUserColumns()))
 

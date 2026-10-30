@@ -22,7 +22,7 @@ type Todo struct {
 
 // TableName 指定表名。
 func (Todo) TableName() string {
-	return "homehub_todos"
+	return "todos"
 }
 
 // TodoStatuses 返回所有合法状态值列表。

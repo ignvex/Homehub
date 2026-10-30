@@ -53,12 +53,34 @@
 
 ### 后端
 
-- 用户认证（bcrypt + cookie/session，多用户与 admin/user 角色）
-- 日志系统（`log/slog`，控制台 + 数据库 + SSE 广播）
-- RSS 引擎（`gofeed` 定时抓取，图片本地缓存）
+- 用户认证（bcrypt + cookie/session）与 **5 级权限模型**（1 级最高）
+- CSRF 防护（Origin/Referer 校验 + 双提交 cookie）
+- 日志系统（`log/slog`，控制台 + 数据库 + SSE 广播；支持多级别过滤与全文检索）
+- RSS 引擎（`gofeed` 定时抓取，图片按内容哈希去重缓存）
+- 磁力链接锁定与 PikPak 离线下载辅助
+- 图床（媒体资源带 `owner_id` 归属校验）
 - 剪贴板、待办、余额监控、全局搜索
 - RESTful API（Gin 框架）
 - PostgreSQL（GORM AutoMigrate，启动时自动建表与索引）
+
+#### 权限等级
+
+| 级别 | 名称 | 能力 |
+|------|------|------|
+| 1 | `admin` | 完全控制：配置、数据库连接、用户管理、日志清空、全部内容 |
+| 2 | `operator` | 运维：用户管理（不能碰 1 级）、日志查看与清理；不能改配置与凭据 |
+| 3 | `editor` | 内容管理：可增删改全部内容（RSS/书签/媒体/待办），不分作者 |
+| 4 | `member` | 成员：只能改自己创建的内容（自己上传的媒体） |
+| 5 | `viewer` | 只读 |
+
+**数值越小权限越高**，判断就是 `user.Level <= required`。三条防提权规则：
+
+- 只能创建**严格低于**自己等级的账号（2 级不能造 1 级，也不能造同级）；
+- 只能修改/删除/重置**严格低于**自己等级的账号；
+- 任何人不能改自己的等级或启用状态。
+
+数据库里只存 `level`；`role` 字符串是由 level 派生的 JSON 字段，只为兼容
+既有前端，不落库 —— 这样不会出现“role 说 admin、level 说 5”的矛盾。
 
 ## 前端开发环境
 
@@ -273,7 +295,7 @@ docker compose up -d --build
 | 阶段 | 内容 | 实现 |
 |------|------|------|
 | 1 | 建表、加列、普通索引 | `db.AutoMigrate(...)`，模型 tag 驱动 |
-| 2 | `homehub_pastes` 表 | `model.CreatePastesTable`，带建表选项的表单独处理 |
+| 2 | `pastes` 表 | `model.CreatePastesTable`，带建表选项的表单独处理 |
 | 3 | `pg_trgm` 扩展 + 模糊搜索 GIN 索引 | `database.EnsureSearchIndexes`，失败仅告警 |
 
 第 3 步是纯性能优化：账号没有 `CREATE EXTENSION` 权限时只记录警告，服务照常启动，搜索退化为全表扫描。
@@ -282,9 +304,11 @@ docker compose up -d --build
 
 **本仓库不会创建也不会删除 Bilibili 的表。** `bilibili_*` 与 `crawler_state` 等表由独立的 B 站爬虫项目维护；同一个库可能同时被两个项目使用，双方各管各的表。
 
-> ⚠️ 库里可能还留一张 `homehub_crawler_state`：它是旧版重命名脚本把 `crawler_state` 改名后的结果，HomeHub 已不再使用。**不要随手删它** —— 那个爬虫项目可能已经适配了新表名。先确认它在读哪一张表，再决定是否清理。
+> ⚠️ 库里可能还留一张 `homehub_crawler_state`（或 `crawler_state`）：它们是旧版重命名脚本的产物，HomeHub 已不再使用。**不要随手删它** —— 那个爬虫项目可能在读其中一张。先确认它在读哪一张表，再决定是否清理。
 
-`internal/database/ddl_guard_test.go` 把这条约束变成了测试：代码里出现 `DROP TABLE` / `TRUNCATE` / `ALTER TABLE`，或者任何 DDL 指向非 `homehub_` 前缀的表，测试就会失败。
+`internal/database/ddl_guard_test.go` 把这条约束变成了测试：代码里出现 `DROP TABLE` / `TRUNCATE` / `ALTER TABLE`，或者任何 DDL 指向不在 `homeHubTables` 白名单里的表，测试就会失败。
+
+> 表名过去统一带 `homehub_` 前缀，靠前缀就能区分"本仓库的表"。前缀去掉后改用**显式白名单**：新增表必须在 `ddl_guard_test.go` 里登记一行，否则测试失败。这比前缀更严格——任何未登记的表名都会被拦下。
 
 ### 升级提示
 
@@ -292,7 +316,7 @@ docker compose up -d --build
 
 - `config.json` 已从版本库移除，`git pull` 会删掉工作区里的该文件。拉取前先备份，拉取后 `cp config.example.json config.json` 再把原值填回去
 - `web/static/uploads/` 下的 RSS 图片缓存已不再跟踪。本机已有文件不受影响；但如果是从远端新克隆，历史 RSS 条目里内嵌的 `/static/uploads/rss_img/...` 图片会 404（重新抓取只更新 `magnet_url`，不会重建 content），新条目会自动重新缓存
-- 旧库如果还是无前缀表名（`users` / `bookmarks` / `rss_entries` 等），重命名脚本已移除。要么手工 `ALTER TABLE ... RENAME TO homehub_*`，要么直接建新库让 AutoMigrate 重建 —— 后者会丢掉旧数据
+- 表名已去掉 `homehub_` 前缀（`homehub_users` → `users` 等）。如果是从带前缀的旧库升级，需要手工 `ALTER TABLE homehub_users RENAME TO users;` 逐张改名，或直接建新库让 AutoMigrate 重建 —— 后者会丢掉旧数据
 
 ### 安全提示
 
@@ -329,8 +353,8 @@ docker compose up -d --build
 
 如果源站图片本身可直连，把 `image_cache_enabled` 设为 `false` 是最省事的提速手段。
 
-图片缓存按源 URL 全局共享文件，归属与清理由 `homehub_rss_images` /
-`homehub_rss_image_refs` 记录：删除订阅源或 retention 删除条目后会回收
+图片缓存按**内容**全局共享文件，归属与清理由 `rss_images` /
+`rss_image_refs` 记录：删除订阅源或 retention 删除条目后会回收
 无引用文件。完整机制、表关系与 Mermaid 图见
 [docs/rss-architecture.md](docs/rss-architecture.md)。
 
@@ -341,6 +365,64 @@ docker compose up -d --build
 同时可作为 Gravatar 头像的代理出口）
 就是从这里接入的。完整契约、已就绪部分与待补空缺见
 [docs/extension.md](docs/extension.md)。
+
+## 新增 API（本轮）
+
+### 磁力链接锁定与 PikPak
+
+| 方法 | 路径 | 等级 | 说明 |
+|------|------|------|------|
+| GET | `/rss/pikpak` | 登录 | PikPak 集成状态（不回传凭据） |
+| PUT | `/rss/entries/:id/magnet/lock` | 3 | 锁定磁力链接，后续抓取不得改写 |
+| DELETE | `/rss/entries/:id/magnet/lock` | 3 | 解除锁定（不撤销已提交的 PikPak 任务） |
+| POST | `/rss/entries/:id/magnet/pikpak` | 3 | 提交到 PikPak（要求已锁定；未启用返回 503） |
+| GET | `/rss/entries?magnet=...` | 登录 | 筛选：`has` / `locked` / `unlocked` / `pikpak_saved` / `pikpak_failed` |
+
+**锁定的意义**：抓取时 `magnet_url` 的 upsert 有三层保护 —— 已锁定则一个字
+都不改，新值为空则保留旧值，否则才用新值。“锁定”把人工确认这件事写进了
+数据层，而不只是 UI 上的一个开关。
+
+### 日志查询
+
+| 参数 | 说明 |
+|------|------|
+| `level=ERROR` | 单级别（精确匹配） |
+| `levels=ERROR,WARN` | 多级别 |
+| `min_level=WARN` | 下限：WARN 及以上（含 ERROR） |
+| `q=关键词` | 消息全文检索（走 `pg_trgm` GIN 索引） |
+| `since` / `until` | RFC3339 时间范围 |
+
+非法级别返回 400 并列出可选值 —— 不再静默忽略后返回全部日志。
+
+### 媒体资源
+
+上传与删除要求 **4 级（member）** 及以上；删除时校验 `owner_id`：
+member 只能删自己上传的，editor(3) 及以上可删任意。历史数据 `owner_id=0`
+视为无归属，只有 1–3 级能动。
+
+## 待办与计划
+
+以下是已识别、但尚未实现的事项。写在这里是为了让后来人知道它们
+不是遗漏。
+
+### RSS 磁力按钮开关
+
+**现状**：条目带 `magnet_url` 时，首页订阅卡片与 RSS 页面都会无条件
+显示磁力按钮。有些订阅源用不上这个功能，按钮只是噪声。
+
+**计划**：在订阅源配置中增加开关（形如 `show_magnet`，默认 `true`），
+存储粒度到源。前端读取该字段决定是否渲染按钮。
+
+**涉及**：
+
+- 后端：`model.RSSFeed` 加字段 → `RSSUpdateFeed` / `RSSCreateFeed`
+  接受该字段 → AutoMigrate 自动加列
+- 前端：`lib/rss.ts` 的 `RSSFeed` 类型加字段 → 订阅源编辑弹窗加复选
+  框 → 首页与 RSS 页渲染时按源判断
+
+**阻塞**：依赖后端改动，等后端的优化工作告一段落再动。
+
+---
 
 ## 仓库维护
 

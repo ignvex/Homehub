@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/handler"
 	"github.com/ignvex/HomeHub/internal/middleware"
+	"github.com/ignvex/HomeHub/internal/model"
 )
 
 func serveSPA(c *gin.Context) {
@@ -45,6 +46,10 @@ func registerRoutes(r *gin.Engine) {
 	// API v1
 	// ============================================================
 	api := r.Group("/api/v1")
+
+	// CSRF 防护：对非安全方法校验 Origin/Referer 与双提交 cookie。
+	// 挂在 API 根组上，所有子路由自动生效；静态资源与 SPA 不受影响。
+	api.Use(middleware.CSRFProtect())
 
 	// --- 健康检查（公开） ---
 	api.GET("/health", handler.HealthCheck)
@@ -93,8 +98,14 @@ func registerRoutes(r *gin.Engine) {
 		authRequired.GET("/auth/profile", handler.AuthGetProfile)
 		authRequired.PUT("/auth/profile", handler.AuthUpdateProfile)
 
+		// ---- 内容写操作：3 级（editor）及以上 ----
+		//
+		// 3 级可以管全部内容（不分作者）；逐条归属的校验在 service 层做。
+		contentWrite := authRequired.Group("")
+		contentWrite.Use(middleware.AuthLevelRequired(model.LevelEditor))
+
 		// 书签分组（写操作）
-		bg := authRequired.Group("/bookmark-groups")
+		bg := contentWrite.Group("/bookmark-groups")
 		{
 			bg.POST("", handler.BookmarkGroupCreate)
 			bg.PUT("/:id", handler.BookmarkGroupUpdate)
@@ -103,7 +114,7 @@ func registerRoutes(r *gin.Engine) {
 		}
 
 		// 书签（写操作）
-		b := authRequired.Group("/bookmarks")
+		b := contentWrite.Group("/bookmarks")
 		{
 			b.POST("", handler.BookmarkCreate)
 			b.PUT("/:id", handler.BookmarkUpdate)
@@ -119,39 +130,52 @@ func registerRoutes(r *gin.Engine) {
 			cfg.PUT("", handler.ConfigUpdate)
 		}
 
-		// 媒体资源
-		media := authRequired.Group("/media-assets")
+		// 媒体资源：读需登录；上传/删除需 4 级（member）及以上，
+		// 且只能动自己上传的（owner_id 校验在 service 层）。
+		mediaRead := authRequired.Group("/media-assets")
 		{
-			media.GET("", handler.MediaList)
-			media.POST("", handler.MediaUpload)
-			media.DELETE("/:id", handler.MediaDelete)
+			mediaRead.GET("", handler.MediaList)
+		}
+		mediaWrite := authRequired.Group("/media-assets")
+		mediaWrite.Use(middleware.AuthLevelRequired(model.LevelMember))
+		{
+			mediaWrite.POST("", handler.MediaUpload)
+			mediaWrite.DELETE("/:id", handler.MediaDelete)
 		}
 
-		// 背景设置
-		bgCfg := authRequired.Group("/background")
+		// 背景设置（内容配置，3 级）
+		bgCfg := contentWrite.Group("/background")
 		{
 			bgCfg.GET("", handler.BackgroundGet)
 			bgCfg.PUT("", handler.BackgroundUpdate)
 		}
 
-		// RSS 订阅
-		rssGroup := authRequired.Group("/rss")
+		// RSS 订阅：读操作只需登录，写操作要求 3 级
+		rssRead := authRequired.Group("/rss")
 		{
-			rssGroup.GET("/feeds", handler.RSSListFeeds)
-			rssGroup.GET("/feeds/:id", handler.RSSGetFeed)
-			rssGroup.POST("/feeds", handler.RSSCreateFeed)
-			rssGroup.PUT("/feeds/:id", handler.RSSUpdateFeed)
-			rssGroup.DELETE("/feeds/:id", handler.RSSDeleteFeed)
-			rssGroup.POST("/feeds/:id/fetch", handler.RSSFetchFeed)
-			rssGroup.POST("/fetch-all", handler.RSSFetchAll)
-			rssGroup.GET("/entries", handler.RSSListEntries)
+			rssRead.GET("/feeds", handler.RSSListFeeds)
+			rssRead.GET("/feeds/:id", handler.RSSGetFeed)
+			rssRead.GET("/entries", handler.RSSListEntries)
+			rssRead.GET("/groups", handler.RSSListGroups)
+			rssRead.GET("/groups/:id", handler.RSSGetGroup)
+			rssRead.GET("/pikpak", handler.RSSPikPakStatus)
+		}
 
-			// RSS 分组管理
-			rssGroup.GET("/groups", handler.RSSListGroups)
-			rssGroup.GET("/groups/:id", handler.RSSGetGroup)
-			rssGroup.POST("/groups", handler.RSSCreateGroup)
-			rssGroup.PUT("/groups/:id", handler.RSSUpdateGroup)
-			rssGroup.DELETE("/groups/:id", handler.RSSDeleteGroup)
+		rssWrite := contentWrite.Group("/rss")
+		{
+			rssWrite.POST("/feeds", handler.RSSCreateFeed)
+			rssWrite.PUT("/feeds/:id", handler.RSSUpdateFeed)
+			rssWrite.DELETE("/feeds/:id", handler.RSSDeleteFeed)
+			rssWrite.POST("/feeds/:id/fetch", handler.RSSFetchFeed)
+			rssWrite.POST("/fetch-all", handler.RSSFetchAll)
+			rssWrite.POST("/groups", handler.RSSCreateGroup)
+			rssWrite.PUT("/groups/:id", handler.RSSUpdateGroup)
+			rssWrite.DELETE("/groups/:id", handler.RSSDeleteGroup)
+
+			// 磁力链接锁定与 PikPak 提交
+			rssWrite.PUT("/entries/:id/magnet/lock", handler.RSSLockMagnet)
+			rssWrite.DELETE("/entries/:id/magnet/lock", handler.RSSUnlockMagnet)
+			rssWrite.POST("/entries/:id/magnet/pikpak", handler.RSSSubmitMagnet)
 		}
 
 		// 余额监控
@@ -162,21 +186,25 @@ func registerRoutes(r *gin.Engine) {
 			balance.POST("/refresh", handler.BalanceRefresh)
 		}
 
-		// TODO 待办
-		todoGroup := authRequired.Group("/todos")
+		// TODO 待办：读需登录，写需 3 级
+		todoRead := authRequired.Group("/todos")
 		{
-			todoGroup.GET("", handler.TodoList)
-			todoGroup.GET("/:id", handler.TodoGet)
-			todoGroup.POST("", handler.TodoCreate)
-			todoGroup.PUT("/:id", handler.TodoUpdate)
-			todoGroup.DELETE("/:id", handler.TodoDelete)
-			todoGroup.PATCH("/:id/status", handler.TodoUpdateStatus)
-			todoGroup.POST("/reorder", handler.TodoReorder)
+			todoRead.GET("", handler.TodoList)
+			todoRead.GET("/:id", handler.TodoGet)
+		}
+		todoWrite := contentWrite.Group("/todos")
+		{
+			todoWrite.POST("", handler.TodoCreate)
+			todoWrite.PUT("/:id", handler.TodoUpdate)
+			todoWrite.DELETE("/:id", handler.TodoDelete)
+			todoWrite.PATCH("/:id/status", handler.TodoUpdateStatus)
+			todoWrite.POST("/reorder", handler.TodoReorder)
 		}
 
-		// 用户管理（管理员）
+		// 用户管理与日志：2 级（operator）及以上。
+		// 具体到“能不能动某个账号”，service 层会再比一次等级。
 		admin := authRequired.Group("/admin")
-		admin.Use(middleware.AuthAdminRequired())
+		admin.Use(middleware.AuthLevelRequired(model.LevelOperator))
 		{
 			adminUsers := admin.Group("/users")
 			{

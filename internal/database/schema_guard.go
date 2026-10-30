@@ -28,16 +28,16 @@ var schemaRequirements = []schemaRequirement{
 		// 条目改成跨源共享后不再写 feed_id；旧列是 NOT NULL 且无默认值，
 		// 不放开约束会让所有插入失败。
 		check: func(db *gorm.DB) (bool, error) {
-			return columnIsNotNull(db, "homehub_rss_entries", "feed_id")
+			return columnIsNotNull(db, "rss_entries", "feed_id")
 		},
-		target: "homehub_rss_entries.feed_id 仍为 NOT NULL（条目已改为跨源共享，不再写该列）",
+		target: "rss_entries.feed_id 仍为 NOT NULL（条目已改为跨源共享，不再写该列）",
 	},
 	{
 		// 图片引用改成 (image_id, entry_id)；旧列同样会拦截插入。
 		check: func(db *gorm.DB) (bool, error) {
-			return columnIsNotNull(db, "homehub_rss_image_refs", "feed_id")
+			return columnIsNotNull(db, "rss_image_refs", "feed_id")
 		},
-		target: "homehub_rss_image_refs.feed_id / entry_hash 仍为 NOT NULL（引用已改为指向条目）",
+		target: "rss_image_refs.feed_id / entry_hash 仍为 NOT NULL（引用已改为指向条目）",
 	},
 }
 

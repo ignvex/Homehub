@@ -149,7 +149,7 @@ func (s *GravatarService) GetAvatarData(ctx context.Context, userID uint64) (*Av
 		return &Avatar{
 			Data:        payload.Data,
 			ContentType: payload.ContentType,
-			ETag:        avatarETag(variant, emailHash),
+			ETag:        avatarETag(variant, emailHash, payload.Data),
 		}, nil
 	})
 	if err != nil {
@@ -321,7 +321,7 @@ func (s *GravatarService) loadCachedAvatar(userID uint64, variant, emailHash str
 	return &Avatar{
 		Data:        cache.ImageData,
 		ContentType: cache.ContentType,
-		ETag:        avatarETag(variant, emailHash),
+		ETag:        avatarETag(variant, emailHash, cache.ImageData),
 	}, nil
 }
 
@@ -440,9 +440,20 @@ func parseAvatarVariant(variant string) (sourceKey string, size int, style, rati
 }
 
 // avatarETag 派生对外 ETag。加引号符合 RFC 7232 的实体标签语法。
-func avatarETag(variant, emailHash string) string {
-	sum := sha256.Sum256([]byte(variant + "|" + emailHash))
-	return `"` + hex.EncodeToString(sum[:8]) + `"`
+//
+// 必须把图片内容一起纳入：只用 (variant, emailHash) 派生时，上游换了头像
+// 而用户的邮箱与配置都没变，刷新后 ETag 与刷新前完全相同。浏览器对
+// `Cache-Control: no-cache` 的响应会存副本并带 If-None-Match 重验，
+// 于是永远拿到 304，继续显示旧图——而服务端已经返回 updated:true，
+// 表现为一个"假成功"。
+func avatarETag(variant, emailHash string, data []byte) string {
+	h := sha256.New()
+	h.Write([]byte(variant))
+	h.Write([]byte{0})
+	h.Write([]byte(emailHash))
+	h.Write([]byte{0})
+	h.Write(data)
+	return `"` + hex.EncodeToString(h.Sum(nil)[:8]) + `"`
 }
 
 // recentlyMissing 报告负缓存是否仍然有效。

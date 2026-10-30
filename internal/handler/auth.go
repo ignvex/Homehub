@@ -174,7 +174,8 @@ func AuthStatus(c *gin.Context) {
 			"logged_in":  true,
 			"id":         user.ID,
 			"username":   user.Username,
-			"role":       user.Role,
+			"role":       model.LevelName(user.Level),
+			"level":      user.Level,
 			"email":      user.Email,
 			"avatar_url": buildAvatarURL(user.ID),
 		})
@@ -282,7 +283,8 @@ func AuthGetProfile(c *gin.Context) {
 		"id":         user.ID,
 		"username":   user.Username,
 		"email":      user.Email,
-		"role":       user.Role,
+		"role":       model.LevelName(user.Level),
+		"level":      user.Level,
 		"avatar_url": buildAvatarURL(user.ID),
 	})
 }
@@ -319,7 +321,7 @@ func AuthUpdateProfile(c *gin.Context) {
 		Email:    req.Email,
 	}
 
-	updated, err := svc.Auth.UpdateUser(user.ID, user.ID, svcReq)
+	updated, err := svc.Auth.UpdateUser(user.ID, user, svcReq)
 	if err != nil {
 		if errors.Is(err, service.ErrUsernameExists) {
 			Fail(c, http.StatusConflict, CodeUsernameExists, "用户名已存在")
@@ -338,7 +340,8 @@ func AuthUpdateProfile(c *gin.Context) {
 		"id":         updated.ID,
 		"username":   updated.Username,
 		"email":      updated.Email,
-		"role":       updated.Role,
+		"role":       model.LevelName(updated.Level),
+		"level":      updated.Level,
 		"avatar_url": buildAvatarURL(updated.ID),
 	})
 }

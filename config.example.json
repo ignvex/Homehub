@@ -84,7 +84,18 @@
         "image_cleanup_interval_hours": 24,
         "image_allow_private_hosts": false,
         "extension_url": "",
-        "extension_token": ""
+        "extension_token": "",
+        "pikpak": {
+            "_comment": "PikPak 离线下载辅助。enabled=false 时相关 API 返回 503；锁定功能不依赖它。client_id/client_secret 由 PikPak 分配，留空则提交会失败并提示。",
+            "enabled": false,
+            "endpoint": "https://api-drive.mypikpak.com",
+            "username": "",
+            "password": "",
+            "client_id": "",
+            "client_secret": "",
+            "timeout_seconds": 15,
+            "auto_lock": false
+        }
     },
     "server": {
         "host": "0.0.0.0",

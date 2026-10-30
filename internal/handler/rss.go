@@ -1,10 +1,15 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/service"
 )
 
 // ============================================================
@@ -249,13 +254,121 @@ func RSSListEntries(c *gin.Context) {
 
 	page := queryInt(c, "page", 1)
 	perPage := queryInt(c, "per_page", 20)
+	// magnet 维度筛选：has / locked / unlocked / pikpak_saved / pikpak_failed。
+	magnet := c.Query("magnet")
 
-	entries, total, err := svc.RSS.ListEntries(feedID, groupID, page, perPage)
+	entries, total, err := svc.RSS.ListEntries(service.EntryFilter{
+		FeedID: feedID, GroupID: groupID,
+		Page: page, PerPage: perPage,
+		Magnet: magnet,
+	})
 	if err != nil {
+		// 非法筛选条件是客户端问题，不该报 500。
+		if strings.Contains(err.Error(), "无效的磁力筛选条件") {
+			FailBadRequest(c, err.Error())
+			return
+		}
 		FailInternal(c, "查询条目失败")
 		return
 	}
 	Success(c, gin.H{"list": entries, "total": total, "page": page, "per_page": perPage})
+}
+
+// ============================================================
+// 磁力链接锁定与 PikPak
+// ============================================================
+
+// RSSLockMagnet 锁定条目的磁力链接，使其不被后续抓取覆盖。
+//
+//	@Summary		锁定磁力链接
+//	@Tags			磁力链接
+//	@Produce		json
+//	@Param			id	path		int			true	"条目 ID"
+//	@Success		200	{object}	Response	"锁定成功"
+//	@Router			/rss/entries/{id}/magnet/lock [put]
+func RSSLockMagnet(c *gin.Context) {
+	entryID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		FailBadRequest(c, "无效的条目 ID")
+		return
+	}
+
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
+
+	if err := svc.RSS.LockMagnet(entryID, operator); err != nil {
+		if errors.Is(err, service.ErrRSSEntryNotFound) {
+			Fail(c, http.StatusNotFound, CodeNotFound, "条目不存在")
+			return
+		}
+		FailInternal(c, "锁定磁力链接失败")
+		return
+	}
+	Success(c, nil)
+}
+
+// RSSUnlockMagnet 解除磁力链接锁定。
+//
+//	@Summary		解除磁力锁定
+//	@Tags			磁力链接
+//	@Param			id	path		int			true	"条目 ID"
+//	@Success		200	{object}	Response	"解锁成功"
+//	@Router			/rss/entries/{id}/magnet/lock [delete]
+func RSSUnlockMagnet(c *gin.Context) {
+	entryID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		FailBadRequest(c, "无效的条目 ID")
+		return
+	}
+
+	if err := svc.RSS.UnlockMagnet(entryID); err != nil {
+		if errors.Is(err, service.ErrRSSEntryNotFound) {
+			Fail(c, http.StatusNotFound, CodeNotFound, "条目不存在")
+			return
+		}
+		FailInternal(c, "解除磁力锁定失败")
+		return
+	}
+	Success(c, nil)
+}
+
+// RSSSubmitMagnet 把条目的磁力链接提交给 PikPak 离线下载。
+//
+//	@Summary		提交磁力链接到 PikPak
+//	@Description	要求条目已有磁力链接且已锁定；PikPak 未启用时返回 503
+//	@Tags			磁力链接
+//	@Param			id	path		int			true	"条目 ID"
+//	@Success		200	{object}	Response{data=service.RSSEntryView}	"提交成功"
+//	@Router			/rss/entries/{id}/magnet/pikpak [post]
+func RSSSubmitMagnet(c *gin.Context) {
+	entryID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		FailBadRequest(c, "无效的条目 ID")
+		return
+	}
+
+	entry, err := svc.RSS.SubmitMagnetToPikPak(c.Request.Context(), entryID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrPikPakDisabled):
+			Fail(c, http.StatusServiceUnavailable, CodeInternalError, "PikPak 集成未启用")
+		case errors.Is(err, service.ErrRSSEntryNotFound):
+			Fail(c, http.StatusNotFound, CodeNotFound, "条目不存在")
+		case errors.Is(err, service.ErrNoMagnet):
+			FailBadRequest(c, "该条目没有磁力链接")
+		case errors.Is(err, service.ErrMagnetNotLocked):
+			FailBadRequest(c, "请先锁定磁力链接再提交")
+		default:
+			// 提交失败已经把原因写进 pikpak_status / pikpak_error，
+			// 这里返回 502 让调用方知道是上游问题而不是本地参数错误。
+			Fail(c, http.StatusBadGateway, CodeInternalError, err.Error())
+		}
+		return
+	}
+	Success(c, entry)
 }
 
 // ============================================================
@@ -404,4 +517,41 @@ func RSSDeleteGroup(c *gin.Context) {
 		return
 	}
 	Success(c, nil)
+}
+
+// RSSPikPakStatus 返回 PikPak 集成的当前状态。
+//
+// 只暴露“是否启用”和“是否配好凭据”，不返回用户名密码。
+// 前端据此决定是否显示“提交到 PikPak”按钮。
+//
+//	@Summary		PikPak 集成状态
+//	@Tags			磁力链接
+//	@Produce		json
+//	@Success		200	{object}	Response	"状态"
+//	@Router			/rss/pikpak [get]
+func RSSPikPakStatus(c *gin.Context) {
+	cfg := config.Get()
+	if cfg == nil {
+		Fail(c, http.StatusServiceUnavailable, CodeInternalError, "配置尚未加载")
+		return
+	}
+
+	p := cfg.RSS.PikPak
+	// “可用”= 启用且凭据齐全。只启用不填凭据是最常见的配置错误，
+	// 直接告诉调用方还缺什么，比让它点提交再收 500 好。
+	ready := p.Enabled && p.Username != "" && p.Password != "" &&
+		p.ClientID != "" && p.ClientSecret != ""
+
+	Success(c, gin.H{
+		"enabled":   p.Enabled,
+		"ready":     ready,
+		"auto_lock": p.AutoLock,
+		// 显示实际生效值，而不是配置里的原始空串 ——
+		// 否则“没填”和“填了但没生效”看起来一样。
+		"endpoint":     service.EffectivePikPakEndpoint(p),
+		"timeout_secs": int(service.EffectivePikPakTimeout(p).Seconds()),
+		// 凭据只报“填没填”，不回传值。
+		"has_credentials": p.Username != "" && p.Password != "",
+		"has_client":      p.ClientID != "" && p.ClientSecret != "",
+	})
 }

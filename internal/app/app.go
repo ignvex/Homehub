@@ -106,6 +106,7 @@ func Run(opts Options) error {
 		&model.RSSEntry{},
 		&model.RSSEntryFeed{},
 		&model.RSSImage{},
+		&model.RSSImageSource{},
 		&model.RSSImageRef{},
 		&model.Todo{},
 	); err != nil {
@@ -129,7 +130,7 @@ func Run(opts Options) error {
 	svc := service.NewServices(db)
 
 	if cfg.Auth.Password != "" {
-		if err := svc.Auth.CreateInitialUser(cfg.Auth.Username, cfg.Auth.Password, "admin"); err != nil {
+		if err := svc.Auth.CreateInitialUser(cfg.Auth.Username, cfg.Auth.Password); err != nil {
 			return fmt.Errorf("创建初始用户失败: %w", err)
 		}
 		config.ClearPassword(configPath)

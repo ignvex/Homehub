@@ -161,6 +161,39 @@ type RSSConfig struct {
 	ExtensionURL string `json:"extension_url"`
 	// ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
 	ExtensionToken string `json:"extension_token"`
+
+	// PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，
+	// 锁定标记仍然可用（锁定本身不依赖 PikPak）。
+	PikPak PikPakConfig `json:"pikpak"`
+}
+
+// PikPakConfig 是 PikPak 离线下载集成配置。
+//
+// 设计边界：HomeHub 只负责“把磁力链接交给 PikPak 并记住结果”，
+// 不轮询任务进度、不管理 PikPak 的文件列表。这样即使 PikPak 改了接口，
+// 受影响的也只是提交这一个动作。
+type PikPakConfig struct {
+	// Enabled 是否启用。默认 false —— 涉及第三方账号凭据，必须显式开启。
+	Enabled bool `json:"enabled"`
+	// Endpoint 服务地址，默认 https://api-drive.mypikpak.com。
+	// 允许改是因为 PikPak 有多个区域端点，也可能自建反代。
+	Endpoint string `json:"endpoint"`
+	// Username / Password 是 PikPak 账号。
+	//
+	// 与 config.json 里其他凭据一样是明文存储（该文件已 gitignore 且
+	// 权限应设为 600）。不用 refresh_token 是因为它过期需要人工续期，
+	// 对一个个人项目来说反而更容易失效。
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// ClientID / ClientSecret 是 PikPak 分配的客户端标识。
+	// 留空时提交会直接失败并给出明确提示，不猜测默认值。
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	// TimeoutSeconds 单次提交的超时，默认 15。
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// AutoLock 抓取到磁力链接时自动锁定，避免后续抓取把它覆盖掉。
+	// 默认 false：自动锁定会让“锁”失去“人工确认”的含义。
+	AutoLock bool `json:"auto_lock"`
 }
 
 // Config 应用顶层配置，对应 config.json 文件结构。

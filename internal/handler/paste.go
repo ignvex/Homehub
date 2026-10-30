@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/ignvex/HomeHub/internal/service"
 )
 
@@ -73,10 +74,10 @@ func PasteList(c *gin.Context) {
 	}
 	result := make([]pasteSummary, len(pastes))
 	for i, p := range pastes {
-		preview := p.Content
-		if len(preview) > 100 {
-			preview = preview[:100]
-		}
+		// 预览会直接进 JSON 响应：按字符截断并加省略号。
+		// 字节切片（preview[:100]）会把中文切成半个字符，产生非法 UTF-8，
+		// 使整个响应无法被前端 JSON.parse。
+		preview := model.TruncateEllipsis(p.Content, 100)
 		result[i] = pasteSummary{
 			ID:             p.PublicID,
 			ContentPreview: preview,

@@ -19,7 +19,7 @@ func TestAuthAdminRequiredRejectsNonAdmin(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
-	c.Set("user", &model.User{Role: "user"})
+	c.Set("user", &model.User{Level: model.LevelViewer})
 
 	AuthAdminRequired()(c)
 
@@ -59,7 +59,7 @@ func TestAuthAdminRequiredAllowsAdmin(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
-	c.Set("user", &model.User{Role: "admin"})
+	c.Set("user", &model.User{Level: model.LevelAdmin})
 
 	AuthAdminRequired()(c)
 
@@ -75,7 +75,7 @@ func TestAuthAdminRequiredRejectsEmptyRole(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
-	c.Set("user", &model.User{Role: ""})
+	c.Set("user", &model.User{Level: 0})
 
 	AuthAdminRequired()(c)
 

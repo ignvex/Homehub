@@ -18,7 +18,7 @@ func TestListBackgroundAssetsFiltersKinds(t *testing.T) {
 	defer cleanup()
 	svc := NewMediaService(db)
 
-	mock.ExpectQuery(`SELECT \* FROM "homehub_media_assets" WHERE id IN`).
+	mock.ExpectQuery(`SELECT \* FROM "media_assets" WHERE id IN`).
 		WillReturnRows(mediaRows().
 			AddRow(1, "a.png", "a.png", "uploads/a.png", 100, "image/png", "image").
 			AddRow(2, "b.mp3", "b.mp3", "uploads/b.mp3", 200, "audio/mpeg", "audio").
@@ -44,7 +44,7 @@ func TestFilterBackgroundIDsDropsInvalid(t *testing.T) {
 	defer cleanup()
 	svc := NewMediaService(db)
 
-	mock.ExpectQuery(`SELECT \* FROM "homehub_media_assets" WHERE id IN`).
+	mock.ExpectQuery(`SELECT \* FROM "media_assets" WHERE id IN`).
 		WillReturnRows(mediaRows().
 			AddRow(1, "a.png", "a.png", "uploads/a.png", 100, "image/png", "image").
 			AddRow(2, "b.mp3", "b.mp3", "uploads/b.mp3", 200, "audio/mpeg", "audio"))

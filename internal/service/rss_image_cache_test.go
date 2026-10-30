@@ -58,7 +58,7 @@ func TestDownloadRejectsNonImage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := c.download(context.Background(), srv.URL+"/pic.png", "key", 1<<20, true)
+	_, err := c.download(context.Background(), srv.URL+"/pic.png", sha256Hex(srv.URL+"/pic.png"), 1<<20, true)
 	if err == nil {
 		t.Fatal("HTML 响应应被拒绝")
 	}
@@ -79,12 +79,22 @@ func TestDownloadAcceptsSVG(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := c.download(context.Background(), srv.URL+"/logo.svg", "svgkey", 1<<20, true)
+	res, err := c.download(context.Background(), srv.URL+"/logo.svg", sha256Hex(srv.URL+"/logo.svg"), 1<<20, true)
 	if err != nil {
 		t.Fatalf("SVG 应被接受: %v", err)
 	}
-	if res.filename != "rss_svgkey.svg" {
-		t.Errorf("文件名 = %q，期望 rss_svgkey.svg", res.filename)
+	// 文件名格式：rss_<时间戳>_<随机>_<内容哈希前8>.svg。
+	// 不写死整串：时间戳与随机段本来就每次都不同，写死会让测试
+	// 变成“验证随机数”——那正是它在做的事，不该被固定住。
+	if !strings.HasPrefix(res.filename, "rss_") {
+		t.Errorf("文件名应以 rss_ 开头: %q", res.filename)
+	}
+	if filepath.Ext(res.filename) != ".svg" {
+		t.Errorf("扩展名 = %q，期望 .svg", filepath.Ext(res.filename))
+	}
+	// 后级是内容哈希前 8 位，可用来排障时反查内容。
+	if !strings.HasSuffix(strings.TrimSuffix(res.filename, ".svg"), res.sha256[:8]) {
+		t.Errorf("文件名应包含内容哈希前8位 %q: %q", res.sha256[:8], res.filename)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, res.filename)); statErr != nil {
 		t.Errorf("SVG 文件未落盘: %v", statErr)
@@ -107,11 +117,17 @@ func TestCacheReusesDownloadedFile(t *testing.T) {
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
 	src := srv.URL + "/a.png"
 
-	first := c.Cache(context.Background(), 1, []string{src})
+	first, err := c.Cache(context.Background(), 1, []string{src})
+	if err != nil {
+		t.Fatalf("Cache 失败: %v", err)
+	}
 	if len(first) != 1 {
 		t.Fatalf("首次缓存应返回 1 个映射，实际 %v", first)
 	}
-	second := c.Cache(context.Background(), 2, []string{src})
+	second, err := c.Cache(context.Background(), 2, []string{src})
+	if err != nil {
+		t.Fatalf("Cache 失败: %v", err)
+	}
 	if len(second) != 1 {
 		t.Fatalf("第二次缓存应命中文件，实际 %v", second)
 	}
@@ -134,7 +150,7 @@ func TestCacheSkipsFailedImages(t *testing.T) {
 	defer srv.Close()
 
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
-	got := c.Cache(context.Background(), 1, []string{srv.URL + "/missing.png"})
+	got, _ := c.Cache(context.Background(), 1, []string{srv.URL + "/missing.png"})
 	if len(got) != 0 {
 		t.Errorf("失败图片不应返回映射，实际 %v", got)
 	}
@@ -235,7 +251,8 @@ func TestCacheWithZeroConcurrencyDoesNotDeadlock(t *testing.T) {
 	c := &LocalImageCache{dir: t.TempDir(), publicPrefix: imageURLPrefix}
 	done := make(chan map[string]string, 1)
 	go func() {
-		done <- c.Cache(context.Background(), 1, []string{srv.URL + "/a.png"})
+		res, _ := c.Cache(context.Background(), 1, []string{srv.URL + "/a.png"})
+		done <- res
 	}()
 
 	select {

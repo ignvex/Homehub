@@ -18,15 +18,22 @@ var searchIndexes = []struct {
 }{
 	{
 		name: "idx_bookmarks_title_trgm",
-		sql:  `CREATE INDEX IF NOT EXISTS idx_bookmarks_title_trgm ON homehub_bookmarks USING GIN (title gin_trgm_ops)`,
+		sql:  `CREATE INDEX IF NOT EXISTS idx_bookmarks_title_trgm ON bookmarks USING GIN (title gin_trgm_ops)`,
 	},
 	{
 		name: "idx_bookmarks_url_trgm",
-		sql:  `CREATE INDEX IF NOT EXISTS idx_bookmarks_url_trgm ON homehub_bookmarks USING GIN (url gin_trgm_ops)`,
+		sql:  `CREATE INDEX IF NOT EXISTS idx_bookmarks_url_trgm ON bookmarks USING GIN (url gin_trgm_ops)`,
 	},
 	{
 		name: "idx_rss_entries_title_trgm",
-		sql:  `CREATE INDEX IF NOT EXISTS idx_rss_entries_title_trgm ON homehub_rss_entries USING GIN (title gin_trgm_ops)`,
+		sql:  `CREATE INDEX IF NOT EXISTS idx_rss_entries_title_trgm ON rss_entries USING GIN (title gin_trgm_ops)`,
+	},
+	{
+		// 日志关键词搜索走 `message ILIKE '%...%'`，没有这个索引就是
+		// 全表顺序扫描。日志表只增不减，是全库最可能变大的表，
+		// 这个索引的收益随时间线性增长。
+		name: "idx_log_entries_message_trgm",
+		sql:  `CREATE INDEX IF NOT EXISTS idx_log_entries_message_trgm ON log_entries USING GIN (message gin_trgm_ops)`,
 	},
 }
 

@@ -137,7 +137,7 @@ func (s *MediaService) ListByIDs(ids []uint64) ([]model.MediaAsset, error) {
 //  3. 创建 uploads 目录（如不存在）
 //  4. 写入文件
 //  5. 创建数据库记录
-func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, error) {
+func (s *MediaService) Upload(owner *model.User, file *multipart.FileHeader) (*model.MediaAsset, error) {
 	// 1. 校验文件大小
 	if file.Size > maxUploadSize {
 		return nil, ErrFileTooLarge
@@ -200,15 +200,28 @@ func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, er
 		width, height = imageDimensions(destPath)
 	}
 
+	ownerID := uint64(0)
+	if owner != nil {
+		ownerID = owner.ID
+	}
+
 	asset := model.MediaAsset{
-		Filename:     filename,
-		OriginalName: file.Filename,
+		Filename: filename,
+		// OriginalName 直接来自客户端 multipart 的文件名，长度不受控，
+		// 而列是 varchar(255)：不裁剪会让上传在最后一步失败（文件已写盘、
+		// 记录插入被 Postgres 拒收）。按字符截断，避免切断多字节字符。
+		OriginalName: model.TruncateRunes(file.Filename, 255),
 		FilePath:     relativePath,
 		FileSize:     file.Size,
-		MimeType:     detectMimeType(ext),
-		MediaType:    mediaType,
-		Width:        width,
-		Height:       height,
+		// 内容哈希：图床场景下用于完整性校验，也为将来“同一张图只存一份”
+		// 的去重留出依据。这一步读已经落盘的文件，不额外消耗一次上传流。
+		SHA256:    fileSHA256(destPath),
+		MimeType:  detectMimeType(ext),
+		MediaType: mediaType,
+		Source:    MediaSourceUpload,
+		OwnerID:   ownerID,
+		Width:     width,
+		Height:    height,
 	}
 
 	if err := s.db.Create(&asset).Error; err != nil {
@@ -221,7 +234,14 @@ func (s *MediaService) Upload(file *multipart.FileHeader) (*model.MediaAsset, er
 }
 
 // Delete 删除媒体资源（数据库记录 + 物理文件）。
-func (s *MediaService) Delete(id uint64) error {
+//
+// operator 用于归属校验：只有上传者本人，或 1–3 级（editor 及以上）能删。
+// 少了这条校验，任何登录用户都能删掉别人正在当背景用的图 —— 这是本仓库
+// 改造前真实存在的水平越权。
+func (s *MediaService) Delete(id uint64, operator *model.User) error {
+	if operator == nil {
+		return ErrForbidden
+	}
 	var asset model.MediaAsset
 	if err := s.db.First(&asset, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -230,8 +250,20 @@ func (s *MediaService) Delete(id uint64) error {
 		return fmt.Errorf("查询媒体资源失败: %w", err)
 	}
 
-	// 先删数据库记录
-	if err := s.db.Delete(&asset).Error; err != nil {
+	// 归属校验：本人，或 1–3 级可以删。
+	//
+	// 用 !CanDeleteOwned 而不是简单的 OwnerID 比较，是因为 editor(3)
+	// 按设计能管全部内容；member(4) 只能管自己的。
+	if !canManageOwned(operator, asset.OwnerID) {
+		return ErrForbidden
+	}
+
+	// 物理删除：这条记录代表一份已落盘的图床文件，文件删了之后软删除
+	// 提供不了任何恢复能力，只会让记录与磁盘长期不一致。
+	//
+	// 注意顺序：先删记录再删文件。反过来若删文件成功、删记录失败，
+	// 库里会留下指向不存在文件的记录，列表里就是一片碎图。
+	if err := s.db.Unscoped().Delete(&asset).Error; err != nil {
 		return fmt.Errorf("删除媒体资源记录失败: %w", err)
 	}
 
@@ -252,4 +284,24 @@ func generateUUID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// canManageOwned 判断 operator 能否管理一条带 owner 的内容。
+//
+// 规则：
+//   - 1–3 级（admin/operator/editor）：可以管全部；
+//   - 4 级（member）：只能管自己的（ownerID 相同）；
+//   - 5 级（viewer）：只读，什么都不行；
+//   - ownerID 为 0 的历史数据：视为无归属，只有 1–3 级能动。
+func canManageOwned(operator *model.User, ownerID uint64) bool {
+	if operator == nil {
+		return false
+	}
+	if operator.HasLevel(model.LevelEditor) {
+		return true
+	}
+	if !operator.HasLevel(model.LevelMember) {
+		return false
+	}
+	return ownerID != 0 && operator.ID == ownerID
 }

@@ -25,7 +25,7 @@ type RSSFeed struct {
 
 // TableName 指定表名。
 func (RSSFeed) TableName() string {
-	return "homehub_rss_feeds"
+	return "rss_feeds"
 }
 
 // ============================================================
@@ -41,7 +41,7 @@ func (RSSFeed) TableName() string {
 // Published/FetchedAt 是"首次见到"的时间；每个源自己的发布时间在
 // RSSEntryFeed.Published 上。
 //
-// 表名：homehub_rss_entries
+// 表名：rss_entries
 type RSSEntry struct {
 	BaseModel
 	Title     string    `gorm:"size:500;not null" json:"title"`             // 条目标题
@@ -51,11 +51,34 @@ type RSSEntry struct {
 	MagnetURL string    `gorm:"type:text" json:"magnet_url,omitempty"`      // 磁力链接
 	Published time.Time `gorm:"index" json:"published"`                     // 首次见到的发布时间
 	FetchedAt time.Time `gorm:"not null" json:"fetched_at"`                 // 首次抓取时间
+
+	// ---- 磁力链接锁定与 PikPak 提交状态 ----
+	//
+	// 锁定的含义：这条磁力链接已被人工确认，后续抓取不得改写它。
+	// 抓取时的 ON CONFLICT 已经有“空值不覆盖”的保护，但那只挡得住
+	// 空值；源站换了磁力链接时仍会覆盖。锁定就是把这个口子关上。
+	//
+	// 锁定与 PikPak 是两件独立的事：可以只锁定不提交，也可以在未启用的
+	// 情况下单纯标记。所以两者字段分开，状态也分开。
+	MagnetLocked   bool       `gorm:"not null;default:false;index" json:"magnet_locked"`
+	MagnetLockedAt *time.Time `json:"magnet_locked_at,omitempty"`
+	MagnetLockedBy uint64     `gorm:"not null;default:0" json:"magnet_locked_by,omitempty"`
+
+	// PikPakStatus 提交状态：空 / pending / saved / failed。
+	// 用短字符串而不是枚举类型：改状态不需要 DDL。
+	//
+	// 这四列都显式指定 column：GORM 会把 PikPak 拆成 pik_pak，
+	// 得到 pik_pak_status 这种与 JSON、文档、手写 SQL 都不一致的名字。
+	// 别名一旦分叉，排查时最容易在这里踩坑。
+	PikPakStatus  string     `gorm:"column:pikpak_status;size:20;not null;default:'';index" json:"pikpak_status,omitempty"`
+	PikPakTaskID  string     `gorm:"column:pikpak_task_id;size:128" json:"pikpak_task_id,omitempty"`
+	PikPakError   string     `gorm:"column:pikpak_error;size:512" json:"pikpak_error,omitempty"`
+	PikPakSavedAt *time.Time `gorm:"column:pikpak_saved_at" json:"pikpak_saved_at,omitempty"`
 }
 
 // TableName 指定表名。
 func (RSSEntry) TableName() string {
-	return "homehub_rss_entries"
+	return "rss_entries"
 }
 
 // ============================================================
@@ -68,7 +91,7 @@ func (RSSEntry) TableName() string {
 // 不再被任何源收录时才回收内容本身。Published 是**该源**给出的发布
 // 时间，不同源可能不一致，按源筛选时按它排序。
 //
-// 表名：homehub_rss_entry_feeds
+// 表名：rss_entry_feeds
 type RSSEntryFeed struct {
 	BaseModel
 	EntryID     uint64    `gorm:"not null;uniqueIndex:idx_rss_entry_feed" json:"entry_id"`      // 条目 ID
@@ -80,5 +103,5 @@ type RSSEntryFeed struct {
 
 // TableName 指定表名。
 func (RSSEntryFeed) TableName() string {
-	return "homehub_rss_entry_feeds"
+	return "rss_entry_feeds"
 }

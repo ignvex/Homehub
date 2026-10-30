@@ -22,8 +22,9 @@ import (
 
 // RSS 订阅相关业务错误。
 var (
-	ErrRSSFeedNotFound = errors.New("订阅源不存在")
-	ErrRSSFeedExists   = errors.New("订阅源已存在")
+	ErrRSSFeedNotFound  = errors.New("订阅源不存在")
+	ErrRSSFeedExists    = errors.New("订阅源已存在")
+	ErrRSSEntryNotFound = errors.New("条目不存在")
 )
 
 // RSSService RSS 订阅业务服务。
@@ -41,6 +42,10 @@ type RSSService struct {
 	// 被 extension 集成方或测试调用。
 	imagesMu sync.RWMutex
 	images   RSSImageCache
+
+	// pikpak 是磁力链接提交的客户端；nil 表示未启用。
+	// 只在 SubmitMagnetToPikPak 里用，不影响抓取路径。
+	pikpak PikPakClient
 }
 
 // NewRSSService 创建 RSSService 实例。
@@ -48,11 +53,17 @@ type RSSService struct {
 // 默认抓取器跟随配置：rss.extension_url 为空时本地抓取，否则交给
 // extension 服务（HomeHub 单向发起请求）。要完全接管，可调用 SetFetcher。
 func NewRSSService(db *gorm.DB) *RSSService {
-	return &RSSService{
+	svc := &RSSService{
 		db:      db,
 		fetcher: newAutoFetcher(),
 		images:  NewLocalImageCache(db),
 	}
+	// PikPak 客户端跟随配置创建：未启用时是 nil，
+	// SubmitMagnetToPikPak 会返回 ErrPikPakDisabled。
+	if cfg := config.Get(); cfg != nil {
+		svc.pikpak = NewPikPakClient(cfg.RSS.PikPak)
+	}
+	return svc
 }
 
 // SetImageCache 替换图片缓存实现。
@@ -122,11 +133,15 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 		return nil, fmt.Errorf("解析订阅源失败: %w", err)
 	}
 
-	// 构造 RSSFeed 记录
+	// 构造 RSSFeed 记录。
+	//
+	// 标题、站点地址、图标都来自外部 feed，长度不受本仓库控制，必须按列
+	// 定义裁剪：超过 varchar 上限会让 PostgreSQL 拒绝整条 INSERT。
+	// URL 与条目 link 一样带 btree 唯一索引，额外受索引单键字节上限约束。
 	rssFeed := model.RSSFeed{
-		URL:           urlStr,
-		Title:         feed.Title,
-		SiteURL:       feed.Link,
+		URL:           model.TruncateIndexed(urlStr, 2048),
+		Title:         model.TruncateRunes(feed.Title, 255),
+		SiteURL:       model.TruncateIndexed(feed.Link, 2048),
 		Description:   feed.Description,
 		FetchInterval: 3600, // 默认 1 小时
 	}
@@ -137,7 +152,7 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 
 	// 提取站点图标
 	if feed.Image != nil && feed.Image.URL != "" {
-		rssFeed.IconURL = feed.Image.URL
+		rssFeed.IconURL = model.TruncateIndexed(feed.Image.URL, 2048)
 	}
 
 	if err := s.db.Create(&rssFeed).Error; err != nil {
@@ -161,7 +176,7 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, groupID *uint64) error {
 	updates := map[string]interface{}{}
 	if title != "" {
-		updates["title"] = title
+		updates["title"] = model.TruncateRunes(title, 255)
 	}
 	if fetchInterval > 0 {
 		updates["fetch_interval"] = fetchInterval
@@ -226,28 +241,42 @@ func (s *RSSService) DeleteFeed(id uint64) error {
 // purgeOrphanEntries 删除不再被任何源收录的条目及其图片引用。
 //
 // 传入的 entryIDs 只是候选集：其他源可能仍在引用其中一部分，所以必须
-// 在删完关联之后按"当前是否还有关联行"重新判定，不能按候选集直接删。
+// 按"当前是否还有关联行"重新判定，不能按候选集直接删。
+//
+// 判定与删除必须在**同一条语句**里完成。早期写法是先 SELECT 出 orphan
+// 列表、再 DELETE WHERE id IN (orphans)：READ COMMITTED 下两条语句各取
+// 一次快照，若另一源的抓取恰好在两者之间提交了该条目的关联，DELETE 不会
+// 重新评估 NOT EXISTS —— 条目连同正文与图片引用被删掉，只留下一条悬挂
+// 关联；随后 Sweep 会把失去引用的图片文件也清掉，等于把别源的正常内容
+// 连根删除。
+//
+// 现在用带 NOT EXISTS 的 DELETE ... RETURNING，判定和删除是同一个快照。
 func (s *RSSService) purgeOrphanEntries(tx *gorm.DB, entryIDs []uint64) error {
 	if len(entryIDs) == 0 {
 		return nil
 	}
 
+	// 物理删除：软删除会让 link 唯一索引一直占位，同一链接重新出现时
+	// 插入会被 ON CONFLICT 静默吞掉。
+	//
+	// RETURNING id 拿回真正被删的行，供下面清理图片引用 —— 不能再靠
+	// 事前的候选集推断哪些条目真的死了。
 	var orphans []uint64
-	if err := tx.Model(&model.RSSEntry{}).
-		Where("id IN ?", entryIDs).
-		Where("NOT EXISTS (SELECT 1 FROM homehub_rss_entry_feeds ef WHERE ef.entry_id = homehub_rss_entries.id AND ef.deleted_at IS NULL)").
-		Pluck("id", &orphans).Error; err != nil {
-		return fmt.Errorf("查询孤儿条目失败: %w", err)
+	if err := tx.Raw(`
+		DELETE FROM rss_entries
+		WHERE id IN ?
+		  AND NOT EXISTS (
+		      SELECT 1 FROM rss_entry_feeds ef
+		      WHERE ef.entry_id = rss_entries.id AND ef.deleted_at IS NULL
+		  )
+		RETURNING id`, entryIDs).Scan(&orphans).Error; err != nil {
+		return fmt.Errorf("删除孤儿条目失败: %w", err)
 	}
 	if len(orphans) == 0 {
 		return nil
 	}
 
-	// 物理删除：软删除会让 link 唯一索引一直占位，同一链接重新出现时
-	// 插入会被 ON CONFLICT 静默吞掉。
-	if err := tx.Unscoped().Where("id IN ?", orphans).Delete(&model.RSSEntry{}).Error; err != nil {
-		return fmt.Errorf("删除孤儿条目失败: %w", err)
-	}
+	// 图片引用指向条目，条目已删，引用一并回收。
 	if err := tx.Unscoped().Where("entry_id IN ?", orphans).Delete(&model.RSSImageRef{}).Error; err != nil {
 		return fmt.Errorf("删除孤儿条目的图片引用失败: %w", err)
 	}
@@ -304,14 +333,41 @@ type RSSEntryView struct {
 	Published time.Time `json:"published"`
 	FetchedAt time.Time `json:"fetched_at"`
 	FeedIDs   []uint64  `json:"feed_ids"`
+
+	MagnetLocked   bool       `json:"magnet_locked"`
+	MagnetLockedAt *time.Time `json:"magnet_locked_at,omitempty"`
+	PikPakStatus   string     `json:"pikpak_status,omitempty"`
+	PikPakTaskID   string     `json:"pikpak_task_id,omitempty"`
+	PikPakError    string     `json:"pikpak_error,omitempty"`
+	PikPakSavedAt  *time.Time `json:"pikpak_saved_at,omitempty"`
 }
 
-// ListEntries 分页查询条目，按发布时间倒序。
+// EntryFilter 是条目列表的查询条件。
 //
-// page 从 1 开始；perPage <= 0 时默认 20。
-// feedID == 0 表示不按源过滤；groupID > 0 表示只看该分组下的源。
+// 用结构体而不是一长串参数：筛选维度还会继续增加（已锁、已提交、
+// 有磁力……），位置参数每加一个都会让调用点变得难以阅读。
+type EntryFilter struct {
+	FeedID  uint64
+	GroupID uint64
+	Page    int
+	PerPage int
+	// Magnet 磁力链接维度筛选：
+	//   ""          不过滤
+	//   "has"       有磁力链接
+	//   "locked"    已锁定
+	//   "unlocked"  有磁力但未锁定
+	//   "pikpak_saved"  已成功提交到 PikPak
+	//   "pikpak_failed" 提交失败
+	Magnet string
+}
+
+// ListEntries 按条件分页查询条目，按发布时间倒序。
+//
 // 同一个条目被多个源收录时只出现一次，FeedIDs 列出全部来源。
-func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage int) ([]RSSEntryView, int64, error) {
+func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
+	page, perPage := f.Page, f.PerPage
+	feedID, groupID := f.FeedID, f.GroupID
+
 	if page < 1 {
 		page = 1
 	}
@@ -319,8 +375,8 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 		perPage = 20
 	}
 
-	baseQuery := s.db.Table("homehub_rss_entries AS e").
-		Joins("JOIN homehub_rss_entry_feeds AS ef ON ef.entry_id = e.id AND ef.deleted_at IS NULL").
+	baseQuery := s.db.Table("rss_entries AS e").
+		Joins("JOIN rss_entry_feeds AS ef ON ef.entry_id = e.id AND ef.deleted_at IS NULL").
 		Where("e.deleted_at IS NULL")
 
 	if feedID > 0 {
@@ -328,12 +384,27 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 	}
 	if groupID > 0 {
 		baseQuery = baseQuery.
-			Joins("JOIN homehub_rss_feeds AS f ON f.id = ef.feed_id AND f.deleted_at IS NULL").
+			Joins("JOIN rss_feeds AS f ON f.id = ef.feed_id AND f.deleted_at IS NULL").
 			Where("f.group_id = ?", groupID)
 	}
 
+	// 磁力链接维度。condition 为 nil 时表示参数值非法 —— 调用方应先校验，
+	// 这里不再兜底成“忽略筛选”，否则非法值会静默返回全部数据。
+	if cond, ok := magnetCondition(f.Magnet); !ok {
+		return nil, 0, fmt.Errorf("无效的磁力筛选条件 %q", f.Magnet)
+	} else if cond != "" {
+		baseQuery = baseQuery.Where(cond)
+	}
+
+	// 统计总数用独立会话。
+	//
+	// 直接 baseQuery.Distinct(...).Count(...) 会把 DISTINCT 写进 baseQuery
+	// 自身，随后的分页查询就变成 `SELECT DISTINCT e.id ... GROUP BY e.id,
+	// e.published ORDER BY e.published`，PostgreSQL 会报
+	// 42P10：ORDER BY 表达式必须出现在 SELECT 列表里。
+	// Session 复制一份 statement，条件相同但不互相污染。
 	var total int64
-	if err := baseQuery.Distinct("e.id").Count(&total).Error; err != nil {
+	if err := baseQuery.Session(&gorm.Session{}).Distinct("e.id").Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("统计条目数量失败: %w", err)
 	}
 	if total == 0 {
@@ -400,15 +471,21 @@ func (s *RSSService) ListEntries(feedID uint64, groupID uint64, page, perPage in
 			feedIDs = []uint64{}
 		}
 		views = append(views, RSSEntryView{
-			ID:        entry.ID,
-			Title:     entry.Title,
-			Link:      entry.Link,
-			Author:    entry.Author,
-			Content:   entry.Content,
-			MagnetURL: entry.MagnetURL,
-			Published: entry.Published,
-			FetchedAt: entry.FetchedAt,
-			FeedIDs:   feedIDs,
+			ID:             entry.ID,
+			Title:          entry.Title,
+			Link:           entry.Link,
+			Author:         entry.Author,
+			Content:        entry.Content,
+			MagnetURL:      entry.MagnetURL,
+			Published:      entry.Published,
+			FetchedAt:      entry.FetchedAt,
+			FeedIDs:        feedIDs,
+			MagnetLocked:   entry.MagnetLocked,
+			MagnetLockedAt: entry.MagnetLockedAt,
+			PikPakStatus:   entry.PikPakStatus,
+			PikPakTaskID:   entry.PikPakTaskID,
+			PikPakError:    entry.PikPakError,
+			PikPakSavedAt:  entry.PikPakSavedAt,
 		})
 	}
 	return views, total, nil
@@ -444,15 +521,16 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 	// 抓取并解析（超时由调用方的 ctx 控制）
 	parsed, err := s.fetcher.Fetch(ctx, feed.URL)
 	if err != nil {
-		// 更新错误信息
-		errMsg := err.Error()
-		if len(errMsg) > 1024 {
-			errMsg = errMsg[:1024]
-		}
-		s.db.Model(&feed).Updates(map[string]interface{}{
+		// error_msg 是 varchar(1024)：按字符裁剪，字节切片会切断多字节字符。
+		// 外部响应片段可能自带非法 UTF-8（512 字节硬切），TruncateEllipsis
+		// 会一并修复，否则整条 UPDATE 会被 PostgreSQL 拒收。
+		errMsg := model.TruncateEllipsis(err.Error(), 1024)
+		if dbErr := s.db.Model(&feed).Updates(map[string]interface{}{
 			"last_fetch": time.Now(),
 			"error_msg":  errMsg,
-		})
+		}).Error; dbErr != nil {
+			logger.Warn("[rss] 写入抓取失败状态失败", "feed_id", feed.ID, "error", dbErr)
+		}
 		return fmt.Errorf("抓取订阅源失败: %w", err)
 	}
 
@@ -462,21 +540,28 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 	// ON CONFLICT 只更新磁力链接，不覆盖正文、也不改动归属 —— 归属由
 	// 后面的 entry_feeds 关联行表达。
 	now := time.Now()
-	entries := make([]model.RSSEntry, 0, len(parsed.Items))
-	publishedByLink := make(map[string]time.Time, len(parsed.Items))
-	for _, item := range parsed.Items {
-		entry := s.itemToEntry(item, now)
-		if entry.Link == "" {
-			continue // 跳过无链接条目
-		}
-		entries = append(entries, entry)
-		publishedByLink[entry.Link] = entry.Published
-	}
+	entries, publishedByLink := s.entriesFromItems(parsed.Items, now)
 
 	if len(entries) > 0 {
+		// 冲突时只回填 magnet_url，且不用空值覆盖已有值。
+		//
+		// 背景：条目跨源共享，同一个 link 可能先被带磁力的源收录、
+		// 再被不带磁力的源收录。直接用 `SET magnet_url = excluded.magnet_url`
+		// 会在后一次抓取时把已有磁力链接清空 —— 一次抓取就永久丢失
+		// 已经提取到的数据，而正文走的是"首次写入优先"，磁力却相反。
 		if err := s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "link"}},
-			DoUpdates: clause.AssignmentColumns([]string{"magnet_url"}),
+			Columns: []clause.Column{{Name: "link"}},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				// 三层保护，优先级从高到低：
+				//   1. 已锁定 → 一个字都不改（人工确认过的链接最高优先级）；
+				//   2. 新值为空 → 保留旧值（避免一次抓取清空已有链接）；
+				//   3. 否则用新值。
+				"magnet_url": gorm.Expr(
+					`CASE WHEN rss_entries.magnet_locked
+					      THEN rss_entries.magnet_url
+					      ELSE COALESCE(NULLIF(excluded.magnet_url, ''), rss_entries.magnet_url)
+					 END`),
+			}),
 		}).Create(&entries).Error; err != nil {
 			return s.failFeed(feed, now, fmt.Errorf("保存条目失败: %w", err))
 		}
@@ -508,6 +593,46 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 
 	// 4. 建立"本源收录了这些条目"的关联。
 	if len(stored) > 0 {
+		// 先复验订阅源仍然存在。
+		//
+		// FetchFeed 在第 1 步读出 feed 行之后，要花数秒到数分钟做 HTTP
+		// 抓取与图片下载。这期间用户完全可能删掉这个源："加错源，几秒内
+		// 删掉"就是最常见的一条路径（CreateFeed 会用独立 goroutine 立即
+		// 首次抓取）。删除事务已经提交，若这里不检查就写入，会留下指向
+		// 不存在 feed 的悬挂关联。
+		//
+		// 悬挂关联的后果比"多几行垃圾"严重得多：孤儿判定只看关联行是否
+		// 存在（NOT EXISTS），所以这些条目永远不满足孤儿条件——正文、
+		// 图片引用、磁盘上的图片文件全被永久钉住，且没有任何回收路径。
+		//
+		// Model(&RSSFeed{}) 会带上 deleted_at IS NULL，软删除的源同样算不存在。
+		var alive int64
+		if err := s.db.Model(&model.RSSFeed{}).Where("id = ?", feed.ID).
+			Count(&alive).Error; err != nil {
+			return s.failFeed(feed, now, fmt.Errorf("确认订阅源存在性失败: %w", err))
+		}
+		if alive == 0 {
+			// 源已被删除：不写关联，并回收本批刚插入却已无归属的条目。
+			//
+			// 只跳过关联是不够的。条目、正文与图片引用在走到这里之前
+			// 已经写库（FetchFeed 全程不在一个事务里），若不复回收，
+			// 留下来的是"无关联条目"——而孤儿回收的候选集只来自
+			// entry_feeds，这类条目永远不会成为候选，等于永久泄漏。
+			//
+			// purgeOrphanEntries 只删确实没有任何关联的条目：本批中如果
+			// 有内容早已被其他源收录，它们会被安全保留。
+			ids := make([]uint64, 0, len(stored))
+			for _, entry := range stored {
+				ids = append(ids, entry.ID)
+			}
+			if err := s.purgeOrphanEntries(s.db, ids); err != nil {
+				return s.failFeed(feed, now, fmt.Errorf("回收已删除订阅源的孤儿条目失败: %w", err))
+			}
+			logger.Info("[rss] 订阅源在抓取期间被删除，已丢弃本批关联并回收孤儿条目",
+				"feed_id", feed.ID, "candidates", len(ids))
+			return nil
+		}
+
 		refs := make([]model.RSSEntryFeed, 0, len(stored))
 		for _, entry := range stored {
 			published := publishedByLink[entry.Link]
@@ -534,6 +659,12 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 
 	logger.Info("[rss] 抓取完成", "feed_id", feed.ID, "entries", len(entries))
 
+	// 4.5 自动锁定磁力链接（配置开启时）
+	if err := s.autoLockMagnets(now); err != nil {
+		// 只是辅助功能，失败不该让整轮抓取失败
+		logger.Warn("[rss] 自动锁定磁力链接失败", "feed_id", feed.ID, "error", err)
+	}
+
 	// 5. 执行保留策略
 	if err := s.enforceRetention(ctx, feed.ID); err != nil {
 		return s.failFeed(feed, now, err)
@@ -544,18 +675,18 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 		"last_fetch": now,
 		"error_msg":  "",
 	}
-	// 如果标题发生了变化，更新标题
+	// 如果标题发生了变化，更新标题（同样按列定义裁剪）
 	if parsed.Title != "" && parsed.Title != feed.Title {
-		updates["title"] = parsed.Title
+		updates["title"] = model.TruncateRunes(parsed.Title, 255)
 	}
 	if parsed.Description != "" {
-		updates["description"] = parsed.Description
+		updates["description"] = parsed.Description // text 列，无长度上限
 	}
 	if parsed.Link != "" {
-		updates["site_url"] = parsed.Link
+		updates["site_url"] = model.TruncateIndexed(parsed.Link, 2048)
 	}
 	if parsed.Image != nil && parsed.Image.URL != "" {
-		updates["icon_url"] = parsed.Image.URL
+		updates["icon_url"] = model.TruncateIndexed(parsed.Image.URL, 2048)
 	}
 
 	s.db.Model(&feed).Updates(updates)
@@ -768,20 +899,60 @@ func (s *RSSService) StartImageJanitor(ctx context.Context) {
 // 内部方法
 // ============================================================
 
+// entriesFromItems 把解析出的条目转成待入库的行，并按 link 去重。
+//
+// 去重是必需的，不是优化：调用方会把返回值作为**一条多行 INSERT ...
+// ON CONFLICT DO UPDATE** 的输入。PostgreSQL 不充许同一语句内有两个
+// 行命中同一个冲突键，会直接报错：
+//
+//	21000: ON CONFLICT DO UPDATE command cannot affect row a second time
+//
+// 而同一个 feed 内出现两条相同 link 是常见现象（源站自己重复发布）；
+// 链接被截断到列上限后，两个不同长 URL 也可能撞成同一个值。一旦发生，
+// 不是丢一条而是**整批回滚** → 该源每一轮抓取都失败，且不会自愈。
+//
+// 保留首次出现的条目（与"首次写入优先"的正文策略一致），同时返回
+// link → 发布时间 的映射供后续建立关联。
+func (s *RSSService) entriesFromItems(items []*gofeed.Item, now time.Time) ([]model.RSSEntry, map[string]time.Time) {
+	entries := make([]model.RSSEntry, 0, len(items))
+	publishedByLink := make(map[string]time.Time, len(items))
+	seen := make(map[string]struct{}, len(items))
+
+	for _, item := range items {
+		entry := s.itemToEntry(item, now)
+		if entry.Link == "" {
+			continue // 无链接的条目无法去重，也无法建立归属
+		}
+		if _, dup := seen[entry.Link]; dup {
+			continue
+		}
+		seen[entry.Link] = struct{}{}
+		entries = append(entries, entry)
+		publishedByLink[entry.Link] = entry.Published
+	}
+
+	return entries, publishedByLink
+}
+
 // itemToEntry 把 gofeed 条目转换成不含正文的 RSSEntry 骨架。
 //
 // 正文要等条目入库、拿到 ID 之后才能清洗 —— 图片引用挂在 entry_id 上。
 // 这里只处理不依赖 ID 的字段。
 func (s *RSSService) itemToEntry(item *gofeed.Item, fetchedAt time.Time) model.RSSEntry {
+	// 标题、作者、链接都直接来自外部 feed，长度不受本仓库控制，必须按列
+	// 定义裁剪：超过 varchar 上限会让 PostgreSQL 拒绝整条 INSERT，而这批
+	// 条目是一条 INSERT 写入的，一条超长会带走整批。截断点还必须落在 rune
+	// 边界上，否则非法 UTF-8 同样会被拒收。
+	// link 带 btree 唯一索引，额外受索引单键字节上限约束。
 	entry := model.RSSEntry{
-		Title:     item.Title,
-		Link:      truncateStr(item.Link, 2048),
+		Title:     model.TruncateRunes(item.Title, 500),
+		Link:      model.TruncateIndexed(item.Link, 2048),
 		FetchedAt: fetchedAt,
 	}
 
 	// 作者
 	if item.Author != nil {
-		entry.Author = item.Author.Name
+		entry.Author = model.TruncateRunes(item.Author.Name, 255)
 	}
 
 	// 内容：优先摘要，再取正文，截断到 2000 字符
@@ -1013,14 +1184,6 @@ func extractMagnet(text string) string {
 	return magnetPattern.FindString(text)
 }
 
-// truncateStr 按字符截断字符串，用于保护数据库列长度限制。
-func truncateStr(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
-}
-
 // cacheDir 图片缓存目录。
 var cacheDir = filepath.Join("web", "static", "uploads", "rss_img")
 
@@ -1048,21 +1211,39 @@ func (s *RSSService) sanitizeContent(ctx context.Context, entryID uint64, conten
 	}
 
 	if urls := doc.externalImageSources(); len(urls) > 0 {
-		doc.applyImageMapping(s.imageCache().Cache(ctx, entryID, urls))
+		mapping, err := s.imageCache().Cache(ctx, entryID, urls)
+		if err != nil {
+			// 图片登记失败（数据库不可用等）：返回空串让调用方**不写正文**。
+			//
+			// 正文一旦落库就不会重算（fillEntryContent 只处理空正文）。
+			// 若此时把“没有图的版本”写进去，这批图片就永久丢失，且没有任何
+			// 自愈路径。保持正文为空，下次抓取会重新处理。
+			//
+			// 代价是这条条目暂时没有正文；比起永久丢图，这个代价更小，
+			// 而且条目仍可通过 link 跳转原文。
+			logger.Warn("[rss] 图片登记失败，暂不写正文以便下次重试",
+				"entry_id", entryID, "error", err)
+			return ""
+		}
+		doc.applyImageMapping(mapping)
 	}
 	return doc.render()
 }
 
 // failFeed 记录一次抓取失败的状态并返回包装后的错误。
 func (s *RSSService) failFeed(feed model.RSSFeed, at time.Time, err error) error {
-	errMsg := err.Error()
-	if len(errMsg) > 1024 {
-		errMsg = errMsg[:1024]
-	}
-	s.db.Model(&feed).Updates(map[string]interface{}{
+	// error_msg 是 varchar(1024)：按字符裁剪，字节切片会切断多字节字符。
+	errMsg := model.TruncateEllipsis(err.Error(), 1024)
+	if dbErr := s.db.Model(&feed).Updates(map[string]interface{}{
 		"last_fetch": at,
 		"error_msg":  errMsg,
-	})
+	}).Error; dbErr != nil {
+		// 不能默默丢掉：该 UPDATE 同时写 last_fetch，写不进去的话
+		// FetchAll 会认为这个源永远到期，每轮都重试且每轮都不留痕迹，
+		// 表现为"抓取一直失败，错误列却是空的"。此处只记一条日志，
+		// 仍把原始错误返回给调用方。
+		logger.Warn("[rss] 写入抓取失败状态失败", "feed_id", feed.ID, "error", dbErr)
+	}
 	return err
 }
 
@@ -1078,7 +1259,8 @@ func (s *RSSService) fillEntryContent(ctx context.Context, parsed *gofeed.Feed, 
 	// 按 link 索引源条目，避免嵌套遍历。
 	itemsByLink := make(map[string]*gofeed.Item, len(parsed.Items))
 	for _, item := range parsed.Items {
-		link := truncateStr(item.Link, 2048)
+		// 必须与 itemToEntry 使用同一种截断，否则和库里的 link 匹配不上。
+		link := model.TruncateIndexed(item.Link, 2048)
 		if link == "" {
 			continue
 		}
@@ -1134,4 +1316,57 @@ func isImageExt(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// magnetCondition 把磁力筛选参数翻译成 SQL 条件。
+//
+// 第二个返回值 false 表示参数值非法。空串表示“不筛选”，是合法的。
+// 白名单而不是拼接：这些值直接进 WHERE，不能接受任意输入。
+func magnetCondition(mode string) (string, bool) {
+	switch mode {
+	case "":
+		return "", true
+	case "has":
+		return "e.magnet_url <> ''", true
+	case "locked":
+		return "e.magnet_locked = TRUE AND e.magnet_url <> ''", true
+	case "unlocked":
+		return "e.magnet_locked = FALSE AND e.magnet_url <> ''", true
+	case "pikpak_saved":
+		return "e.pikpak_status = 'saved'", true
+	case "pikpak_failed":
+		return "e.pikpak_status = 'failed'", true
+	default:
+		return "", false
+	}
+}
+
+// autoLockMagnets 把尚未锁定的、有磁力链接的条目自动标记为锁定。
+//
+// 只在 rss.pikpak.auto_lock 开启时生效。默认关闭是有意的：
+// “锁定”这个动作的价值在于人工确认，自动锁定会让它退化成
+// 一个无意义的布尔值。开启它的场景是“我信这个源，凡是带磁力的都算确认过”。
+//
+// MagnetLockedBy 记为 0，与人工锁定（记录真实用户 ID）区分开。
+func (s *RSSService) autoLockMagnets(now time.Time) error {
+	cfg := config.Get()
+	if cfg == nil || !cfg.RSS.PikPak.AutoLock {
+		return nil
+	}
+
+	res := s.db.Model(&model.RSSEntry{}).
+		Where("magnet_locked = FALSE").
+		Where("magnet_url <> ''").
+		Updates(map[string]any{
+			"magnet_locked":    true,
+			"magnet_locked_at": now,
+			"magnet_locked_by": 0,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("自动锁定磁力链接失败: %w", res.Error)
+	}
+	if res.RowsAffected > 0 {
+		logger.Info("[rss] 已自动锁定磁力链接", "count", res.RowsAffected)
+	}
+	return nil
 }

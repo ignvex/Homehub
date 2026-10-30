@@ -48,7 +48,7 @@ func currentVariant(source avatarSource) string {
 
 // expectUser 安排一次用户查询。
 func expectUser(mock sqlmock.Sqlmock, id uint64, email string) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_users"`).
+	mock.ExpectQuery(`SELECT \* FROM "users"`).
 		WithArgs(id, 1).
 		WillReturnRows(sqlmock.NewRows(userColumns()).
 			AddRow(id, nil, nil, nil, "u", "hash", email, "user", true))
@@ -56,13 +56,13 @@ func expectUser(mock sqlmock.Sqlmock, id uint64, email string) {
 
 // expectCacheMiss 安排一次头像缓存查询并返回空结果。
 func expectCacheMiss(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_avatar_caches"`).
+	mock.ExpectQuery(`SELECT \* FROM "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows(cacheColumns()))
 }
 
 // expectCachedAvatar 安排一次命中缓存的查询。
 func expectCachedAvatar(mock sqlmock.Sqlmock, variant, emailHash string, data []byte, contentType string) {
-	mock.ExpectQuery(`SELECT \* FROM "homehub_avatar_caches"`).
+	mock.ExpectQuery(`SELECT \* FROM "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows(cacheColumns()).
 			AddRow(1, nil, nil, nil, 1, variant, emailHash, data, contentType, "etag-upstream", "lm"))
 }
@@ -70,9 +70,9 @@ func expectCachedAvatar(mock sqlmock.Sqlmock, variant, emailHash string, data []
 // expectAvatarWrite 安排事务内的「删旧 + 插新」。
 func expectAvatarWrite(mock sqlmock.Sqlmock, rowsChanged int64, newID int64) {
 	mock.ExpectBegin()
-	mock.ExpectExec(`DELETE FROM "homehub_avatar_caches"`).
+	mock.ExpectExec(`DELETE FROM "avatar_caches"`).
 		WillReturnResult(sqlmock.NewResult(0, rowsChanged))
-	mock.ExpectQuery(`INSERT INTO "homehub_avatar_caches"`).
+	mock.ExpectQuery(`INSERT INTO "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(newID))
 	mock.ExpectCommit()
 }
@@ -314,7 +314,7 @@ func TestGetAvatarDataUserNotFound(t *testing.T) {
 	defer cleanup()
 	svc := NewGravatarService(db)
 
-	mock.ExpectQuery(`SELECT \* FROM "homehub_users"`).
+	mock.ExpectQuery(`SELECT \* FROM "users"`).
 		WithArgs(uint64(99), 1).
 		WillReturnRows(sqlmock.NewRows(userColumns()))
 
@@ -344,12 +344,12 @@ func TestGetAvatarDataCoalescesConcurrentFetches(t *testing.T) {
 
 	// 两个请求各查一次用户与缓存；先到者还会在 singleflight 内复查一次缓存。
 	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`SELECT \* FROM "homehub_users"`).
+		mock.ExpectQuery(`SELECT \* FROM "users"`).
 			WillReturnRows(sqlmock.NewRows(userColumns()).
 				AddRow(1, nil, nil, nil, "u", "hash", "a@b.com", "user", true))
 	}
 	for i := 0; i < 3; i++ {
-		mock.ExpectQuery(`SELECT \* FROM "homehub_avatar_caches"`).
+		mock.ExpectQuery(`SELECT \* FROM "avatar_caches"`).
 			WillReturnRows(sqlmock.NewRows(cacheColumns()))
 	}
 	expectAvatarWrite(mock, 0, 2)
@@ -480,7 +480,7 @@ func TestRefreshAvatarRemovesCacheWhenUpstreamSaysMissing(t *testing.T) {
 
 	expectUser(mock, 1, "a@b.com")
 	expectCachedAvatar(mock, currentVariant(src), u.GravatarHash(), []byte("img"), "image/png")
-	mock.ExpectExec(`DELETE FROM "homehub_avatar_caches"`).
+	mock.ExpectExec(`DELETE FROM "avatar_caches"`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	updated, err := svc.RefreshAvatar(context.Background(), 1)
@@ -532,9 +532,9 @@ func TestStoreAvatarWrapsInTransaction(t *testing.T) {
 	svc := NewGravatarService(db)
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`DELETE FROM "homehub_avatar_caches"`).
+	mock.ExpectExec(`DELETE FROM "avatar_caches"`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(`INSERT INTO "homehub_avatar_caches"`).
+	mock.ExpectQuery(`INSERT INTO "avatar_caches"`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectCommit()
 

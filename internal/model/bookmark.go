@@ -9,9 +9,9 @@ type BookmarkGroup struct {
 	Bookmarks []Bookmark `gorm:"foreignKey:GroupID" json:"bookmarks,omitempty"`
 }
 
-// TableName 指定表名为 homehub_bookmark_groups。
+// TableName 指定表名为 bookmark_groups。
 func (BookmarkGroup) TableName() string {
-	return "homehub_bookmark_groups"
+	return "bookmark_groups"
 }
 
 // Bookmark 书签模型。
@@ -25,7 +25,7 @@ type Bookmark struct {
 	Priority  int    `gorm:"default:0" json:"priority"`
 }
 
-// TableName 指定表名为 homehub_bookmarks。
+// TableName 指定表名为 bookmarks。
 func (Bookmark) TableName() string {
-	return "homehub_bookmarks"
+	return "bookmarks"
 }

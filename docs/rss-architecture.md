@@ -29,7 +29,7 @@
 
 `FetchFeed(ctx, feedID)`：
 
-1. 查 `homehub_rss_feeds`；
+1. 查 `rss_feeds`；
 2. 复验 feed URL（SSRF 防护）；
 3. 通过 `RSSFetcher` 抓取：
    - `rss.extension_url` 为空 → `httpFeedFetcher` 直接 HTTP 拉取；
@@ -38,7 +38,7 @@
 5. 逐条 `itemToEntry` 构造**不含正文的骨架**（标题、链接、作者、磁力链接）；
 6. 骨架批量 `INSERT ... ON CONFLICT (link) DO UPDATE magnet_url`；
 7. 查回 `link → (entry_id, content)`，**只为正文为空的条目**清洗 HTML 并缓存图片；
-8. 批量 upsert `homehub_rss_entry_feeds`（条目归属 + 该源的发布时间）；
+8. 批量 upsert `rss_entry_feeds`（条目归属 + 该源的发布时间）；
 9. `enforceRetention` 按本源收录数删关联，孤儿条目才回收；
 10. 更新 `last_fetch` / `error_msg` / 标题等元数据。
 
@@ -95,7 +95,7 @@ flowchart TD
 - 文件名：`rss_<md5>.<ext>`；
 - 目录：`web/static/uploads/rss_img/`；
 - 同一 URL 在多个条目之间共享同一份物理文件；
-- 归属关系写在 `homehub_rss_image_refs`，指向**条目**而不是源：
+- 归属关系写在 `rss_image_refs`，指向**条目**而不是源：
   条目本身已跨源共享，图片因此只有一份引用。
 
 下载路径的关键约束：
@@ -120,18 +120,18 @@ flowchart TD
 
 ```mermaid
 erDiagram
-    homehub_rss_groups ||--o{ homehub_rss_feeds : "group_id"
-    homehub_rss_feeds ||--o{ homehub_rss_entry_feeds : "feed_id"
-    homehub_rss_entries ||--o{ homehub_rss_entry_feeds : "entry_id"
-    homehub_rss_images ||--o{ homehub_rss_image_refs : "image_id"
-    homehub_rss_entries ||--o{ homehub_rss_image_refs : "entry_id"
+    rss_groups ||--o{ rss_feeds : "group_id"
+    rss_feeds ||--o{ rss_entry_feeds : "feed_id"
+    rss_entries ||--o{ rss_entry_feeds : "entry_id"
+    rss_images ||--o{ rss_image_refs : "image_id"
+    rss_entries ||--o{ rss_image_refs : "entry_id"
 
-    homehub_rss_groups {
+    rss_groups {
         uint id PK
         string name
         int sort_order
     }
-    homehub_rss_feeds {
+    rss_feeds {
         uint id PK
         string title
         string url UK
@@ -141,7 +141,7 @@ erDiagram
         string error_msg
         uint group_id FK
     }
-    homehub_rss_entries {
+    rss_entries {
         uint id PK
         string title
         string link UK "全表唯一"
@@ -151,7 +151,7 @@ erDiagram
         datetime published "首次见到"
         datetime fetched_at
     }
-    homehub_rss_entry_feeds {
+    rss_entry_feeds {
         uint id PK
         uint entry_id FK
         uint feed_id FK
@@ -159,7 +159,7 @@ erDiagram
         datetime first_seen_at
         datetime last_seen_at
     }
-    homehub_rss_images {
+    rss_images {
         uint id PK
         string cache_key UK "md5(源 URL)"
         text source_url
@@ -169,7 +169,7 @@ erDiagram
         string sha256
         datetime last_seen_at
     }
-    homehub_rss_image_refs {
+    rss_image_refs {
         uint id PK
         uint image_id FK
         uint entry_id FK
@@ -182,8 +182,8 @@ erDiagram
 ### 2.2 关系说明
 
 - 一个分组包含多个订阅源；删除分组时源被移到“未分组”，不会级联删除。
-- **条目不归属任何源**：`homehub_rss_entries` 只存内容，按 `link` 全表
-  唯一；"哪个源收录了它"由 `homehub_rss_entry_feeds` 表达，一个条目可以
+- **条目不归属任何源**：`rss_entries` 只存内容，按 `link` 全表
+  唯一；"哪个源收录了它"由 `rss_entry_feeds` 表达，一个条目可以
   被任意多个源收录。
 - 删除一个源只删它自己的关联行。条目必须变成孤儿（没有任何关联）才会
   被回收 —— 这就是"删 A 不影响 B"的机制。
@@ -209,15 +209,15 @@ stateDiagram-v2
 
 ### 3.1 旧行为（已修复）
 
-旧版 `homehub_rss_entries.link` 是单列唯一索引，`feed_id` 直接存在条目上。
+旧版 `rss_entries.link` 是单列唯一索引，`feed_id` 直接存在条目上。
 两个源收录同一链接时，后抓到的源命中 `ON CONFLICT (link)`，只更新
 `magnet_url`，`feed_id` 仍是先抓到的那个：B 的列表里根本看不到这条内容。
 
 ### 3.2 现在的模型
 
 ```
-homehub_rss_entries        纯内容，link 全表唯一，不存 feed_id
-homehub_rss_entry_feeds    (entry_id, feed_id) + 该源的 published
+rss_entries        纯内容，link 全表唯一，不存 feed_id
+rss_entry_feeds    (entry_id, feed_id) + 该源的 published
 ```
 
 同一条内容只存一行，被 N 个源指向：
@@ -257,7 +257,7 @@ entry_feeds:  (11, A)  published=2026-10-01
 ### 3.5 图片文件仍按 URL 全局共享
 
 文件名是 `rss_<md5(源 URL)>.<ext>`，不含 feed_id。同一张图在多个条目之间
-共享一份物理文件，靠 `homehub_rss_image_refs` 记账。
+共享一份物理文件，靠 `rss_image_refs` 记账。
 
 如果希望物理隔离（每个源各存一份），需要把缓存键改成
 `md5(feedID + "\x00" + URL)`。代价是磁盘占用上升、跨源去重失效。
@@ -268,9 +268,9 @@ entry_feeds:  (11, A)  published=2026-10-01
 
 ### 4.1 新增表
 
-- `homehub_rss_images`：缓存图片的资源记录（cache_key 唯一、文件名、
+- `rss_images`：缓存图片的资源记录（cache_key 唯一、文件名、
   Content-Type、大小、sha256、last_seen_at）。
-- `homehub_rss_image_refs`：图片 ↔ 订阅源/条目的引用关系，
+- `rss_image_refs`：图片 ↔ 订阅源/条目的引用关系，
   联合唯一索引 `(image_id, feed_id, entry_hash)`。
 
 ### 4.2 新增配置
@@ -426,8 +426,8 @@ extension 的可用性、鉴权、缓存淘汰都会变成 HomeHub 页面的一�
 5. **`UpdateFeed` 不能把分组清空**：传 `group_id: null` 时不会更新，
    只能改成另一个分组。前端目前没有“移回未分组”的入口。
 6. **图片缓存与用户上传共用 `/static/uploads/`**：安全头对两者一视同仁；
-   但 `homehub_media_assets` 里没有 RSS 图片记录，媒体管理页看不到它们。
-   这是有意的（RSS 图片由 `homehub_rss_images` 管理），文档需明确。
+   但 `media_assets` 里没有 RSS 图片记录，媒体管理页看不到它们。
+   这是有意的（RSS 图片由 `rss_images` 管理），文档需明确。
 7. **`cacheDir` 是相对路径**：依赖进程工作目录。Dockerfile 的
    `WORKDIR /app` 下正常；如果从其他目录启动二进制，需要同步调整
    `static` 挂载与工作目录。
@@ -436,14 +436,14 @@ extension 的可用性、鉴权、缓存淘汰都会变成 HomeHub 页面的一�
 
 ## 7. 排障速查
 
-- 图片 404：先看 `homehub_rss_images` 是否有记录、文件是否在
+- 图片 404：先看 `rss_images` 是否有记录、文件是否在
   `web/static/uploads/rss_img/`；再看 `Sweep` 日志是否把它当孤儿删了。
 - 图片不更新：同一 URL 命中已有文件是预期行为；需要强制刷新时删除对应
   文件和记录后重新抓取。
 - 磁盘持续增长：确认 `rss.image_cleanup_enabled=true`。`Sweep` 会清理没有
-  对应条目的图片引用。仍不下降时检查 `homehub_rss_images.last_seen_at`
+  对应条目的图片引用。仍不下降时检查 `rss_images.last_seen_at`
   是否一直很新（说明仍在被引用）。
 - 某个源删了但条目还在：预期行为 —— 其他源仍收录同一内容。查
-  `homehub_rss_entry_feeds` 看还有哪些 `feed_id`。
+  `rss_entry_feeds` 看还有哪些 `feed_id`。
 - 启动报"RSS 表结构需要手工迁移"：执行
   `docs/migrations/001-rss-shared-entries.sql`，见 [tables.md](tables.md) 第 10 节。

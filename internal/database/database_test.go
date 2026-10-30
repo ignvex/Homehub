@@ -3,6 +3,7 @@ package database
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -113,8 +114,13 @@ func TestStats_Uninitialized(t *testing.T) {
 	}
 }
 
-// TestInit_Integration 集成测试：当 HOMEHUB_TEST_DB 环境变量设置时，
-// 使用真实数据库验证 Init 全流程。
+// TestInit_Integration 集成测试：设置 HOMEHUB_TEST_DB 时用真实数据库验证
+// Init 全流程。
+//
+// DSN 格式与 pgx 相同：
+//
+//	HOMEHUB_TEST_DB="host=192.168.1.2 port=5432 user=test password=xxx dbname=testdb sslmode=disable" \
+//	  go test ./internal/database/ -run Integration -v
 func TestInit_Integration(t *testing.T) {
 	dsn := os.Getenv("HOMEHUB_TEST_DB")
 	if dsn == "" {
@@ -123,15 +129,7 @@ func TestInit_Integration(t *testing.T) {
 
 	resetForTest()
 
-	// 从 DSN 解析配置（简化：直接硬编码 localhost 配置）
-	cfg := &config.DatabaseConfig{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "homehub",
-		Password: "homehub",
-		DBName:   "homehub_test",
-		SSLMode:  "disable",
-	}
+	cfg := parseTestDSN(t, dsn)
 
 	db, err := Init(cfg)
 	if err != nil {
@@ -169,4 +167,45 @@ func TestInit_Integration(t *testing.T) {
 
 	// 清理
 	Close()
+}
+
+// parseTestDSN 把 "key=value key=value" 形式的 DSN 解析成 DatabaseConfig。
+//
+// 只支持集成测试需要的字段；缺项按 PostgreSQL 默认补全。
+func parseTestDSN(t *testing.T, dsn string) *config.DatabaseConfig {
+	t.Helper()
+
+	cfg := &config.DatabaseConfig{
+		Host:    "localhost",
+		Port:    5432,
+		SSLMode: "disable",
+	}
+	for _, field := range strings.Fields(dsn) {
+		k, v, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "host":
+			cfg.Host = v
+		case "port":
+			p, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("DSN 中 port 不是数字: %q", v)
+			}
+			cfg.Port = p
+		case "user":
+			cfg.User = v
+		case "password":
+			cfg.Password = v
+		case "dbname":
+			cfg.DBName = v
+		case "sslmode":
+			cfg.SSLMode = v
+		}
+	}
+	if cfg.User == "" || cfg.DBName == "" {
+		t.Fatalf("DSN 缺少 user 或 dbname: %q", dsn)
+	}
+	return cfg
 }

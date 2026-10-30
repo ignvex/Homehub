@@ -74,7 +74,9 @@ type createUserRequest struct {
 	Username string `json:"username" form:"username" binding:"required"`
 	Password string `json:"password" form:"password" binding:"required"`
 	Email    string `json:"email" form:"email"`
-	Role     string `json:"role" form:"role"`
+	// Level 是权限等级 1–5；Role 仅作兼容，level 缺失时才采用。
+	Level *int   `json:"level,omitempty" form:"level"`
+	Role  string `json:"role,omitempty" form:"role"`
 }
 
 // AdminCreateUser 管理员创建新用户。
@@ -98,12 +100,21 @@ func AdminCreateUser(c *gin.Context) {
 		return
 	}
 
-	role := req.Role
-	if role == "" {
-		role = "user" // 默认角色为普通用户
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
 	}
 
-	user, err := svc.Auth.CreateUser(req.Username, req.Password, role, req.Email)
+	// 等级：显式 level 优先，其次按 role 字符串推断，都没有则给最低权限。
+	level := model.LevelViewer
+	if req.Level != nil {
+		level = model.NormalizeLevel(*req.Level)
+	} else if req.Role != "" {
+		level = model.LevelFromRole(req.Role)
+	}
+
+	user, err := svc.Auth.CreateUser(operator, req.Username, req.Password, level, req.Email)
 	if err != nil {
 		if errors.Is(err, service.ErrPasswordTooWeak) {
 			Fail(c, http.StatusBadRequest, CodePasswordTooWeak, "密码长度不能少于 6 位")
@@ -126,6 +137,7 @@ func AdminCreateUser(c *gin.Context) {
 type updateUserRequest struct {
 	Username *string `json:"username,omitempty" form:"username"`
 	Email    *string `json:"email,omitempty" form:"email"`
+	Level    *int    `json:"level,omitempty" form:"level"`
 	Role     *string `json:"role,omitempty" form:"role"`
 	IsActive *bool   `json:"is_active,omitempty" form:"is_active"`
 }
@@ -154,7 +166,11 @@ func AdminUpdateUser(c *gin.Context) {
 		return
 	}
 
-	operatorID := getCurrentUserID(c)
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
 
 	var req updateUserRequest
 	if err := c.ShouldBind(&req); err != nil {
@@ -165,11 +181,12 @@ func AdminUpdateUser(c *gin.Context) {
 	svcReq := service.UpdateUserRequest{
 		Username: req.Username,
 		Email:    req.Email,
+		Level:    req.Level,
 		Role:     req.Role,
 		IsActive: req.IsActive,
 	}
 
-	user, err := svc.Auth.UpdateUser(targetID, operatorID, svcReq)
+	user, err := svc.Auth.UpdateUser(targetID, operator, svcReq)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
 			Fail(c, http.StatusNotFound, CodeUserNotFound, "用户不存在")
@@ -214,9 +231,13 @@ func AdminDeleteUser(c *gin.Context) {
 		return
 	}
 
-	operatorID := getCurrentUserID(c)
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
 
-	if err := svc.Auth.DeleteUser(targetID, operatorID); err != nil {
+	if err := svc.Auth.DeleteUser(targetID, operator); err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
 			Fail(c, http.StatusNotFound, CodeUserNotFound, "用户不存在")
 			return
@@ -228,6 +249,10 @@ func AdminDeleteUser(c *gin.Context) {
 		FailInternal(c, "删除用户失败")
 		return
 	}
+
+	// 清除缓存：session 行已在 service 层删除，但内存缓存里还留着
+	// 一份用户快照，不清掉会在这段时间内继续放行已删除的用户。
+	middleware.InvalidateSessionForUser(targetID)
 
 	Success(c, nil)
 }
@@ -266,7 +291,13 @@ func AdminResetPassword(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Auth.ResetUserPassword(userID, req.NewPassword); err != nil {
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
+
+	if err := svc.Auth.ResetUserPassword(userID, operator, req.NewPassword); err != nil {
 		if errors.Is(err, service.ErrPasswordTooWeak) {
 			Fail(c, http.StatusBadRequest, CodePasswordTooWeak, "密码长度不能少于 6 位")
 			return
@@ -275,9 +306,18 @@ func AdminResetPassword(c *gin.Context) {
 			Fail(c, http.StatusNotFound, CodeUserNotFound, "用户不存在")
 			return
 		}
+		if errors.Is(err, service.ErrSelfOperation) {
+			Fail(c, http.StatusForbidden, CodeSelfOperation, "请通过个人中心修改自己的密码")
+			return
+		}
 		FailInternal(c, "重置密码失败")
 		return
 	}
+
+	// 重置密码的语义是 "该用户所有会话失效"（见上面的 @Description）：
+	// session 行已在 service 层删除，这里同步清内存缓存，否则旧会话
+	// 还能凭缓存继续通过认证。
+	middleware.InvalidateSessionForUser(userID)
 
 	Success(c, nil)
 }
@@ -288,10 +328,24 @@ func AdminResetPassword(c *gin.Context) {
 
 // getCurrentUserID 从 gin.Context 中提取当前登录用户 ID。
 func getCurrentUserID(c *gin.Context) uint64 {
+	if u := getCurrentUser(c); u != nil {
+		return u.ID
+	}
+	return 0
+}
+
+// getCurrentUser 从 gin.Context 中取当前登录用户。
+//
+// 返回 nil 表示未认证。调用方必须判 nil —— 直接类型断言会在
+// 漏挂 AuthRequired 的路由上 panic，而那正是最容易出事的地方。
+func getCurrentUser(c *gin.Context) *model.User {
 	u, exists := c.Get("user")
 	if !exists {
-		return 0
+		return nil
 	}
-	user := u.(*model.User)
-	return user.ID
+	user, ok := u.(*model.User)
+	if !ok {
+		return nil
+	}
+	return user
 }

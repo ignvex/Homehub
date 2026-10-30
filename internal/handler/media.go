@@ -46,13 +46,19 @@ func MediaList(c *gin.Context) {
 // @Failure      400   {object}  Response  "文件过大或格式不支持"
 // @Router       /media-assets [post]
 func MediaUpload(c *gin.Context) {
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
+
 	file, err := c.FormFile("file")
 	if err != nil {
 		FailBadRequest(c, "请选择要上传的文件")
 		return
 	}
 
-	asset, err := svc.Media.Upload(file)
+	asset, err := svc.Media.Upload(operator, file)
 	if err != nil {
 		if errors.Is(err, service.ErrFileTooLarge) {
 			Fail(c, http.StatusBadRequest, CodeFileTooLarge, "文件大小不能超过 50MB")
@@ -89,9 +95,19 @@ func MediaDelete(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Media.Delete(id); err != nil {
+	operator := getCurrentUser(c)
+	if operator == nil {
+		Fail(c, http.StatusUnauthorized, CodeUnauthorized, "未登录")
+		return
+	}
+
+	if err := svc.Media.Delete(id, operator); err != nil {
 		if errors.Is(err, service.ErrAssetNotFound) {
 			Fail(c, http.StatusNotFound, CodeMediaNotFound, "媒体资源不存在")
+			return
+		}
+		if errors.Is(err, service.ErrForbidden) {
+			Fail(c, http.StatusForbidden, CodeForbidden, "只能删除自己上传的资源")
 			return
 		}
 		FailInternal(c, "删除失败")

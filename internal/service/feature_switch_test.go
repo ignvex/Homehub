@@ -68,7 +68,7 @@ func TestPasteEnabledAllowsWrites(t *testing.T) {
 	svc := NewPasteService(db)
 
 	// testutil 的 gorm 实例启用了 SkipDefaultTransaction，故无 Begin/Commit。
-	mock.ExpectQuery(`INSERT INTO "homehub_pastes"`).
+	mock.ExpectQuery(`INSERT INTO "pastes"`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 
 	paste, token, err := svc.CreatePaste("hello")

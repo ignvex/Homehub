@@ -21,15 +21,15 @@ type SearchService struct {
 
 // SearchResult 搜索结果。
 type SearchResult struct {
-	Bookmarks  []BookmarkSearchItem  `json:"bookmarks"`
+	Bookmarks  []BookmarkSearchItem `json:"bookmarks"`
 	RssEntries []RssEntrySearchItem `json:"rss_entries"`
 }
 
 // RssEntrySearchItem RSS 条目搜索结果。
 type RssEntrySearchItem struct {
-	ID       uint64 `json:"id"`
-	Title    string `json:"title"`
-	Link     string `json:"link"`
+	ID        uint64 `json:"id"`
+	Title     string `json:"title"`
+	Link      string `json:"link"`
 	FeedTitle string `json:"feed_title"`
 }
 
@@ -73,8 +73,8 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 		var items []BookmarkSearchItem
 		s.db.Raw(`
 			SELECT b.id, b.title, b.url, bg.name AS group_name
-			FROM homehub_bookmarks b
-			JOIN homehub_bookmark_groups bg ON bg.id = b.group_id
+			FROM bookmarks b
+			JOIN bookmark_groups bg ON bg.id = b.group_id
 			WHERE b.deleted_at IS NULL AND bg.deleted_at IS NULL
 			  AND (b.title ILIKE ? OR b.url ILIKE ?)
 			ORDER BY b.priority DESC, b.sort_order ASC
@@ -92,12 +92,12 @@ func (s *SearchService) Search(q string, scope string) (*SearchResult, error) {
 		s.db.Raw(`
 			SELECT re.id, re.title, re.link,
 			       (SELECT f.title
-			        FROM homehub_rss_entry_feeds ef
-			        JOIN homehub_rss_feeds f ON f.id = ef.feed_id AND f.deleted_at IS NULL
+			        FROM rss_entry_feeds ef
+			        JOIN rss_feeds f ON f.id = ef.feed_id AND f.deleted_at IS NULL
 			        WHERE ef.entry_id = re.id AND ef.deleted_at IS NULL
 			        ORDER BY ef.id ASC
 			        LIMIT 1) AS feed_title
-			FROM homehub_rss_entries re
+			FROM rss_entries re
 			WHERE re.deleted_at IS NULL
 			  AND re.title ILIKE ?
 			ORDER BY re.published DESC

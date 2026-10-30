@@ -7,6 +7,7 @@
 package middleware
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -19,7 +20,7 @@ import (
 
 const (
 	// SessionCookieName 会话 Cookie 名称。
-	SessionCookieName = "homehub_session"
+	SessionCookieName = "session"
 	// SessionDuration 会话有效期。
 	SessionDuration = 7 * 24 * time.Hour
 	// sessionCacheTTL 缓存有效期（设为 5 分钟，确保密码修改/禁用在 5 分钟内生效）。
@@ -108,6 +109,18 @@ func AuthRequired() gin.HandlerFunc {
 
 		// 缓存快速路径
 		if user := getCachedUser(token); user != nil {
+			// 账号已停用时不得放行。缓存只是一个快照，不能因为
+			// "上次校验通过了"就绕过停用。
+			if !user.IsActive {
+				InvalidateSession(token)
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					// 20004 = handler.CodeUserDisabled。middleware 不能
+					// import handler（handler 反向依赖 middleware，会成环），
+					// 所以只能硬编码，改动时需与 response.go 的码表同步。
+					"code": 20004, "message": "账号已被停用",
+				})
+				return
+			}
 			c.Set("user", user)
 			c.Set("session_token", token)
 			c.Next()
@@ -150,6 +163,24 @@ func AuthRequired() gin.HandlerFunc {
 			return
 		}
 
+		// 停用的账号立即失效：删除其余会话、清缓存、拒绝本次请求。
+		//
+		// 这里必须校验：登录时只查一次 is_active，会话本身不带启用状态。
+		// 不在这里拦，被停用的人可以继续用旧 cookie 访问全部接口，
+		// 直到会话自然过期。
+		if !user.IsActive {
+			if delErr := db.Unscoped().Where("user_id = ?", user.ID).
+				Delete(&model.Session{}).Error; delErr != nil {
+				log.Printf("[auth] 清理停用用户会话失败: %v", delErr)
+			}
+			InvalidateSessionForUser(user.ID)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				// 20004 = handler.CodeUserDisabled，与登录路径保持一致。
+				"code": 20004, "message": "账号已被停用",
+			})
+			return
+		}
+
 		setCachedUser(token, &user)
 		c.Set("user", &user)
 		c.Set("session_token", token)
@@ -174,6 +205,13 @@ func AuthOptional() gin.HandlerFunc {
 
 		// 缓存快速路径
 		if user := getCachedUser(token); user != nil {
+			// 停用账号不被当作已登录：否则前端会渲染出
+			// "已登录但所有接口 401" 的矛盾页面。
+			if !user.IsActive {
+				InvalidateSession(token)
+				c.Next()
+				return
+			}
 			c.Set("user", user)
 			c.Set("session_token", token)
 			c.Next()
@@ -207,6 +245,12 @@ func AuthOptional() gin.HandlerFunc {
 			return
 		}
 
+		if !user.IsActive {
+			InvalidateSession(token)
+			c.Next()
+			return
+		}
+
 		setCachedUser(token, &user)
 		c.Set("user", &user)
 		c.Set("session_token", token)
@@ -214,28 +258,45 @@ func AuthOptional() gin.HandlerFunc {
 	}
 }
 
-// AuthAdminRequired 返回一个 Gin 中间件，校验已登录用户是否为管理员。
+// AuthLevelRequired 返回一个按等级授权的中间件。
 //
-// 需在 AuthRequired 之后使用（即路由需先通过认证中间件）。
-// 若当前用户 role 不是 "admin"，返回 403 Forbidden。
-func AuthAdminRequired() gin.HandlerFunc {
+// 需在 AuthRequired 之后使用。语义是“至少这么高”：传 LevelEditor (3)
+// 会放行 1–3 级。数值小 = 权限高，所以比较是 `user.Level <= required`。
+//
+// 注意：这里只做**等级门槛**判断，不管“这条数据是不是他的”。
+// 涉及归属的地方（如删除别人上传的媒体）要在 handler / service 里
+// 用 user.CanManage 或 owner_id 再判一次。
+func AuthLevelRequired(required int) gin.HandlerFunc {
+	required = model.NormalizeLevel(required)
+	name := model.LevelName(required)
+
 	return func(c *gin.Context) {
 		u, exists := c.Get("user")
 		if !exists {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code": 30001, "message": "权限不足，需要管理员权限",
+				"code":    30001,
+				"message": fmt.Sprintf("权限不足，需要 %d 级（%s）或更高", required, name),
 			})
 			return
 		}
 
-		user := u.(*model.User)
-		if user.Role != "admin" {
+		user, ok := u.(*model.User)
+		if !ok || !user.HasLevel(required) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code": 30001, "message": "权限不足，需要管理员权限",
+				"code":    30001,
+				"message": fmt.Sprintf("权限不足，需要 %d 级（%s）或更高", required, name),
 			})
 			return
 		}
 
 		c.Next()
 	}
+}
+
+// AuthAdminRequired 是 AuthLevelRequired(LevelAdmin) 的语义化别名。
+//
+// 保留它是因为“管理员专属”在调用处比“1 级及以上”更好读；
+// 两者的实现与行为必须完全一致。
+func AuthAdminRequired() gin.HandlerFunc {
+	return AuthLevelRequired(model.LevelAdmin)
 }

@@ -24,6 +24,18 @@ const (
 	CategoryDoc   MediaCategory = "document"
 )
 
+// 媒体资源来源标记，与 model.MediaAsset.Source 的取值一致。
+//
+// 目前只有用户上传会写入这张表；rss 是预留值——RSS 抓取的图片有自己的
+// 表和自己的生命周期（按内容去重、引用计数、自动过期），不应该混进
+// 用户长期持有的图床资产里。
+const (
+	// MediaSourceUpload 是用户通过 /media-assets 上传的资产（图床主体）。
+	MediaSourceUpload = "upload"
+	// MediaSourceRSS 是 RSS 抓取缓存的图片（当前不写入 media_assets）。
+	MediaSourceRSS = "rss"
+)
+
 // mediaFormat 描述一种受支持的上传格式。
 //
 // 单一事实源：扩展名、MIME、内容嗅探前缀、大类都定义在这里，

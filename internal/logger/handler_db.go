@@ -3,7 +3,9 @@ package logger
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -60,8 +62,13 @@ func (h *dbHandler) run() {
 		if len(batch) == 0 {
 			return
 		}
-		// 批量插入，忽略错误（避免日志写日志的递归问题）
-		_ = h.db.CreateInBatches(batch, dbWriterBatchSize).Error
+		// 批量插入，错误不交回主流程（日志写日志会递归）。
+		// 但失败必须留下痕迹：这批日志会彻底丢失，静默丢弃会让
+		// "日志里没报错"被误读为"没出错"。此处只能写 stderr，
+		// 不能调用本包 logger —— 那会把错误再次推进这个 handler。
+		if err := h.db.CreateInBatches(batch, dbWriterBatchSize).Error; err != nil {
+			fmt.Fprintf(os.Stderr, "[logger] 批量写入 %d 条日志失败，本批已丢弃: %v\n", len(batch), err)
+		}
 		batch = batch[:0]
 	}
 
@@ -100,9 +107,12 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	entry := &model.LogEntry{
-		Level:   r.Level.String(),
-		Message: r.Message,
-		Source:  src,
+		Level: model.TruncateRunes(r.Level.String(), 10),
+		// message 是 varchar(2048)：RSS 抓取错误等内容轻松超长，
+		// 不截断会让整批 INSERT 被 PostgreSQL 拒收。按字符截断，
+		// 避免把多字节字符切成两半产生非法 UTF-8。
+		Message: model.TruncateEllipsis(r.Message, 2048),
+		Source:  model.TruncateRunes(src, 255),
 		LogTime: r.Time,
 	}
 
@@ -112,7 +122,7 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 		if a.Key == "source" && src == "" {
 			// 若便捷函数已通过属性传入真实调用方 source，优先使用
 			if s, ok := a.Value.Any().(string); ok {
-				entry.Source = s
+				entry.Source = model.TruncateRunes(s, 255)
 			}
 			return true
 		}

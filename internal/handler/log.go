@@ -30,7 +30,30 @@ func LogList(c *gin.Context) {
 	page := queryInt(c, "page", 1)
 	perPage := queryInt(c, "per_page", 50)
 	level := c.Query("level")
+	minLevel := c.Query("min_level")
+	levelsRaw := c.Query("levels")
 	q := c.Query("q")
+
+	// 多级别：levels=ERROR,WARN 或 min_level=WARN。
+	// 非法值返回 400，而不是静默返回全部日志 —— 后者会让人误判线上状态。
+	levels, err := service.ParseLevels(levelsRaw)
+	if err != nil {
+		FailBadRequest(c, err.Error())
+		return
+	}
+	if len(levels) == 0 && minLevel != "" {
+		if _, err := service.LevelsAtLeast(minLevel); err != nil {
+			FailBadRequest(c, err.Error())
+			return
+		}
+	}
+	if len(levels) == 0 && minLevel == "" && level != "" {
+		// 旧参数也做一次校验，避免 level=FOO 被静默忽略。
+		if _, err := service.ParseLevels(level); err != nil {
+			FailBadRequest(c, err.Error())
+			return
+		}
+	}
 
 	var since, until time.Time
 	if s := c.Query("since"); s != "" {
@@ -41,7 +64,9 @@ func LogList(c *gin.Context) {
 	}
 
 	logs, total, err := svc.Log.ListLogs(service.LogQuery{
-		Page: page, PerPage: perPage, Level: level, Q: q, Since: since, Until: until,
+		Page: page, PerPage: perPage,
+		Level: level, Levels: levels, MinLevel: minLevel,
+		Q: q, Since: since, Until: until,
 	})
 	if err != nil {
 		FailInternal(c, "查询日志失败")

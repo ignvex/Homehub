@@ -82,7 +82,7 @@ func CreateTestUser(t *testing.T, username, role, email string) *model.User {
 		Username:     username,
 		PasswordHash: "$2a$10$dummyhash...", // bcrypt.MinCost hash of "password"
 		Email:        email,
-		Role:         role,
+		Level:        model.LevelFromRole(role),
 		IsActive:     true,
 	}
 }
@@ -90,14 +90,14 @@ func CreateTestUser(t *testing.T, username, role, email string) *model.User {
 // ColumnsForUser 返回 User 模型的 SQL 列名，用于 sqlmock Row 构造。
 func ColumnsForUser() []string {
 	return []string{"id", "created_at", "updated_at", "deleted_at",
-		"username", "password_hash", "email", "role", "is_active"}
+		"username", "password_hash", "email", "level", "is_active"}
 }
 
 // UserToRow 将 *model.User 转换为 sqlmock 行值。
 func UserToRow(u *model.User) []driver.Value {
 	return []driver.Value{
 		u.ID, u.CreatedAt, u.UpdatedAt, nil,
-		u.Username, u.PasswordHash, u.Email, u.Role, u.IsActive,
+		u.Username, u.PasswordHash, u.Email, u.Level, u.IsActive,
 	}
 }
 

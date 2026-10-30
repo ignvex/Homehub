@@ -1,11 +1,18 @@
 -- HomeHub RSS 条目跨源共享改造
 --
--- 背景：homehub_rss_entries.link 之前是全表唯一，两个源收录同一链接时
+-- ⚠️ 历史存档。本脚本里的表名带 `homehub_` 前缀，对应当年的 schema。
+-- 现在表名已去掉前缀（见 docs/tables.md 第 1 节），**全新部署不需要执行
+-- 本脚本**——AutoMigrate 会直接建出最终结构。
+--
+-- 只有一种情况仍需要它：从一个保持旧表名、且数据不能丢的老库升级。
+-- 那种情况下先把表名改成无前缀（ALTER TABLE ... RENAME），再按下面执行。
+--
+-- 背景：rss_entries.link 之前是全表唯一，两个源收录同一链接时
 -- 后抓的那个源看不到条目。改为"条目 = 纯内容，归属放关联表"后，一条
 -- 内容可以被任意多个源收录，删除其中一个源不会影响其他源。
 --
 -- 执行方式（必须手工，启动流程会拒绝在未迁移的库上运行）：
---   psql -h <host> -U <user> -d homehub -f docs/migrations/001-rss-shared-entries.sql
+--   psql -h <host> -U <user> -d <dbname> -f docs/migrations/001-rss-shared-entries.sql
 --
 -- 要求：PostgreSQL 11+（用到内置 sha256()）。幂等，可重复执行。先备份。
 

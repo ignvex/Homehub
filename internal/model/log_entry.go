@@ -23,5 +23,5 @@ type LogEntry struct {
 
 // TableName 指定表名为 log_entries。
 func (LogEntry) TableName() string {
-	return "homehub_log_entries"
+	return "log_entries"
 }

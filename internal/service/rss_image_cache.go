@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +44,14 @@ type RSSImageCache interface {
 	//
 	// entryID 是条目主键：条目按 link 全局唯一、多个源共享同一条内容，
 	// 因此图片引用只挂在条目上，与具体源无关。
-	Cache(ctx context.Context, entryID uint64, urls []string) map[string]string
+	//
+	// 返回的 error 只表示**登记失败**（数据库不可用等），不表示“某张图下
+	// 载失败”——后者是常态，只体现在 map 里缺少相应 key。
+	//
+	// 调用方必须区分这两者：登记失败时不要把清洗结果写进库。正文一旦
+	// 落库就不会重算（fillEntryContent 只处理空正文），写进去就等于把
+	// 这批图片永久丢掉了。
+	Cache(ctx context.Context, entryID uint64, urls []string) (map[string]string, error)
 	// Sweep 清理没有引用且超过 grace 的缓存文件；grace=0 表示立即清理。
 	Sweep(ctx context.Context, grace time.Duration) error
 }
@@ -53,8 +62,9 @@ const imageURLPrefix = "/static/uploads/rss_img/"
 // imageResult 是单张图片解析/下载后的结果。
 type imageResult struct {
 	sourceURL   string
-	cacheKey    string
+	cacheKey    string // 内容 SHA256（旧数据可能是 md5(URL)）
 	filename    string
+	urlKey      string // sha256(源 URL)，用于写 RSSImageSource
 	contentType string
 	sizeBytes   int64
 	sha256      string
@@ -76,44 +86,222 @@ type LocalImageCache struct {
 	// 引用行写入之前把刚下载的文件当成孤儿删掉。
 	dbMu sync.Mutex
 
-	// pendingMu/pending 记录本进程正在解析的缓存键。
+	// pendingMu/pending 记录本进程正在解析的缓存键及其引用计数。
 	//
 	// Sweep 的宽限期基于 last_seen_at：命中一条 30 天前的老记录时，
 	// last_seen_at 不会因为"正在使用"而自动变新，注册又在其后发生。
 	// 这个集合覆盖了这段窗口。
+	//
+	// 用计数而不是集合：两个并发抓取批次可能解析到**同一个内容键**
+	// （不同源转载了同一篇带图文章，或时效签名 URL 指向同一张图）。
+	// 若用集合，先完成的批次 release 时 delete 掉该键，后完成的那批
+	// 就失去了保护——此时它的文件尚未登记引用，Sweep 会把文件删掉，
+	// 随后 register 拿着已删除的文件名写库，形成死链。
 	pendingMu sync.Mutex
-	pending   map[string]struct{}
+	pending   map[string]int
+
+	// memURL 是进程内的 URL 键 → 已解析结果 的映射。
+	//
+	// 两个作用：数据库不可用时它是唯一的复用手段（否则同一 URL
+	// 每轮都会被重新下载）；数据库可用时它省一次查询。
+	//
+	// 存的不是一个文件名而是一个完整结果：命中后仍需返回 cacheKey，
+	// 否则 register 会以“没有内容键”为由跳过登记，图片引用就不会
+	// 重建——新条目会成为无图引用，而旧引用的 last_seen_at 也永远
+	// 不再更新。
+	//
+	// 命中后仍要 stat 文件：Sweep 可能已经把文件删了，只信内存会
+	// 返回死链。
+	//
+	// 必须有容量上限：时效签名 URL 每轮抓取都会产生新的 urlKey，
+	// 不设上限的 map 会随时间单调增长——HomeHub 是长期跑在 NAS 上的
+	// 常驻进程，这种泄漏不会自己恢复。
+	memMu  sync.RWMutex
+	memURL map[string]memEntry
+
+	// memContent 是内容哈希 → 已解析结果 的反向映射。
+	//
+	// 用途：并发下载同一内容（不同 URL、相同字节）时，第二个能直接
+	// 命中第一个刚落盘的文件，不必再写一份。数据库路径靠
+	// lookupByContent 做同一件事，但那条记录要等整批 register 之后
+	// 才存在，所以批次内并发时它看不到；无数据库时更是只有这里能用。
+	memContent map[string]memEntry
+
+	// contentMu 串行化“算完内容哈希 → 决定落盘还是复用”。
+	//
+	// 不加锁时多个 goroutine 会同时 miss 两个查重入口，各自落一份文件。
+	// 锁内只有 rename 与内存记录（数据已写入临时文件），耗时很短。
+	contentMu sync.Mutex
 }
 
-// markPending 把缓存键标记为进行中，返回取消标记的函数。
-func (c *LocalImageCache) markPending(keys []string) func() {
-	if len(keys) == 0 {
-		return func() {}
+// memURLLimit 是进程内 URL 映射的容量上限。
+//
+// 超限时整体清空而不是逐条淘汰：这是纯缓存（清空只会导致下一轮多几次
+// 查询或下载，不影响正确性），但逐条淘汰需要 LRU 结构，代价与收益不成
+// 正比。选 4096：对应几千个不同图片 URL，占用几十 KB 级别，且远超一次
+// 抓取轮次涉及的图片数（单个源通常几十张）。
+const memURLLimit = 4096
+
+// memEntry 是进程内缓存的单条解析结果。
+type memEntry struct {
+	filename    string
+	cacheKey    string
+	contentType string
+}
+
+// memLookup 读取进程内映射。
+func (c *LocalImageCache) memLookup(urlKey string) (memEntry, bool) {
+	if urlKey == "" {
+		return memEntry{}, false
 	}
+	c.memMu.RLock()
+	defer c.memMu.RUnlock()
+	e, ok := c.memURL[urlKey]
+	return e, ok
+}
+
+// memRemember 记录进程内映射。
+func (c *LocalImageCache) memRemember(urlKey string, e memEntry) {
+	if urlKey == "" || e.filename == "" {
+		return
+	}
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+
+	if c.memURL == nil {
+		c.memURL = make(map[string]memEntry)
+	}
+	if len(c.memURL) >= memURLLimit {
+		// 达上限就整体重置。保留正确性（命中的文件仍会被 stat 校验），
+		// 代价只是下一轮多查几次库。
+		c.memURL = make(map[string]memEntry, memURLLimit)
+	}
+	c.memURL[urlKey] = e
+}
+
+// memForget 丢弃失效的进程内映射。
+func (c *LocalImageCache) memForget(urlKey string) {
+	c.memMu.Lock()
+	delete(c.memURL, urlKey)
+	c.memMu.Unlock()
+}
+
+// memLookupContent 按内容哈希读取进程内映射。
+func (c *LocalImageCache) memLookupContent(contentHash string) (memEntry, bool) {
+	if contentHash == "" {
+		return memEntry{}, false
+	}
+	c.memMu.RLock()
+	defer c.memMu.RUnlock()
+	e, ok := c.memContent[contentHash]
+	return e, ok
+}
+
+// memRememberContent 按内容哈希记录进程内映射（有容量上限）。
+func (c *LocalImageCache) memRememberContent(contentHash string, e memEntry) {
+	if contentHash == "" || e.filename == "" {
+		return
+	}
+	c.memMu.Lock()
+	defer c.memMu.Unlock()
+
+	if c.memContent == nil {
+		c.memContent = make(map[string]memEntry)
+	}
+	if len(c.memContent) >= memURLLimit {
+		c.memContent = make(map[string]memEntry, memURLLimit)
+	}
+	c.memContent[contentHash] = e
+}
+
+// memForgetContent 丢弃失效的内容映射。
+func (c *LocalImageCache) memForgetContent(contentHash string) {
+	c.memMu.Lock()
+	delete(c.memContent, contentHash)
+	c.memMu.Unlock()
+}
+
+// pendingTracker 跟踪本进程正在处理的缓存键，并在结束时释放。
+//
+// 需要可变是因为键的形态在流程中会变：下载前只知道 URL 键，
+// 下载完成后才知道内容哈希。两者都要覆盖，否则 Sweep 会在
+// “记录已存在但 last_seen_at 尚未更新”的窗口里把文件删掉。
+type pendingTracker struct {
+	cache *LocalImageCache
+	mu    sync.Mutex
+	keys  map[string]struct{}
+}
+
+// add 把一批键加入跟踪集合。
+//
+// 必须同时持两把锁：t.mu 保护自己的 keys 集合，
+// t.cache.pendingMu 保护共享的 pending map（Sweep 会并发读它）。
+// 只加前者会造成 map 并发写 panic。
+//
+// 引用计数只在首次加入时递增：t.keys 是集合，重复 add 同一个键
+// 不会让计数虚高（否则 release 一次减不回去，键永远挂着）。
+func (t *pendingTracker) add(keys ...string) {
+	if t == nil || len(keys) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.cache.pendingMu.Lock()
+	defer t.cache.pendingMu.Unlock()
+
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, dup := t.keys[key]; dup {
+			continue
+		}
+		t.keys[key] = struct{}{}
+		t.cache.pending[key]++
+	}
+}
+
+// release 释放全部被跟踪的键（每个键的计数减一，降到 0 才移除）。
+func (t *pendingTracker) release() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cache.pendingMu.Lock()
+	defer t.cache.pendingMu.Unlock()
+
+	for key := range t.keys {
+		if n, ok := t.cache.pending[key]; ok {
+			if n <= 1 {
+				delete(t.cache.pending, key)
+			} else {
+				t.cache.pending[key] = n - 1
+			}
+		}
+	}
+}
+
+// markPending 把缓存键标记为进行中，返回可追加的跟踪器。
+func (c *LocalImageCache) markPending(keys []string) *pendingTracker {
+	t := &pendingTracker{cache: c, keys: make(map[string]struct{}, len(keys))}
+
 	c.pendingMu.Lock()
 	if c.pending == nil {
-		c.pending = make(map[string]struct{}, len(keys))
-	}
-	for _, key := range keys {
-		c.pending[key] = struct{}{}
+		c.pending = make(map[string]int, len(keys))
 	}
 	c.pendingMu.Unlock()
 
-	return func() {
-		c.pendingMu.Lock()
-		for _, key := range keys {
-			delete(c.pending, key)
-		}
-		c.pendingMu.Unlock()
-	}
+	t.add(keys...)
+	return t
 }
 
 // isPending 判断缓存键是否正在被本进程处理。
 func (c *LocalImageCache) isPending(key string) bool {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
-	_, ok := c.pending[key]
-	return ok
+	return c.pending[key] > 0
 }
 
 // NewLocalImageCache 创建本地图片缓存。
@@ -129,10 +317,13 @@ func NewLocalImageCache(db *gorm.DB) *LocalImageCache {
 }
 
 // Cache 解析并缓存一组图片，返回 sourceURL → 站内 URL。
-func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []string) map[string]string {
+//
+// 返回的 error 只表示登记失败（数据库不可用等）。那种情况下不能把清洗
+// 结果写进正文——正文不重算，写进去这批图片就永久丢了。
+func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []string) (map[string]string, error) {
 	out := make(map[string]string)
 	if len(urls) == 0 {
-		return out
+		return out, nil
 	}
 
 	maxBytes, concurrency, allowPrivate := imageCacheLimits()
@@ -151,9 +342,9 @@ func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []stri
 		pending = append(pending, src)
 	}
 
-	// 解析开始前就标记，覆盖"命中老记录 → register 写引用"的整段窗口。
+	// 解析开始前就标记 URL 键；下载得到内容哈希后会追加标记。
 	release := c.markPending(keysOf(pending))
-	defer release()
+	defer release.release()
 
 	var mu sync.Mutex
 	results := make([]*imageResult, 0, len(pending))
@@ -178,6 +369,14 @@ func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []stri
 				return
 			}
 
+			// 内容键一拿到就标记，而不是等整批 wg.Wait() 之后。
+			//
+			// 否则存在一个窗口：先完成的图片已经有内容键与文件，
+			// 但还没进 pending；此时若同批其他图片还在下载（可能持续
+			// 几十秒），Sweep 会把这张图当成孤儿删掉，随后 register
+			// 拿着已删除的文件名写库，形成死链。
+			release.add(res.cacheKey)
+
 			mu.Lock()
 			results = append(results, res)
 			mu.Unlock()
@@ -186,57 +385,121 @@ func (c *LocalImageCache) Cache(ctx context.Context, entryID uint64, urls []stri
 	wg.Wait()
 
 	if len(results) == 0 {
-		return out
+		return out, nil
 	}
 
 	if ctx.Err() != nil {
-		return out
+		return out, nil
 	}
-	c.register(entryID, results)
+
+	registered := c.register(entryID, results)
+
+	// 登记失败：图片行/来源/引用一行都没写进去。此时不能把清洗结果交给
+	// 调用方，否则正文落库后不会再重算，这批图片就永久丢了。
+	//
+	// 区分“登记失败”与“图片确实下载不到”：后者 register 仍会返回非空
+	// 映射（原图不存在是常态，不该阻止正文写入）。
+	if c.db != nil && len(registered) == 0 {
+		return nil, fmt.Errorf("图片登记失败，本批 %d 张未写回正文", len(results))
+	}
 
 	for _, res := range results {
-		out[res.sourceURL] = c.publicPrefix + res.filename
+		// 只把已确认在库的图片写回正文。
+		//
+		// 这是必要条件：正文一旦写入就不会重算（fillEntryContent 只处理
+		// 空正文），所以这里写进去的 URL 就是永久链接。若登记失败仍写
+		// 站内 URL，文件不在数据库里，Sweep 过一段时间会把它当孤儿删掉，
+		// 图片变成永久 404 且无任何自愈路径。
+		//
+		// 文件名必须取自 register 的返回值，不能用自己的 res.filename：
+		// register 可能按内容去重（同批多条同内容只保留一条），也可能把
+		// 名字归一化成库里已有的旧名。用 res.filename 就会输出一个没有
+		// 数据库记录的文件，同样会变成永久 404。
+		//
+		// 未登记的 URL 直接 omit：调用方会把对应的 <img> 整体移除，
+		// 比留下一个必然坏掉的链接好。
+		filename := res.filename
+		if c.db != nil {
+			registeredName, ok := registered[res.cacheKey]
+			if !ok {
+				logger.Warn("[rss] 图片未登记，跳过站内链接",
+					"url", res.sourceURL, "cache_key", res.cacheKey)
+				continue
+			}
+			filename = registeredName
+		}
+		out[res.sourceURL] = c.publicPrefix + filename
 	}
-	return out
+	return out, nil
 }
 
-// resolve 按"数据库记录 → 已有文件 → 下载"的顺序解析一张图片。
+// resolve 按"URL 映射 → 下载并算内容哈希 → 按内容复用"的顺序解析。
+//
+// 分两步而不是一步的原因：去重键是**内容**哈希，而抓取时手里只有 URL。
+// 必须先下载一次才能知道内容；而 URL → 内容的映射存下来之后，同一个
+// URL 第二轮就能直接命中，不必重复下载（时效签名 URL 除外——它每次
+// 都变，但那正是需要内容去重来吸收的场景）。
 func (c *LocalImageCache) resolve(ctx context.Context, src string, maxBytes int64, allowPrivate bool) (*imageResult, error) {
-	key := md5Hex(src)
+	urlKey := sha256Hex(src)
 
-	// 1. 数据库已有记录且文件仍在：直接复用（历史文件也能在此被认领）。
+	// 0. 进程内映射：无数据库时的唯一复用手段。
+	//
+	// 命中后仍要 stat：Sweep 可能已删掉文件，只信内存会返回死链。
+	if e, ok := c.memLookup(urlKey); ok {
+		if info, statErr := os.Stat(filepath.Join(c.dir, e.filename)); statErr == nil && info.Size() > 0 {
+			return &imageResult{
+				sourceURL:   src,
+				cacheKey:    e.cacheKey,
+				filename:    e.filename,
+				urlKey:      urlKey,
+				contentType: e.contentType,
+				sizeBytes:   info.Size(),
+				sha256:      e.cacheKey,
+			}, nil
+		}
+		c.memForget(urlKey)
+	}
+
+	// 1. 这个 URL 以前解析过：直接复用它指向的内容。
 	if c.db != nil {
-		var img model.RSSImage
-		err := c.db.Where("cache_key = ?", key).First(&img).Error
+		var source model.RSSImageSource
+		err := c.db.Where("url_key = ?", urlKey).First(&source).Error
 		if err == nil {
-			if info, statErr := os.Stat(filepath.Join(c.dir, img.Filename)); statErr == nil && info.Size() > 0 {
-				return &imageResult{
-					sourceURL:   src,
-					cacheKey:    key,
-					filename:    img.Filename,
-					contentType: img.ContentType,
-					sizeBytes:   info.Size(),
-					sha256:      img.SHA256,
-				}, nil
+			var img model.RSSImage
+			if imgErr := c.db.First(&img, source.ImageID).Error; imgErr == nil {
+				if info, statErr := os.Stat(filepath.Join(c.dir, img.Filename)); statErr == nil && info.Size() > 0 {
+					return &imageResult{
+						sourceURL:   src,
+						cacheKey:    img.CacheKey,
+						filename:    img.Filename,
+						urlKey:      urlKey,
+						contentType: img.ContentType,
+						sizeBytes:   info.Size(),
+						sha256:      img.CacheKey,
+					}, nil
+				}
+				// 记录在但文件丢了：不信任这份映射，走重新下载。
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("查询图片记录失败: %w", err)
+			return nil, fmt.Errorf("查询图片来源失败: %w", err)
+		}
+
+		// 2. 兼容历史数据：旧版本按 md5(URL) 命名文件且没有来源表。
+		//    命中就当场认领，顺便补建映射，避免这一代数据在升级后被重下。
+		if name, info := c.findCachedFile(md5Hex(src)); name != "" {
+			return &imageResult{
+				sourceURL:   src,
+				cacheKey:    md5Hex(src),
+				filename:    name,
+				urlKey:      urlKey,
+				contentType: contentTypeForExt(filepath.Ext(name)),
+				sizeBytes:   info.Size(),
+			}, nil
 		}
 	}
 
-	// 2. 升级前的缓存没有数据库记录：按文件名找到就直接认领，避免重下。
-	if name, info := c.findCachedFile(key); name != "" {
-		return &imageResult{
-			sourceURL:   src,
-			cacheKey:    key,
-			filename:    name,
-			contentType: contentTypeForExt(filepath.Ext(name)),
-			sizeBytes:   info.Size(),
-		}, nil
-	}
-
-	// 3. 真正下载。
-	return c.download(ctx, src, key, maxBytes, allowPrivate)
+	// 3. 没命中：下载到临时文件，算内容哈希后再决定落盘还是复用。
+	return c.download(ctx, src, urlKey, maxBytes, allowPrivate)
 }
 
 // findCachedFile 在缓存目录里查找 `rss_<key>.*` 形式的已有文件。
@@ -258,12 +521,16 @@ func (c *LocalImageCache) findCachedFile(key string) (string, os.FileInfo) {
 	return "", nil
 }
 
-// download 下载单张图片，校验类型/大小后原子落盘。
+// download 下载单张图片，按**内容哈希**去重后原子落盘。
 //
-// 关键点：先用 maxBytes+1 读取，超过上限立即失败并删除临时文件。
+// 关键点一：先用 maxBytes+1 读取，超过上限立即失败并删除临时文件。
 // 旧实现用 io.LimitReader(body, 2MB) 直接写目标文件，超过 2MB 的图片
 // 会被截断却仍被当作成功，磁盘上留下无法解码的坏文件。
-func (c *LocalImageCache) download(ctx context.Context, src, key string, maxBytes int64, allowPrivate bool) (*imageResult, error) {
+//
+// 关键点二：文件名在下载完成后才确定。唯一性由内容哈希保证，文件名
+// 里的时间戳与随机段只是让文件不可枚举、不互相覆盖；两段职责分开，
+// 所以同一张图不会被存成两份。
+func (c *LocalImageCache) download(ctx context.Context, src, urlKey string, maxBytes int64, allowPrivate bool) (*imageResult, error) {
 	if err := validateRemoteURL(ctx, src, allowPrivate); err != nil {
 		return nil, err
 	}
@@ -302,19 +569,6 @@ func (c *LocalImageCache) download(ctx context.Context, src, key string, maxByte
 	}
 
 	ext := imageExt(contentType, src)
-	filename := "rss_" + key + ext
-	finalPath := filepath.Join(c.dir, filename)
-
-	// 并发下载同一 URL 时，先到者已经落盘，后来者直接复用。
-	if info, statErr := os.Stat(finalPath); statErr == nil && info.Size() > 0 {
-		return &imageResult{
-			sourceURL:   src,
-			cacheKey:    key,
-			filename:    filename,
-			contentType: contentType,
-			sizeBytes:   info.Size(),
-		}, nil
-	}
 
 	if err := os.MkdirAll(c.dir, 0755); err != nil {
 		return nil, fmt.Errorf("创建缓存目录失败: %w", err)
@@ -346,28 +600,130 @@ func (c *LocalImageCache) download(ctx context.Context, src, key string, maxByte
 		return nil, fmt.Errorf("关闭临时文件失败: %w", err)
 	}
 
+	// 内容哈希要到下载完成才知道，此后才能判断“这份内容是否已经存在”。
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+
+	// 第一道查重：数据库。放在锁外，因为这是网络/磁盘 IO，
+	// 持锁会把它变成全局串行点。
+	//
+	// 这个查询能命中“其他条目/其他进程已经存过这份内容”的情况，
+	// 是跨进程去重的主要途径。
+	if existing, ok := c.lookupByContent(contentHash); ok {
+		c.memRemember(urlKey, memEntry{
+			filename:    existing.filename,
+			cacheKey:    contentHash,
+			contentType: existing.contentType,
+		})
+		c.memRememberContent(contentHash, memEntry{
+			filename:    existing.filename,
+			cacheKey:    contentHash,
+			contentType: existing.contentType,
+		})
+		return &imageResult{
+			sourceURL:   src,
+			cacheKey:    contentHash,
+			filename:    existing.filename,
+			urlKey:      urlKey,
+			contentType: existing.contentType,
+			sizeBytes:   existing.sizeBytes,
+			sha256:      contentHash,
+		}, nil
+	}
+
+	// 第二道查重：进程内。同样在锁外——这是纯内存查询，
+	// 若命中就无需进锁。
+	if e, ok := c.memLookupContent(contentHash); ok {
+		if info, statErr := os.Stat(filepath.Join(c.dir, e.filename)); statErr == nil && info.Size() > 0 {
+			c.memRemember(urlKey, e)
+			return &imageResult{
+				sourceURL:   src,
+				cacheKey:    contentHash,
+				filename:    e.filename,
+				urlKey:      urlKey,
+				contentType: e.contentType,
+				sizeBytes:   info.Size(),
+				sha256:      contentHash,
+			}, nil
+		}
+		c.memForgetContent(contentHash)
+	}
+
+	// 第三道：进锁后**再查一次内存**，然后落盘。
+	//
+	// 为什么必须进锁：并发下载同一内容（不同 URL、相同字节）时，
+	// 两个 goroutine 会在前面两道查重里同时 miss（前一个刚落盘、
+	// 但还没被这个 goroutine 看到），于是各自落一份文件。
+	//
+	// 为什么锁内只查内存不查库：锁外已经查过库；并发窗口内新落盘的
+	// 记录会先写 memContent（register 要等整批），所以查内存就够。
+	// 锁内如果再做 db 查询，所有图片下载都会被数据库延迟串行化。
+	c.contentMu.Lock()
+	defer c.contentMu.Unlock()
+
+	if e, ok := c.memLookupContent(contentHash); ok {
+		if info, statErr := os.Stat(filepath.Join(c.dir, e.filename)); statErr == nil && info.Size() > 0 {
+			c.memRemember(urlKey, e)
+			return &imageResult{
+				sourceURL:   src,
+				cacheKey:    contentHash,
+				filename:    e.filename,
+				urlKey:      urlKey,
+				contentType: e.contentType,
+				sizeBytes:   info.Size(),
+				sha256:      contentHash,
+			}, nil
+		}
+		c.memForgetContent(contentHash)
+	}
+
+	// 全新内容落盘。文件名 = rss_<时间戳>_<随机>_<内容哈希前8>.<ext>：
+	// 时间戳与随机保证不可枚举且不同内容不会撞名，哈希后缀便于人工排障时
+	// 从文件名反查是哪份内容。
+	filename := imageFilename(contentHash, ext, time.Now())
+	finalPath := filepath.Join(c.dir, filename)
+
 	// 先写临时文件再 rename，避免并发读到写了一半的图片。
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		// rename 失败可能是目标已被并发写入；只要目标有效就复用。
 		if info, statErr := os.Stat(finalPath); statErr == nil && info.Size() > 0 {
+			e := memEntry{
+				filename:    filename,
+				cacheKey:    contentHash,
+				contentType: contentType,
+			}
+			c.memRemember(urlKey, e)
+			c.memRememberContent(contentHash, e)
 			return &imageResult{
 				sourceURL:   src,
-				cacheKey:    key,
+				cacheKey:    contentHash,
 				filename:    filename,
+				urlKey:      urlKey,
 				contentType: contentType,
 				sizeBytes:   info.Size(),
+				sha256:      contentHash,
 			}, nil
 		}
 		return nil, fmt.Errorf("保存图片失败: %w", err)
 	}
 
+	e := memEntry{
+		filename:    filename,
+		cacheKey:    contentHash,
+		contentType: contentType,
+	}
+	c.memRemember(urlKey, e)
+	// 记到内容维度：同一批里后续解析到同内容的 URL 会直接命中，
+	// 不会落第二份文件。
+	c.memRememberContent(contentHash, e)
+
 	return &imageResult{
 		sourceURL:   src,
-		cacheKey:    key,
+		cacheKey:    contentHash,
 		filename:    filename,
+		urlKey:      urlKey,
 		contentType: contentType,
 		sizeBytes:   n,
-		sha256:      hex.EncodeToString(hasher.Sum(nil)),
+		sha256:      contentHash,
 	}, nil
 }
 
@@ -412,99 +768,295 @@ func (c *LocalImageCache) Adopt(entryID uint64, items []AdoptedImage) map[string
 		if contentType == "" {
 			contentType = contentTypeForExt(filepath.Ext(item.Filename))
 		}
-		size := item.SizeBytes
-		if size <= 0 {
-			size = info.Size()
+
+		// 身份是**内容**，与下载路径保持一致。
+		//
+		// 哈希始终以磁盘文件为准，不信任入参：extension 是独立进程，
+		// 传空串、传错值都是可能的。信任错误哈希会让这条记录永远无法
+		// 被正常下载路径命中（每次 download 都 miss → 重复落盘），
+		// 更糟的是若这个错键恰好等于另一张图的 cache_key，
+		// upsert 会把那条记录改指到本次文件，那张图在所有条目里变成错图。
+		filePath := filepath.Join(c.dir, item.Filename)
+		contentHash := fileSHA256(filePath)
+		if contentHash == "" {
+			continue // 读不出内容就不能登记，避免污染唯一键
+		}
+		if declared := normalizeSHA256(item.SHA256); declared != "" && declared != contentHash {
+			logger.Warn("[rss] Adopt 传入的内容哈希与实际不符，以文件为准",
+				"file", item.Filename, "declared", declared, "actual", contentHash)
 		}
 
 		results = append(results, &imageResult{
 			sourceURL:   item.SourceURL,
-			cacheKey:    md5Hex(item.SourceURL),
+			cacheKey:    contentHash,
 			filename:    item.Filename,
+			urlKey:      sha256Hex(item.SourceURL),
 			contentType: contentType,
-			sizeBytes:   size,
-			sha256:      item.SHA256,
+			// 大小以实际文件为准：入参可能过时或伪造。
+			sizeBytes: info.Size(),
+			sha256:    contentHash,
 		})
-		out[item.SourceURL] = c.publicPrefix + item.Filename
 	}
 
 	if len(results) > 0 {
-		c.register(entryID, results)
+		registered := c.register(entryID, results)
+		// 必须在 register 之后再构造返回值，并且用 register 给的权威文件名。
+		//
+		// 两个理由：
+		//   - register 会按内容去重：同批多个 item 内容相同时只有一条入库，
+		//     被丢弃的那条用自己的 item.Filename 就指向一个没有记录的
+		//     文件，Sweep 会把它当历史遗留删掉 → 延时 404；
+		//   - 旧文件仍在时，文件名会被归一化成库里已有的旧名。
+		for _, res := range results {
+			filename := res.filename
+			if c.db != nil {
+				registeredName, ok := registered[res.cacheKey]
+				if !ok {
+					continue
+				}
+				filename = registeredName
+			}
+			out[res.sourceURL] = c.publicPrefix + filename
+		}
 	}
 	return out
 }
 
-// register 把解析结果写入资源表，并登记 feed/条目引用。
+// register 把解析结果写入资源表，并登记 URL 映射与条目引用。
 //
-// 数据库不可用时只丢失归属信息，不影响本次抓取的图片展示；下次抓取
-// 会重新登记。
-func (c *LocalImageCache) register(entryID uint64, results []*imageResult) {
+// 两层登记：
+//   - rss_images：一份内容一行（按 CacheKey 唯一）；
+//   - rss_image_sources：一个 URL 一行，指向它提供的内容。
+//
+// 不登记 URL 映射的话，每轮抓取都得重新下载才能算出内容哈希，
+// 去重反而变成了性能倒退。
+//
+// 返回 cacheKey → **已登记的文件名**。调用方必须按这个映射输出 URL：
+// 不能用自己的 res.filename，原因有两个：
+//   - register 内部会按内容去重（同批多个 URL 解析到同一内容时，只有一条
+//     会入库），被丢弃的那条从未被归一化；
+//   - 旧文件仍在时，filename 会被归一化成库里已在的旧名。
+//
+// 两者任一遗漏，调用方都会输出一个没有数据库记录的文件名，而正文写入后
+// 不会重算（fillEntryContent 只处理空正文），那个链接就永久 404。
+//
+// 所有写入在一个事务里：图片行、URL 映射、条目引用要么全部提交，要么
+// 全部回滚。部分提交（如图片行成功、引用失败）会让文件失去 30 天保护，
+// 却没有自愈路径。
+func (c *LocalImageCache) register(entryID uint64, results []*imageResult) map[string]string {
 	if c.db == nil || len(results) == 0 {
-		return
+		return nil
 	}
+
+	// 按内容哈希去重，这一步不能省。
+	//
+	// results 来自一批 URL，其中多个不同 URL 完全可能解析到同一内容
+	// （CDN 签名参数、http/https 双写、转载站）。下面是一条多行
+	// INSERT ... ON CONFLICT DO UPDATE，而 PostgreSQL 不允许同一语句内
+	// 两行命中同一个冲突键：
+	//
+	//	21000: ON CONFLICT DO UPDATE command cannot affect row a second time
+	//
+	// 后果不是丢一行，而是**整批登记失败**：没有 image、没有 source、
+	// 没有 ref。这与条目路径上的 entriesFromItems 是同一个坑。
+	results = dedupeResultsByContent(results)
 
 	now := time.Now()
 	c.dbMu.Lock()
 	defer c.dbMu.Unlock()
 
-	rows := make([]model.RSSImage, 0, len(results))
+	// 先查已有记录，决定 filename 该不该被本次覆盖。
+	//
+	// 这里有个必须处理的矛盾：
+	//   - 并发场景下，后到者走的是“按内容命中”，临时文件已删，
+	//     绝不能把 filename 改成它的（否则指向不存在的文件）；
+	//   - 但“记录在、文件丢了”（磁盘被清、手动删、迁移漏拷）时，
+	//     又必须把 filename 改成本次新落盘的文件，否则永远死链：
+	//     下次 resolve 查到旧 filename → stat 失败 → 重下载 → 又写不进去。
+	//
+	// 区分依据只能是磁盘：旧文件名对应的文件还在 → 沿用旧名；
+	// 不在了 → 用本次的名字。
+	prevByKey := make(map[string]model.RSSImage, len(results))
 	keys := make([]string, 0, len(results))
 	for _, res := range results {
-		rows = append(rows, model.RSSImage{
-			CacheKey:    res.cacheKey,
-			SourceURL:   res.sourceURL,
-			Filename:    res.filename,
-			ContentType: res.contentType,
-			SizeBytes:   res.sizeBytes,
-			SHA256:      res.sha256,
-			LastSeenAt:  now,
-		})
-		keys = append(keys, res.cacheKey)
+		if res.cacheKey != "" {
+			keys = append(keys, res.cacheKey)
+		}
+	}
+	if len(keys) > 0 {
+		var prev []model.RSSImage
+		if err := c.db.Where("cache_key IN ?", keys).Find(&prev).Error; err != nil {
+			// 不能静默：查不到历史记录时下面会一律用新文件名覆盖，
+			// 并发场景下可能把已有有效记录改到另一份文件上。
+			// 降级是安全的（只是可能多一份孤儿文件，由 Sweep 收拾），
+			// 但必须留下痕迹。
+			logger.Warn("[rss] 查询已有图片记录失败，将按新文件登记", "error", err)
+		} else {
+			for _, img := range prev {
+				prevByKey[img.CacheKey] = img
+			}
+		}
 	}
 
-	// 同一个 URL 可能被并发抓取：冲突时更新为本次解析结果。
-	if err := c.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "cache_key"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"source_url", "filename", "content_type", "size_bytes", "sha256", "last_seen_at", "updated_at",
-		}),
-	}).Create(&rows).Error; err != nil {
-		logger.Warn("[rss] 登记图片资源失败", "error", err)
-		return
-	}
-
-	var stored []model.RSSImage
-	if err := c.db.Where("cache_key IN ?", keys).Find(&stored).Error; err != nil {
-		logger.Warn("[rss] 查询图片资源失败", "error", err)
-		return
-	}
-	idByKey := make(map[string]uint64, len(stored))
-	for _, img := range stored {
-		idByKey[img.CacheKey] = img.ID
-	}
-
-	// 没有条目 ID 时无法建立引用（条目还没入库），只登记资源本身。
-	if entryID == 0 {
-		return
-	}
-
-	refs := make([]model.RSSImageRef, 0, len(stored))
-	for _, key := range keys {
-		id, ok := idByKey[key]
-		if !ok {
+	// registered 是给调用方的权威结果：cacheKey → 实际会写进库的文件名。
+	// 不直接改 res.filename 是因为调用方可能拿到未去重的原始 results。
+	registered := make(map[string]string, len(results))
+	rows := make([]model.RSSImage, 0, len(results))
+	keys = keys[:0]
+	for _, res := range results {
+		if res.cacheKey == "" {
 			continue
 		}
-		refs = append(refs, model.RSSImageRef{
-			ImageID: id,
-			EntryID: entryID,
+		filename := res.filename
+		if old, ok := prevByKey[res.cacheKey]; ok && old.Filename != "" {
+			if info, statErr := os.Stat(filepath.Join(c.dir, old.Filename)); statErr == nil && info.Size() > 0 {
+				// 旧文件还在：保留旧名。
+				filename = old.Filename
+			}
+		}
+		rows = append(rows, model.RSSImage{
+			CacheKey:  res.cacheKey,
+			SourceURL: res.sourceURL,
+			Filename:  filename,
+			// Content-Type 来自外部响应头，长度不受控，而列是 varchar(100)。
+			// 不裁剪会让这一行被 PostgreSQL 拒收，而写入是一条多行 INSERT
+			// —— 一条坏数据带走整批（与条目/日志路径同类的坑）。
+			ContentType: model.TruncateRunes(res.contentType, 100),
+			SizeBytes:   res.sizeBytes,
+			LastSeenAt:  now,
 		})
+		registered[res.cacheKey] = filename
+		keys = append(keys, res.cacheKey)
 	}
-	if len(refs) == 0 {
-		return
+	if len(rows) == 0 {
+		return nil
 	}
-	if err := c.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&refs).Error; err != nil {
-		logger.Warn("[rss] 登记图片引用失败", "error", err)
+
+	// 一个事务包住全部写入。
+	//
+	// 分开写会出现部分提交：图片行已入库、引用行失败。那时文件存在但
+	// 没有引用保护，Sweep 会在宽限期后把它当孤儿删掉，而正文里已经
+	// 写了站内 URL（正文不重算）——永久 404，且无自愈路径。
+	// 事务回滚后调用方不写 URL，该条目正文保持为空，下次抓取会重试。
+	err := c.db.Transaction(func(tx *gorm.DB) error {
+		// 冲突时更新 filename：上面的判断保证它要么是“文件仍在的旧名”，
+		// 要么是“本次新落盘的名字”，两种都指向真实存在的文件。
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "cache_key"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"filename", "content_type", "size_bytes", "last_seen_at", "updated_at",
+			}),
+		}).Create(&rows).Error; err != nil {
+			return fmt.Errorf("写入图片资源失败: %w", err)
+		}
+
+		var stored []model.RSSImage
+		if err := tx.Where("cache_key IN ?", keys).Find(&stored).Error; err != nil {
+			return fmt.Errorf("查询图片资源失败: %w", err)
+		}
+		idByKey := make(map[string]uint64, len(stored))
+		for _, img := range stored {
+			idByKey[img.CacheKey] = img.ID
+		}
+
+		// 登记 URL → 内容 的映射。
+		//
+		// 同一个 URL 换了内容（源站替换了图）：保留旧映射会让后续抓取
+		// 永远拿到旧文件，因此冲突时更新。
+		//
+		// 同样需要按 urlKey 去重：同一批里重复 URL 会让这条多行 upsert
+		// 撞上同一个冲突键（21000）。
+		seenURL := make(map[string]struct{}, len(results))
+		sources := make([]model.RSSImageSource, 0, len(results))
+		for _, res := range results {
+			if res.urlKey == "" {
+				continue
+			}
+			if _, dup := seenURL[res.urlKey]; dup {
+				continue
+			}
+			seenURL[res.urlKey] = struct{}{}
+			id, ok := idByKey[res.cacheKey]
+			if !ok {
+				continue
+			}
+			sources = append(sources, model.RSSImageSource{
+				ImageID:   id,
+				URLKey:    res.urlKey,
+				SourceURL: res.sourceURL,
+			})
+		}
+		if len(sources) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "url_key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"image_id", "source_url", "updated_at"}),
+			}).Create(&sources).Error; err != nil {
+				return fmt.Errorf("登记图片来源失败: %w", err)
+			}
+		}
+
+		// 没有条目 ID 时无法建立引用（条目还没入库），只登记资源本身。
+		if entryID == 0 {
+			return nil
+		}
+
+		refs := make([]model.RSSImageRef, 0, len(stored))
+		for _, key := range keys {
+			id, ok := idByKey[key]
+			if !ok {
+				continue
+			}
+			refs = append(refs, model.RSSImageRef{
+				ImageID: id,
+				EntryID: entryID,
+			})
+		}
+		if len(refs) == 0 {
+			return nil
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&refs).Error; err != nil {
+			return fmt.Errorf("登记图片引用失败: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		logger.Warn("[rss] 登记图片失败，本批不写回正文（下次抓取会重试）", "error", err)
+		return nil
 	}
+
+	return registered
+}
+
+// dedupeResultsByContent 按内容哈希去重，保留磁盘上真实存在的那一份。
+//
+// 为什么需要：一批 URL 里多个不同 URL 完全可能解析到同一内容。
+// 不去重就会让 register 的多行 upsert 撞上同一个冲突键。
+//
+// 保留策略：优先保留文件真实存在的那份（通常是先落盘者），
+// 其余只丢弃结果记录——它们的临时文件本来就没创建（走“按内容命中”
+// 分支时临时文件已删），所以不需要额外清理。
+func dedupeResultsByContent(results []*imageResult) []*imageResult {
+	if len(results) < 2 {
+		return results
+	}
+	seen := make(map[string]int, len(results))
+	out := make([]*imageResult, 0, len(results))
+	for _, res := range results {
+		if res == nil || res.cacheKey == "" {
+			continue
+		}
+		idx, dup := seen[res.cacheKey]
+		if !dup {
+			seen[res.cacheKey] = len(out)
+			out = append(out, res)
+			continue
+		}
+		// 重复内容：保留文件名更“实”的那份（非空），其余丢弃。
+		if out[idx].filename == "" && res.filename != "" {
+			out[idx] = res
+		}
+	}
+	return out
 }
 
 // Sweep 清理没有引用且超过 grace 的图片，以及缓存目录中没有数据库记录
@@ -546,7 +1098,7 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 	var orphaned []model.RSSImage
 	if err := c.db.
 		Where("last_seen_at < ?", cutoff).
-		Where("NOT EXISTS (SELECT 1 FROM homehub_rss_image_refs WHERE homehub_rss_image_refs.image_id = homehub_rss_images.id)").
+		Where("NOT EXISTS (SELECT 1 FROM rss_image_refs WHERE rss_image_refs.image_id = rss_images.id)").
 		Find(&orphaned).Error; err != nil {
 		return fmt.Errorf("查询孤儿图片失败: %w", err)
 	}
@@ -562,6 +1114,17 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 		path := filepath.Join(c.dir, img.Filename)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			logger.Warn("[rss] 删除图片文件失败", "file", img.Filename, "error", err)
+			continue
+		}
+		// 先删 URL 映射，再删内容记录。
+		//
+		// 顺序反了（或漏删）会让 rss_image_sources 留下指向已删
+		// 图片的悬挂行。功能上不至于崩溃（resolve 查不到图片会重下），
+		// 但这些行会永久累积，而它们指向的 image_id 永远不会再被创建。
+		if err := c.db.Unscoped().
+			Where("image_id = ?", img.ID).
+			Delete(&model.RSSImageSource{}).Error; err != nil {
+			logger.Warn("[rss] 删除图片 URL 映射失败", "id", img.ID, "error", err)
 			continue
 		}
 		// 物理删除：软删除会让 cache_key 唯一索引永远无法复用。
@@ -762,11 +1325,13 @@ func (c *LocalImageCache) backfillBatch(entries []model.RSSEntry) {
 	}
 }
 
-// keysOf 计算一批源 URL 的缓存键。
+// keysOf 计算一批源 URL 的跟踪键。
+//
+// 用的是 URL 哈希而不是内容哈希：调用时图片还没下载，只有 URL。
 func keysOf(urls []string) []string {
 	keys := make([]string, 0, len(urls))
 	for _, u := range urls {
-		keys = append(keys, md5Hex(u))
+		keys = append(keys, sha256Hex(u))
 	}
 	return keys
 }
@@ -801,7 +1366,7 @@ func (c *LocalImageCache) reconcileRefs(ctx context.Context) error {
 
 	result := c.db.Unscoped().
 		Where("created_at < ?", time.Now().Add(-refReconcileMinAge)).
-		Where("NOT EXISTS (SELECT 1 FROM homehub_rss_entries e WHERE e.id = homehub_rss_image_refs.entry_id)").
+		Where("NOT EXISTS (SELECT 1 FROM rss_entries e WHERE e.id = rss_image_refs.entry_id)").
 		Delete(&model.RSSImageRef{})
 	if result.Error != nil {
 		return fmt.Errorf("清理无效图片引用失败: %w", result.Error)
@@ -861,6 +1426,113 @@ func imageRetentionGrace() time.Duration {
 func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// sha256Hex 计算字符串的 SHA256 十六进制。
+//
+// 用于两个不同用途：图片内容身份（CacheKey）、源 URL 身份（URLKey）。
+// 两者都是“找个稳定的搜索键”而非密码学用途，但用 SHA256 可以避免
+// 大型图床场景下 md5 的碰撞担忧，也与已有内容哈希字段一致。
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// sha256BytesHex 计算字节内容的 SHA256 十六进制。
+func sha256BytesHex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// fileSHA256 计算文件的 SHA256 十六进制；失败返回空串。
+func fileSHA256(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// normalizeSHA256 把外部传入的 SHA256 规范化；不像合法哈希时返回空串。
+//
+// 不能直接信任调用方：extension 是独立进程，传空串、传 md5、传带前缀
+// 的值都是可能的。写进唯一键之前必须先验。
+func normalizeSHA256(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// randomHex 返回 n 字节的密码学随机十六进制串。
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		// 熵源不可用时回退到纳秒时间戳：宁愿可预测，也不能碰撞。
+		// 文件名本身不承担安全职责（内容是公开的图片），
+		// 唯一性由内容哈希与随机段共同保证。
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(buf)
+}
+
+// imageFilename 生成缓存文件名：`rss_<时间戳>_<随机>_<内容哈希前8>.<ext>`。
+//
+// 时间戳与随机段负责“不可枚举、不随时间重复”，哈希后级负责“人工排障
+// 时能从文件名认出是哪份内容”。真正的唯一性由数据库的 CacheKey 保证，
+// 不依赖文件名——这是为什么两者要分开。
+func imageFilename(contentHash, ext string, now time.Time) string {
+	short := contentHash
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	if short == "" {
+		short = "nohash"
+	}
+	return fmt.Sprintf("rss_%s_%s_%s%s",
+		strconv.FormatInt(now.Unix(), 36), randomHex(4), short, ext)
+}
+
+// cachedContent 是“按内容找到的已有图片”。
+type cachedContent struct {
+	filename    string
+	contentType string
+	sizeBytes   int64
+}
+
+// lookupByContent 按内容哈希查找已经落盘且可用的图片。
+//
+// 这是“避免重复”的关键：下载完才知道内容哈希，此后才能判断这份内容
+// 是否已经存在。记录在但文件丢了的情况返回 false，让调用方重新落盘，
+// 不信任失效的元数据。
+func (c *LocalImageCache) lookupByContent(contentHash string) (cachedContent, bool) {
+	if c.db == nil || contentHash == "" {
+		return cachedContent{}, false
+	}
+
+	var img model.RSSImage
+	if err := c.db.Where("cache_key = ?", contentHash).First(&img).Error; err != nil {
+		return cachedContent{}, false
+	}
+	info, err := os.Stat(filepath.Join(c.dir, img.Filename))
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return cachedContent{}, false
+	}
+	return cachedContent{
+		filename:    img.Filename,
+		contentType: img.ContentType,
+		sizeBytes:   info.Size(),
+	}, true
 }
 
 func normalizeContentType(ct string) string {

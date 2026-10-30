@@ -20,15 +20,15 @@ type Paste struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
-// TableName 指定表名为 homehub_pastes。
+// TableName 指定表名为 pastes。
 func (Paste) TableName() string {
-	return "homehub_pastes"
+	return "pastes"
 }
 
 // CreatePastesTable 创建 pastes 表（独立于 AutoMigrate）。
 func CreatePastesTable(db *gorm.DB) error {
 	return db.Exec(`
-		CREATE TABLE IF NOT EXISTS homehub_pastes (
+		CREATE TABLE IF NOT EXISTS pastes (
 			id BIGSERIAL PRIMARY KEY,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
