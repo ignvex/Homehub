@@ -176,7 +176,7 @@ func TestSweepRemovesOrphanFileAndRecord(t *testing.T) {
 
 	mock.ExpectExec(`DELETE FROM "homehub_rss_image_refs" WHERE feed_id NOT IN`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-
+	// 立即清理（grace=0）不跑引用对账，避免误删正在入库的条目引用。
 	rows := sqlmock.NewRows([]string{
 		"id", "created_at", "updated_at", "deleted_at",
 		"cache_key", "source_url", "filename", "content_type",
@@ -268,6 +268,84 @@ func TestBackfillBatchRegistersLegacyRefs(t *testing.T) {
 		},
 	})
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("SQL 期望未满足: %v", err)
+	}
+}
+
+// TestReconcileRefsRemovesDanglingRefs 确认对账会删除没有对应条目的引用。
+//
+// 场景：跨源同 link 时 B 源没有该条目，或条目批量插入失败，
+// 引用会永久钉住图片。对账是唯一能回收这类脏引用的路径。
+func TestReconcileRefsRemovesDanglingRefs(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`SELECT "id" FROM "homehub_rss_feeds"`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+
+	mock.ExpectQuery(`SELECT "link" FROM "homehub_rss_entries" WHERE feed_id = \$1`).
+		WithArgs(uint64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"link"}).AddRow("http://example.com/keep"))
+
+	validHash := sha256Hex("http://example.com/keep")
+	mock.ExpectQuery(`SELECT "id","entry_hash" FROM "homehub_rss_image_refs" WHERE \(feed_id = \$1 AND created_at < \$2\)`).
+		WithArgs(uint64(1), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "entry_hash"}).
+			AddRow(10, validHash).
+			AddRow(11, "dangling-hash"))
+
+	mock.ExpectExec(`DELETE FROM "homehub_rss_image_refs" WHERE id IN`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	c := &LocalImageCache{db: db, dir: t.TempDir()}
+	if err := c.reconcileRefs(context.Background()); err != nil {
+		t.Fatalf("reconcileRefs 失败: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("SQL 期望未满足: %v", err)
+	}
+}
+
+// TestSweepSkipsPendingKeys 确认正在解析的缓存键不会被清理。
+func TestSweepSkipsPendingKeys(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_cleanup_enabled": true}`)
+
+	dir := t.TempDir()
+	filename := "rss_pending.png"
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte("png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, filename), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectExec(`DELETE FROM "homehub_rss_image_refs" WHERE feed_id NOT IN`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT \* FROM "homehub_rss_images" WHERE last_seen_at <`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "created_at", "updated_at", "deleted_at",
+			"cache_key", "source_url", "filename", "content_type",
+			"size_bytes", "sha256", "last_seen_at",
+		}).AddRow(
+			5, old, old, nil,
+			"pending", "", filename, "image/png",
+			3, "", old,
+		))
+	// 被 pending 跳过，不会执行 DELETE。grace=0 走立即清理，
+	// 历史文件扫描本来就不在本轮执行。
+
+	c := &LocalImageCache{db: db, dir: dir, pending: map[string]struct{}{"pending": {}}}
+	if err := c.Sweep(context.Background(), 0); err != nil {
+		t.Fatalf("Sweep 失败: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filename)); err != nil {
+		t.Errorf("pending 中的文件不应被删除: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("SQL 期望未满足: %v", err)
 	}

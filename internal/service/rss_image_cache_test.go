@@ -247,3 +247,66 @@ func TestCacheWithZeroConcurrencyDoesNotDeadlock(t *testing.T) {
 		t.Fatal("并发数为 0 时 Cache 卡死")
 	}
 }
+
+// TestGuardDialBlocksPrivateTargets 确认连接层校验会拦下内网目标。
+//
+// 这是防重定向/DNS rebinding 的关键：只在请求前校验 URL 不够，
+// 真正建连时必须再验一次解析结果。
+func TestGuardDialBlocksPrivateTargets(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_allow_private_hosts": false}`)
+
+	transport := guardDial(&http.Transport{})
+	blocked := []string{"127.0.0.1:80", "10.0.0.1:443", "192.168.1.10:8080", "0.0.0.0:80", "[::]:80"}
+	for _, addr := range blocked {
+		if _, err := transport.DialContext(context.Background(), "tcp", addr); err == nil {
+			t.Errorf("%s 应被连接层拒绝", addr)
+		}
+	}
+}
+
+// TestGuardDialAllowsWhenConfigured 确认显式放行内网时不拦截。
+func TestGuardDialAllowsWhenConfigured(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_allow_private_hosts": true}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	client := rssImageHTTPClient()
+	resp, err := client.R().Get(srv.URL)
+	if err != nil {
+		t.Fatalf("放行内网后不应失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("状态码 = %d", resp.StatusCode)
+	}
+}
+
+// TestRedirectToPrivateIsBlocked 确认重定向到内网会被逐跳校验拦下。
+func TestRedirectToPrivateIsBlocked(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_allow_private_hosts": false}`)
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/a.png", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	// 初始地址是回环，先绕过初始校验，专门验证重定向那一跳。
+	client := rssImageHTTPClient()
+	resp, err := client.R().Get(redirector.URL + "/a.png")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("重定向到回环地址应失败")
+	}
+	if !strings.Contains(err.Error(), "内部地址") && !strings.Contains(err.Error(), "重定向") {
+		t.Errorf("错误信息应说明地址被拒，实际: %v", err)
+	}
+}

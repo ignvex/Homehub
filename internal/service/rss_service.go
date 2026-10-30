@@ -36,7 +36,11 @@ var (
 type RSSService struct {
 	db      *gorm.DB
 	fetcher RSSFetcher
-	images  RSSImageCache
+
+	// imagesMu 保护 images：抓取是并发的，SetImageCache 可能在运行期
+	// 被 extension 集成方或测试调用。
+	imagesMu sync.RWMutex
+	images   RSSImageCache
 }
 
 // NewRSSService 创建 RSSService 实例。
@@ -60,14 +64,19 @@ func (s *RSSService) SetImageCache(c RSSImageCache) {
 	if c == nil {
 		c = NewLocalImageCache(s.db)
 	}
+	s.imagesMu.Lock()
 	s.images = c
+	s.imagesMu.Unlock()
 }
 
 // imageCache 返回当前图片缓存实现；零值 RSSService（测试中常见）
 // 没有注入实现时回落为本地下载。
 func (s *RSSService) imageCache() RSSImageCache {
-	if s.images != nil {
-		return s.images
+	s.imagesMu.RLock()
+	c := s.images
+	s.imagesMu.RUnlock()
+	if c != nil {
+		return c
 	}
 	return NewLocalImageCache(s.db)
 }
@@ -552,25 +561,31 @@ func (s *RSSService) StartImageJanitor(ctx context.Context) {
 
 			// 先回填升级前已有的缓存文件，再开始清理；顺序反了会把它们
 			// 当成孤儿删掉，历史条目图片随即 404。
+			// 回填没有成功就绝不能清理：否则历史文件会被当成孤儿删掉。
+			ready := backfilled
 			if !backfilled {
 				if backfiller, ok := s.imageCache().(interface {
 					BackfillLegacy(context.Context) error
 				}); ok {
 					if err := backfiller.BackfillLegacy(ctx); err != nil {
 						if ctx.Err() == nil {
-							logger.Warn("[rss] 回填历史图片失败，下一轮重试", "error", err)
+							logger.Warn("[rss] 回填历史图片失败，跳过本轮清理并在下一轮重试", "error", err)
 						}
 					} else {
 						backfilled = true
+						ready = true
 					}
 				} else {
 					backfilled = true
+					ready = true
 				}
 			}
 
-			if cfg := config.Get(); cfg == nil || cfg.RSS.ImageCleanupEnabled {
-				if err := s.imageCache().Sweep(ctx, imageRetentionGrace()); err != nil && ctx.Err() == nil {
-					logger.Warn("[rss] 图片缓存清理失败", "error", err)
+			if ready {
+				if cfg := config.Get(); cfg == nil || cfg.RSS.ImageCleanupEnabled {
+					if err := s.imageCache().Sweep(ctx, imageRetentionGrace()); err != nil && ctx.Err() == nil {
+						logger.Warn("[rss] 图片缓存清理失败", "error", err)
+					}
 				}
 			}
 

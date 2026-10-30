@@ -274,8 +274,14 @@ stateDiagram-v2
 - **后台清理**：启动时跑一次，之后每 `image_cleanup_interval_hours` 一次；
   清理“无引用且超过 `image_retention_days`”的图片，以及目录里没有数据库
   记录、mtime 超过保留期的历史文件。
+- **引用对账**：每轮清理会按 feed 对比条目 `link` 与 `entry_hash`，删除
+  没有对应条目的引用。跨源同 link（条目被别的源占用）和条目批量插入失败
+  都会留下这类脏引用，不清理会让图片永远“有引用”、无法回收。
+- **进行中保护**：正在解析的缓存键记在内存 pending 集合里，`Sweep` 会跳过
+  它们，避免“命中旧文件、引用尚未写入”的窗口被误删。
 - **图片下载**：超过上限失败；非图片响应失败；内网地址默认拒绝；
-  写临时文件后原子 rename；同一 URL 复用已有文件。
+  写临时文件后原子 rename；同一 URL 复用已有文件。图片走独立严格客户端：
+  连接层校验解析后的 IP、重定向逐跳校验。
 - **图片类型**：扩展名由 Content-Type 决定，不再盲信 URL 后缀。
 
 ---
@@ -369,12 +375,17 @@ extension 的可用性、鉴权、缓存淘汰都会变成 HomeHub 页面的一�
    和外部 `src`，但没有完整处理 `on*` 事件属性、`srcset`、`javascript:`
    URL。RSS 内容来自外部，建议后续用 `golang.org/x/net/html` 做白名单
    清洗，而不是继续堆正则。
-3. **feed 抓取的 DNS rebinding 防护不完整**：`validateFeedURL` 只检查
-   URL 里的字面 IP 和主机名黑名单，没有解析域名。图片下载已补 DNS 解析；
-   feed 抓取建议后续用 `net.Dialer.Control` 在实际连接时校验目标 IP。
-4. **历史文件清理有宽限期**：升级前没有数据库记录的文件，要等
-   `image_retention_days`（默认 30 天）后才会被删除；期间历史条目里的
-   内嵌图片仍可访问。删除源后的历史无记录文件也走定期清理，不会立即删。
+3. **feed 抓取的 DNS rebinding 防护弱于图片**：`validateFeedURL` 只检查
+   URL 里的字面 IP 和主机名黑名单。图片下载走独立的严格客户端：连接层
+   重新解析、校验全部 A/AAAA 记录并直接 dial 已校验的 IP，重定向逐跳校验。
+   feed 抓取尚未接入同样机制（用户自己配置的 URL 风险低于第三方 RSS 内容），
+   后续可以复用 `guardDial`。
+   注意：走 HTTP 代理时目标解析发生在代理侧，HomeHub 无法校验最终 IP，
+   这是使用代理的固有边界。
+4. **历史文件回填依赖条目正文**：`BackfillLegacy` 只为“磁盘上存在且被条目
+   `content` 引用”的文件建档。未被任何条目引用的历史文件（真孤儿）会在
+   首次清理时删除；`content` 被截断到 2000 字符之外、或正文被改写过的引用
+   无法回填。回填失败时 janitor 会跳过该轮清理并重试。
 5. **`UpdateFeed` 不能把分组清空**：传 `group_id: null` 时不会更新，
    只能改成另一个分组。前端目前没有“移回未分组”的入口。
 6. **图片缓存与用户上传共用 `/static/uploads/`**：安全头对两者一视同仁；
@@ -392,8 +403,9 @@ extension 的可用性、鉴权、缓存淘汰都会变成 HomeHub 页面的一�
   `web/static/uploads/rss_img/`；再看 `Sweep` 日志是否把它当孤儿删了。
 - 图片不更新：同一 URL 命中已有文件是预期行为；需要强制刷新时删除对应
   文件和记录后重新抓取。
-- 磁盘持续增长：确认 `rss.image_cleanup_enabled=true`，并检查
-  `homehub_rss_image_refs` 是否有大量悬挂引用（`feed_id` 不在
-  `homehub_rss_feeds` 中）；`Sweep` 会清理这些引用。
+- 磁盘持续增长：确认 `rss.image_cleanup_enabled=true`。`Sweep` 会清理
+  悬挂引用（`feed_id` 不在 `homehub_rss_feeds` 中）和没有对应条目的脏引用
+  （跨源同 link、条目入库失败留下的）。仍不下降时检查
+  `homehub_rss_images.last_seen_at` 是否一直很新（说明仍在被引用）。
 - 某个源条目“消失”：先检查是否有另一个源收录了相同 `link`（条目层
   全局唯一），见 3.1。

@@ -71,6 +71,45 @@ type LocalImageCache struct {
 	// 下载本身仍然是并发的；只有写库/删文件需要互斥，避免 Sweep 在
 	// 引用行写入之前把刚下载的文件当成孤儿删掉。
 	dbMu sync.Mutex
+
+	// pendingMu/pending 记录本进程正在解析的缓存键。
+	//
+	// Sweep 的宽限期基于 last_seen_at：命中一条 30 天前的老记录时，
+	// last_seen_at 不会因为"正在使用"而自动变新，注册又在其后发生。
+	// 这个集合覆盖了这段窗口。
+	pendingMu sync.Mutex
+	pending   map[string]struct{}
+}
+
+// markPending 把缓存键标记为进行中，返回取消标记的函数。
+func (c *LocalImageCache) markPending(keys []string) func() {
+	if len(keys) == 0 {
+		return func() {}
+	}
+	c.pendingMu.Lock()
+	if c.pending == nil {
+		c.pending = make(map[string]struct{}, len(keys))
+	}
+	for _, key := range keys {
+		c.pending[key] = struct{}{}
+	}
+	c.pendingMu.Unlock()
+
+	return func() {
+		c.pendingMu.Lock()
+		for _, key := range keys {
+			delete(c.pending, key)
+		}
+		c.pendingMu.Unlock()
+	}
+}
+
+// isPending 判断缓存键是否正在被本进程处理。
+func (c *LocalImageCache) isPending(key string) bool {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	_, ok := c.pending[key]
+	return ok
 }
 
 // NewLocalImageCache 创建本地图片缓存。
@@ -107,6 +146,10 @@ func (c *LocalImageCache) Cache(ctx context.Context, feedID uint64, entryLink st
 		seen[src] = struct{}{}
 		pending = append(pending, src)
 	}
+
+	// 解析开始前就标记，覆盖"命中老记录 → register 写引用"的整段窗口。
+	release := c.markPending(keysOf(pending))
+	defer release()
 
 	var mu sync.Mutex
 	results := make([]*imageResult, 0, len(pending))
@@ -221,7 +264,13 @@ func (c *LocalImageCache) download(ctx context.Context, src, key string, maxByte
 		return nil, err
 	}
 
-	resp, err := rssHTTPClient().R().SetContext(ctx).Get(src)
+	// 图片 URL 来自第三方 RSS 内容，用连接层校验的严格客户端；
+	// 显式放行内网时退回普通客户端，避免校验开关两处不一致。
+	client := rssImageHTTPClient()
+	if allowPrivate {
+		client = rssHTTPClient()
+	}
+	resp, err := client.R().SetContext(ctx).Get(src)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
 	}
@@ -483,7 +532,24 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 		return fmt.Errorf("清理悬挂图片引用失败: %w", err)
 	}
 
-	// 2. 数据库里"无人引用且已过保留期"的图片。
+	// 2. 对账引用：删除没有对应条目的引用。
+	//
+	// 引用在条目入库之前写入（图片必须跟着 content 一起落库），因此
+	// 两种情况下会留下"没有条目"的脏引用：
+	//   - 跨源同 link：B 源的条目被 A 源占用，B 的引用永远没有对应条目；
+	//   - 条目批量插入失败：图片和引用已落库，条目不存在。
+	// 脏引用会让图片永远"有引用"、无法回收。
+	//
+	// 只在定期清理时做：抓取流程是"处理完所有条目再批量入库"，
+	// 中间可能持续几十秒。删除源/retention 触发的立即回收若在此刻
+	// 做全量对账，会把正在入库的条目的合法引用当成脏数据删掉。
+	if !immediate {
+		if err := c.reconcileRefs(ctx); err != nil {
+			logger.Warn("[rss] 图片引用对账失败", "error", err)
+		}
+	}
+
+	// 3. 数据库里"无人引用且已过保留期"的图片。
 	var orphaned []model.RSSImage
 	if err := c.db.
 		Where("last_seen_at < ?", cutoff).
@@ -496,6 +562,9 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 	for _, img := range orphaned {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.isPending(img.CacheKey) {
+			continue
 		}
 		path := filepath.Join(c.dir, img.Filename)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -510,7 +579,7 @@ func (c *LocalImageCache) Sweep(ctx context.Context, grace time.Duration) error 
 		removed++
 	}
 
-	// 3. 目录中没有任何数据库记录的历史文件。
+	// 4. 目录中没有任何数据库记录的历史文件。
 	//
 	// 只在定期清理（grace>0）时执行：删除源后的立即回收可能和并发抓取
 	// 的"下载完成、尚未登记"窗口重叠，此时按 mtime 判断会误删新文件。
@@ -703,6 +772,15 @@ func (c *LocalImageCache) backfillBatch(entries []model.RSSEntry) {
 	}
 }
 
+// keysOf 计算一批源 URL 的缓存键。
+func keysOf(urls []string) []string {
+	keys := make([]string, 0, len(urls))
+	for _, u := range urls {
+		keys = append(keys, md5Hex(u))
+	}
+	return keys
+}
+
 // filenamesOf 提取模型的文件名列表。
 func filenamesOf(images []model.RSSImage) []string {
 	names := make([]string, 0, len(images))
@@ -710,6 +788,66 @@ func filenamesOf(images []model.RSSImage) []string {
 		names = append(names, img.Filename)
 	}
 	return names
+}
+
+// refReconcileMinAge 是对账只处理的引用最小年龄。
+//
+// 第二道保险：即使将来有人在抓取路径上调用对账，刚写入的引用也不会
+// 被误删（条目批量插入在图片处理之后，正常情况下不会超过抓取预算）。
+const refReconcileMinAge = 30 * time.Minute
+
+// reconcileRefs 删除本 feed 中没有对应条目的图片引用。
+//
+// 按 feed 逐个处理以限制内存：一个 feed 的条目上限是 retention_count
+// （默认 5000），引用数通常是条目数的数倍，单轮几十 MB 以内。
+//
+// 只处理创建超过 refReconcileMinAge 的引用，避免与"图片已登记、条目
+// 尚未批量入库"的窗口重叠。
+func (c *LocalImageCache) reconcileRefs(ctx context.Context) error {
+	var feeds []model.RSSFeed
+	if err := c.db.Select("id").Find(&feeds).Error; err != nil {
+		return fmt.Errorf("查询订阅源失败: %w", err)
+	}
+
+	for _, feed := range feeds {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		var links []string
+		if err := c.db.Model(&model.RSSEntry{}).
+			Where("feed_id = ?", feed.ID).
+			Pluck("link", &links).Error; err != nil {
+			return fmt.Errorf("查询条目链接失败: %w", err)
+		}
+		valid := make(map[string]struct{}, len(links))
+		for _, link := range links {
+			if hash := sha256Hex(link); hash != "" {
+				valid[hash] = struct{}{}
+			}
+		}
+
+		var refs []model.RSSImageRef
+		if err := c.db.Select("id", "entry_hash").
+			Where("feed_id = ? AND created_at < ?", feed.ID, time.Now().Add(-refReconcileMinAge)).
+			Find(&refs).Error; err != nil {
+			return fmt.Errorf("查询图片引用失败: %w", err)
+		}
+
+		stale := make([]uint64, 0)
+		for _, ref := range refs {
+			if _, ok := valid[ref.EntryHash]; !ok {
+				stale = append(stale, ref.ID)
+			}
+		}
+		if len(stale) == 0 {
+			continue
+		}
+		if err := c.db.Unscoped().Where("id IN ?", stale).Delete(&model.RSSImageRef{}).Error; err != nil {
+			return fmt.Errorf("删除无效图片引用失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // ============================================================
@@ -736,6 +874,12 @@ func imageCacheLimits() (maxBytes int64, concurrency int, allowPrivate bool) {
 		concurrency = 6
 	}
 	return maxBytes, concurrency, cfg.RSS.ImageAllowPrivateHosts
+}
+
+// imageAllowPrivate 返回是否允许图片下载访问内网/回环地址（热更新生效）。
+func imageAllowPrivate() bool {
+	cfg := config.Get()
+	return cfg != nil && cfg.RSS.ImageAllowPrivateHosts
 }
 
 // imageCleanupInterval 返回后台清理间隔。
@@ -884,14 +1028,46 @@ func validateImageURL(ctx context.Context, rawURL string, allowPrivate bool) err
 	return nil
 }
 
+// blockedCIDRs 是 Inet.IsPrivate 未覆盖、但同样不应访问的保留网段。
+//
+// 0.0.0.0 在 Linux 上会连到本机；100.64.0.0/10 是运营商级 NAT；
+// 198.18.0.0/15 是基准测试网段。这些地址出现在公网 RSS 里没有正当理由。
+var blockedCIDRs = func() []*net.IPNet {
+	cidrs := []string{
+		"100.64.0.0/10",
+		"192.0.0.0/24",
+		"192.0.2.0/24",
+		"198.18.0.0/15",
+		"198.51.100.0/24",
+		"203.0.113.0/24",
+		"240.0.0.0/4",
+		"2001:db8::/32",
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			nets = append(nets, n)
+		}
+	}
+	return nets
+}()
+
 // isBlockedIP 判断一个 IP 是否属于 SSRF 敏感范围。
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsPrivate() ||
-		ip.Equal(net.IPv4(169, 254, 169, 254))
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+		return true
+	}
+	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
+		return true
+	}
+	for _, n := range blockedCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
