@@ -1870,6 +1870,95 @@
                 }
             }
         },
+        "/rss/entries/{id}/magnet/lock": {
+            "put": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "磁力链接"
+                ],
+                "summary": "锁定磁力链接",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "锁定成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "磁力链接"
+                ],
+                "summary": "解除磁力锁定",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "解锁成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/entries/{id}/magnet/pikpak": {
+            "post": {
+                "description": "要求条目已有磁力链接且已锁定；PikPak 未启用时返回 503",
+                "tags": [
+                    "磁力链接"
+                ],
+                "summary": "提交磁力链接到 PikPak",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "提交成功",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.RSSEntryView"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
         "/rss/feeds": {
             "get": {
                 "description": "返回所有 RSS 订阅源及其最新状态，可按分组筛选",
@@ -1983,7 +2072,7 @@
                 }
             },
             "put": {
-                "description": "修改订阅源的标题、抓取间隔或所属分组",
+                "description": "修改订阅源的标题、抓取间隔或所属分组。group_id 为 null 时清空分组，省略字段则保持原分组不变。",
                 "consumes": [
                     "application/json"
                 ],
@@ -2328,6 +2417,25 @@
                     },
                     "404": {
                         "description": "分组不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/pikpak": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "磁力链接"
+                ],
+                "summary": "PikPak 集成状态",
+                "responses": {
+                    "200": {
+                        "description": "状态",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2839,6 +2947,41 @@
                 }
             }
         },
+        "config.PikPakConfig": {
+            "type": "object",
+            "properties": {
+                "auto_lock": {
+                    "description": "AutoLock 抓取到磁力链接时自动锁定，避免后续抓取把它覆盖掉。\n默认 false：自动锁定会让“锁”失去“人工确认”的含义。",
+                    "type": "boolean"
+                },
+                "client_id": {
+                    "description": "ClientID / ClientSecret 是 PikPak 分配的客户端标识。\n留空时提交会直接失败并给出明确提示，不猜测默认值。",
+                    "type": "string"
+                },
+                "client_secret": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "Enabled 是否启用。默认 false —— 涉及第三方账号凭据，必须显式开启。",
+                    "type": "boolean"
+                },
+                "endpoint": {
+                    "description": "Endpoint 服务地址，默认 https://api-drive.mypikpak.com。\n允许改是因为 PikPak 有多个区域端点，也可能自建反代。",
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "timeout_seconds": {
+                    "description": "TimeoutSeconds 单次提交的超时，默认 15。",
+                    "type": "integer"
+                },
+                "username": {
+                    "description": "Username / Password 是 PikPak 账号。\n\n与 config.json 里其他凭据一样是明文存储（该文件已 gitignore 且\n权限应设为 600）。不用 refresh_token 是因为它过期需要人工续期，\n对一个个人项目来说反而更容易失效。",
+                    "type": "string"
+                }
+            }
+        },
         "config.ProxyEntry": {
             "type": "object",
             "properties": {
@@ -2912,12 +3055,20 @@
                     "type": "integer"
                 },
                 "image_max_bytes": {
-                    "description": "ImageMaxBytes 单张图片的大小上限（字节），默认 10MB。\n超过上限的图片会被丢弃，而不是截断后写坏文件。",
+                    "description": "ImageMaxBytes 单张图片的大小上限（字节），默认 128MB。\n超过上限的图片会被丢弃，而不是截断后写坏文件。\n上限放到 2GB 是为高分辨率原图留余量；真正的约束是抓取预算，\n单张图太大时会先撞上 fetch_timeout_seconds。",
                     "type": "integer"
                 },
                 "image_retention_days": {
                     "description": "ImageRetentionDays 无引用图片的保留天数，默认 30。\n只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。",
                     "type": "integer"
+                },
+                "pikpak": {
+                    "description": "PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，\n锁定标记仍然可用（锁定本身不依赖 PikPak）。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/config.PikPakConfig"
+                        }
+                    ]
                 },
                 "proxy_names": {
                     "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
@@ -3101,6 +3252,10 @@
                 "email": {
                     "type": "string"
                 },
+                "level": {
+                    "description": "Level 是权限等级 1–5；Role 仅作兼容，level 缺失时才采用。",
+                    "type": "integer"
+                },
                 "password": {
                     "type": "string"
                 },
@@ -3271,7 +3426,9 @@
                     "type": "integer"
                 },
                 "group_id": {
-                    "type": "integer"
+                    "description": "group_id 传 null 表示清空分组，省略则保持原分组不变。",
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "title": {
                     "type": "string"
@@ -3328,6 +3485,9 @@
                 },
                 "is_active": {
                     "type": "boolean"
+                },
+                "level": {
+                    "type": "integer"
                 },
                 "role": {
                     "type": "string"
@@ -3433,7 +3593,7 @@
                     "type": "integer"
                 },
                 "media_type": {
-                    "description": "媒体类型：image / video",
+                    "description": "媒体类型：image / video / audio / document",
                     "type": "string"
                 },
                 "mime_type": {
@@ -3442,6 +3602,18 @@
                 },
                 "original_name": {
                     "description": "原始文件名",
+                    "type": "string"
+                },
+                "owner_id": {
+                    "description": "OwnerID 是上传者。图床的语义是“我传的图归我管”，没有这一列时\n任何登录用户都能删掉别人的图（含正在当背景用的）。\n0 表示历史数据（升级前的记录没有归属信息），只有 1–3 级能动。",
+                    "type": "integer"
+                },
+                "sha256": {
+                    "description": "内容哈希，用于去重与完整性校验",
+                    "type": "string"
+                },
+                "source": {
+                    "description": "来源：upload（用户上传）/ rss（抓取缓存）",
                     "type": "string"
                 },
                 "updated_at": {
@@ -3472,9 +3644,9 @@
                     "description": "是否启用",
                     "type": "boolean"
                 },
-                "role": {
-                    "description": "角色：admin / user",
-                    "type": "string"
+                "level": {
+                    "description": "Level 权限等级：1=admin 最高，5=只读。默认给最低权限，\n任何“忘了设等级”的路径都不会意外造出高权限账号。",
+                    "type": "integer"
                 },
                 "updated_at": {
                     "type": "string"
@@ -3574,6 +3746,59 @@
                     "type": "string"
                 },
                 "level": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.RSSEntryView": {
+            "type": "object",
+            "properties": {
+                "author": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "feed_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "fetched_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "magnet_locked": {
+                    "type": "boolean"
+                },
+                "magnet_locked_at": {
+                    "type": "string"
+                },
+                "magnet_url": {
+                    "type": "string"
+                },
+                "pikpak_error": {
+                    "type": "string"
+                },
+                "pikpak_saved_at": {
+                    "type": "string"
+                },
+                "pikpak_status": {
+                    "type": "string"
+                },
+                "pikpak_task_id": {
+                    "type": "string"
+                },
+                "published": {
+                    "type": "string"
+                },
+                "title": {
                     "type": "string"
                 }
             }
