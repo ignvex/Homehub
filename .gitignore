@@ -49,3 +49,6 @@ Thumbs.db
 # Go
 *.test
 *.out
+
+# Windows 下载标记（NTFS 备用数据流）：跨平台仓库里不该被跟踪
+*:Zone.Identifier
