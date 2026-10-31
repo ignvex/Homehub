@@ -55,7 +55,7 @@ export function BalancePage() {
     <div className="page-toolbar"><div><p>余额监控</p><h2>LLM 余额</h2></div><div className="toolbar-actions">{status && <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{status.ok_count}/{status.target_count} 可用 · {status.last_refresh_at ? formatDateTime(status.last_refresh_at) : '未刷新'}</span>}<button className="button button--primary" disabled={busy} onClick={() => void refresh()}>{busy ? '刷新中...' : '刷新余额'}</button></div></div>
     <Notice message={error} tone="error" onDismiss={() => setError('')} /><Notice message={message} onDismiss={() => setMessage('')} />
     {!items.length ? <PageState kind="empty" title="没有监控点" description="在 config.json 中配置 balance_monitor.targets 后刷新。" /> :
-    <div className="dashboard-grid">
+    <div className="balance-grid">
       <section className="data-panel" style={{ gridColumn: '1 / -1' }}>
         <header className="data-panel-head"><div><h2>数据资产</h2><p>总余额 · 各平台占比</p></div><strong style={{ fontSize: 26, color: 'var(--color-primary)' }}>{total.toFixed(2)}</strong></header>
         <div style={{ display: 'flex', alignItems: 'center', gap: 28, padding: 20, flexWrap: 'wrap' }}>
