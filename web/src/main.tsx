@@ -14,6 +14,7 @@ import '@/styles/home.css'
 import '@/styles/login.css'
 import '@/styles/dashboard.css'
 import '@/styles/workspace.css'
+import '@/styles/rss.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

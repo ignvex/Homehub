@@ -1,0 +1,328 @@
+/* ============================================================
+   RSS 阅读 — 双栏：左侧订阅源导航，右侧条目流
+   组件（面板、按钮、模态、分页、空态）来自 components.css
+   ============================================================ */
+
+.rss-page { display: grid; gap: var(--panel-gap); }
+
+.rss-layout {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: var(--panel-gap);
+  align-items: start;
+}
+
+/* ============ 左栏：订阅源导航 ============ */
+.rss-sidebar {
+  position: sticky;
+  top: 70px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+.rss-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--panel-head-pad-y) var(--panel-head-pad-x);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+.rss-sidebar-head strong {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+.rss-sidebar-head button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-link);
+  font-size: var(--text-2xs);
+  font-weight: 650;
+  cursor: pointer;
+}
+.rss-sidebar-head button:hover { color: var(--color-interactive); }
+
+.rss-nav {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  padding: var(--space-2) 0;
+  scrollbar-width: thin;
+}
+
+/* 导航项 */
+.rss-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--panel-head-pad-x);
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-base);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.rss-nav-item:hover { background: color-mix(in srgb, var(--color-interactive) 6%, transparent); }
+.rss-nav-item.is-active {
+  border-left-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
+  color: var(--color-primary-hover);
+  font-weight: 650;
+}
+.rss-nav-item .rss-nav-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rss-nav-item .rss-nav-count {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分组行 */
+.rss-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--panel-head-pad-x) var(--space-1);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.rss-group-head:hover { color: var(--color-text); }
+.rss-group-arrow {
+  flex: none;
+  font-size: var(--text-2xs);
+  transition: transform var(--dur-fast) ease;
+}
+.rss-group-head[aria-expanded="false"] .rss-group-arrow { transform: rotate(-90deg); }
+.rss-group-feeds { display: flex; flex-direction: column; }
+.rss-group-feeds .rss-nav-item { padding-left: calc(var(--panel-head-pad-x) + var(--space-4)); }
+
+/* 订阅源项上的状态灯 */
+.rss-nav-item .status-dot { width: 6px; height: 6px; }
+.rss-nav-item .status-dot.is-error { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-error) 22%, transparent); }
+
+/* ============ 右栏：条目流 ============ */
+.rss-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+.rss-main-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--panel-head-pad-y) var(--panel-head-pad-x);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+.rss-main-head h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-lg);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rss-main-head p {
+  margin: 1px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.rss-main-actions { display: flex; align-items: center; gap: var(--space-2); }
+
+/* 条目 */
+.rss-entries { display: flex; flex-direction: column; }
+.rss-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--row-pad-y) var(--row-pad-x);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  transition: background var(--dur-fast) ease;
+}
+.rss-entry:last-child { border-bottom: 0; }
+.rss-entry:hover { background: color-mix(in srgb, var(--color-interactive) 4%, transparent); }
+
+.rss-entry-body { flex: 1; min-width: 0; display: grid; gap: var(--space-1); }
+.rss-entry-title {
+  color: var(--color-text);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  text-decoration: none;
+}
+.rss-entry-title:hover { color: var(--color-interactive); }
+.rss-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.rss-entry-meta .meta-dot { opacity: .5; }
+.rss-entry-source {
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 正文折叠 */
+.rss-entry-detail { margin-top: var(--space-2); }
+.rss-entry-detail summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 1px var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.rss-entry-detail summary::-webkit-details-marker { display: none; }
+.rss-entry-detail summary::before { content: '▸'; font-size: var(--text-2xs); }
+.rss-entry-detail[open] summary::before { content: '▾'; }
+.rss-entry-detail summary:hover {
+  border-color: var(--color-interactive);
+  color: var(--color-interactive);
+}
+.rss-entry-content {
+  max-height: 320px;
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+.rss-entry-content * {
+  max-width: 100% !important;
+  overflow: hidden;
+  word-break: break-word;
+}
+.rss-entry-content p,
+.rss-entry-content ul,
+.rss-entry-content li,
+.rss-entry-content hr { margin: var(--space-2) 0; }
+.rss-entry-content img { height: auto; }
+
+/* 磁力按钮 */
+.rss-magnet {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  color: var(--color-accent-strong);
+  font-size: var(--text-sm);
+  line-height: 1;
+  text-decoration: none;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.rss-magnet:hover {
+  background: var(--color-accent);
+  color: #fffdf4;
+}
+
+/* ============ 订阅源错误详情 ============ */
+.rss-feed-error {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--color-error);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface));
+  color: var(--color-error);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* ============ 分组管理弹窗内的列表 ============ */
+.rss-group-list { display: grid; gap: var(--space-2); }
+.rss-group-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+.rss-group-row strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-base);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rss-group-row small {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+}
+
+/* ============ 响应式 ============ */
+/* 分页在面板内时加分隔线 */
+.rss-main > .pager {
+  padding: var(--space-3) var(--row-pad-x);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 900px) {
+  .rss-layout { grid-template-columns: 1fr; }
+  .rss-sidebar { position: static; }
+  .rss-nav { max-height: 220px; }
+  .rss-entry-source { max-width: 140px; }
+}
+
+@media (max-width: 560px) {
+  .rss-main-head { flex-direction: column; align-items: flex-start; }
+  .rss-main-actions { width: 100%; }
+  .rss-main-actions .button { flex: 1; }
+  .rss-entry-title { font-size: var(--text-base); }
+}
