@@ -1,70 +1,131 @@
 /* ============================================================
-   CSS 变量 — 浅色 / 暗色主题
-   配色方案：米白基底 + 青松绿主色 + 陶土棕边框 + 珊瑚红强调 + 墨石灰文字 + 宝石蓝交互
-   语义令牌定义在此，组件级覆盖在 palette.css
+   设计令牌 — 单一事实源
+   配色：米白基底 + 青松绿主色 + 陶土棕边框 + 珊瑚红强调 + 墨石灰文字 + 宝石蓝交互
+
+   分层约定：
+   - 本文件只定义值，不写任何选择器规则
+   - 组件层（components.css）与页面层一律引用这里的令牌
+   - 暗色主题只覆盖颜色与阴影，尺度令牌不需要分主题
    ============================================================ */
 
 :root {
-  /* 页面背景 — 米白 #F5F5DC */
-  --color-bg: #f5f5dc;
-  --color-bg-primary: #f5f5dc;
+  color-scheme: light;
 
-  /* 内容表面 — 暖白 */
+  /* ---------- 原始色板 ---------- */
+  --palette-cream: #f5f5dc;
+  --palette-pine: #4a7729;
+  --palette-pine-strong: #34591c;
+  --palette-clay: #d2b48c;
+  --palette-coral: #ff6b6b;
+  --palette-coral-strong: #b93646;
+  --palette-ink: #2f4f4f;
+  --palette-blue: #4169e1;
+
+  /* ---------- 语义色 ---------- */
+  --color-bg: var(--palette-cream);
+  --color-bg-primary: var(--palette-cream);
   --color-surface: #fffdf4;
   --color-surface-muted: #eee9d8;
-
-  /* 主色 — 青松绿 #4A7729 */
-  --color-primary: #4a7729;
-  --color-primary-hover: #34591c;
-
-  /* 强调色 — 珊瑚红 #FF6B6B */
-  --color-accent: #ff6b6b;
-  --color-accent-strong: #b93646;
-
-  /* 文字 — 墨石灰 #2F4F4F */
-  --color-text: #2f4f4f;
+  --color-primary: var(--palette-pine);
+  --color-primary-hover: var(--palette-pine-strong);
+  --color-accent: var(--palette-coral);
+  --color-accent-strong: var(--palette-coral-strong);
+  --color-text: var(--palette-ink);
   --color-text-secondary: #64716c;
-
-  /* 边框 — 陶土棕 #D2B48C 浅阶 */
   --color-border: #d8c3a5;
-  --color-border-strong: #d2b48c;
-
-  /* 链接与交互 — 宝石蓝 #4169E1 */
-  --color-link: #34591c;
-  --color-interactive: #4169e1;
-
-  /* 状态 */
-  --color-error: #b93646;
-  --color-success: #4a7729;
-  --color-warning: #8b641f;
-
-  /* 输入 */
+  --color-border-strong: var(--palette-clay);
+  --color-link: var(--palette-pine-strong);
+  --color-interactive: var(--palette-blue);
   --color-input-bg: #fffef8;
-
-  /* 导航 */
-  --color-nav: #4a7729;
-  --color-nav-strong: #34591c;
+  --color-error: var(--palette-coral-strong);
+  --color-success: var(--palette-pine);
+  --color-warning: #8b641f;
+  --color-nav: var(--palette-pine);
+  --color-nav-strong: var(--palette-pine-strong);
   --color-nav-text: #fffdf4;
-
-  /* 遮罩 */
   --color-overlay: rgba(47, 79, 79, .48);
 
-  /* 阴影 & 圆角 */
+  /* ---------- 圆角：三档 + 圆形 ----------
+     全站只允许引用这四个值，禁止再写裸数字。 */
+  --radius-control: 2px;   /* 按钮、输入框、下拉、图标按钮、徽章（非胶囊） */
+  --radius-panel: 3px;     /* 面板、表格容器、模态、抽屉、提示条 */
+  --radius-pill: 999px;    /* 状态胶囊、标签、导航项 */
+  --radius-circle: 50%;    /* 头像、圆形浮动按钮 */
+  /* 兼容旧引用（palette/global 中的 --radius） */
+  --radius: var(--radius-control);
+
+  /* ---------- 间距：4px 基准 ---------- */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+
+  /* ---------- 字号：七级 ---------- */
+  --text-2xs: 10px;   /* 标签、eyebrow、等宽小字 */
+  --text-xs: 11px;    /* 表格表头、辅助信息 */
+  --text-sm: 12px;    /* 次要正文、说明 */
+  --text-base: 13px;  /* 正文基线 */
+  --text-md: 14px;    /* 强调正文、条目标题 */
+  --text-lg: 16px;    /* 面板标题 */
+  --text-xl: 20px;    /* 页面标题 */
+  --text-2xl: 26px;   /* 面板级大标题、抽屉标题 */
+
+  /* ---------- 行高 ---------- */
+  --leading-tight: 1.3;
+  --leading-base: 1.55;
+
+  /* ---------- 密度：改这六个值可整体调节紧凑度 ---------- */
+  --row-pad-y: 5px;          /* 表格行 / 列表行 垂直内边距 */
+  --row-pad-x: 10px;         /* 表格行 / 列表行 水平内边距 */
+  --panel-head-pad-y: 6px;   /* 面板标题栏垂直 */
+  --panel-head-pad-x: 10px;  /* 面板标题栏水平 */
+  --panel-body-pad: 12px;    /* 面板内容区内边距 */
+  --panel-gap: 8px;          /* 面板之间的间距 */
+  --control-height: 30px;    /* 按钮、输入框的标准高度 */
+
+  /* ---------- 阴影：只用两级；面板一律不用阴影 ---------- */
   --shadow-sm: 0 1px 3px rgba(47, 79, 79, .08);
   --shadow-md: 0 12px 34px rgba(47, 79, 79, .14);
-  --radius: 8px;
 
-  /* 布局 */
+  /* ---------- 动效 ---------- */
+  --ease-out: cubic-bezier(.2, .7, .2, 1);
+  --dur-fast: .14s;
+  --dur-base: .18s;
+
+  /* ---------- 布局 ---------- */
   --max-width: 960px;
   --header-height: 56px;
 
-  /* 字体 */
+  /* ---------- 字体 ---------- */
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* 展示型标题字体：西文衬线 + 中文宋体回退 */
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+
+  /* ---------- 工作区别名 ----------
+     workspace.css 等旧文件仍引用这些名字，统一指向语义色，避免两套颜色。 */
+  --workspace-bg: var(--color-bg);
+  --workspace-surface: var(--color-surface);
+  --workspace-surface-muted: var(--color-surface-muted);
+  --workspace-text: var(--color-text);
+  --workspace-muted: var(--color-text-secondary);
+  --workspace-border: var(--color-border);
+  --workspace-accent: var(--color-primary);
+  --workspace-accent-strong: var(--color-primary-hover);
+  --workspace-danger: var(--color-error);
+  --workspace-warning: var(--color-warning);
+  --workspace-focus: var(--color-interactive);
 }
 
-/* 暗色主题 — 墨石灰/深松绿底，品牌色提亮 */
+/* 暗色主题 — 墨石灰/深松绿底，品牌色提亮。尺度令牌不分主题。 */
 html[data-theme="dark"] {
+  color-scheme: dark;
   --color-bg: #1b2927;
   --color-bg-primary: #1b2927;
   --color-surface: #263633;
