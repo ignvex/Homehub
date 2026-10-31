@@ -34,7 +34,8 @@ export interface RSSEntry extends EntityBase {
 export const rssApi = {
   listFeeds: () => api.get<RSSFeed[]>('/rss/feeds'),
   createFeed: (url: string, groupId?: number) => api.post<RSSFeed>('/rss/feeds', { url, ...(groupId ? { group_id: groupId } : {}) }),
-  updateFeed: (id: number, body: { title?: string; fetch_interval?: number; group_id?: number }) => api.put<void>(`/rss/feeds/${id}`, body),
+  // group_id 传 null 表示显式清空分组，省略则保持原值 —— 后端按此区分。
+  updateFeed: (id: number, body: { title?: string; fetch_interval?: number; group_id?: number | null }) => api.put<void>(`/rss/feeds/${id}`, body),
   deleteFeed: (id: number) => api.delete<void>(`/rss/feeds/${id}`),
   fetchFeed: (id: number) => api.post<void>(`/rss/feeds/${id}/fetch`),
   fetchAll: () => api.post<void>('/rss/fetch-all'),

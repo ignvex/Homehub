@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -22,11 +23,36 @@ type createRSSFeedRequest struct {
 	GroupID *uint64 `json:"group_id" form:"group_id"`
 }
 
+// optionalGroupID 区分 group_id 的三种 JSON 状态：字段缺失、显式 null、具体值。
+//
+// 不能直接用 *uint64：标准绑定对缺失字段和显式 null 都给出 nil，而两者语义相反
+// —— 前者是“别动分组”，后者是“把分组清空”。分不开就永远清不掉分组。
+type optionalGroupID struct {
+	Set   bool
+	Value *uint64
+}
+
+// UnmarshalJSON 只在字段真的出现时才被调用，因此 Set 的赋值就是“出现过”的证据。
+func (o *optionalGroupID) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var value uint64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	o.Value = &value
+	return nil
+}
+
 // updateRSSFeedRequest 更新 RSS 订阅源请求体。
 type updateRSSFeedRequest struct {
 	Title         *string `json:"title"`
 	FetchInterval *int    `json:"fetch_interval"`
-	GroupID       *uint64 `json:"group_id"`
+	// group_id 传 null 表示清空分组，省略则保持原分组不变。
+	GroupID optionalGroupID `json:"group_id" swaggertype:"integer" extensions:"x-nullable"`
 }
 
 // RSSListFeeds 列表所有订阅源。
@@ -111,7 +137,7 @@ func RSSCreateFeed(c *gin.Context) {
 // RSSUpdateFeed 更新订阅源。
 //
 //	@Summary		更新订阅源
-//	@Description	修改订阅源的标题、抓取间隔或所属分组
+//	@Description	修改订阅源的标题、抓取间隔或所属分组。group_id 为 null 时清空分组，省略字段则保持原分组不变。
 //	@Tags			RSS 订阅
 //	@Accept			json
 //	@Produce		json
@@ -143,7 +169,10 @@ func RSSUpdateFeed(c *gin.Context) {
 		interval = *req.FetchInterval
 	}
 
-	if err := svc.RSS.UpdateFeed(id, title, interval, req.GroupID); err != nil {
+	if err := svc.RSS.UpdateFeed(id, title, interval, service.GroupUpdate{
+		Set:   req.GroupID.Set,
+		Value: req.GroupID.Value,
+	}); err != nil {
 		Fail(c, http.StatusNotFound, CodeNotFound, "订阅源不存在")
 		return
 	}

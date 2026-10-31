@@ -99,7 +99,8 @@ export function RSSPage() {
         () => rssApi.updateFeed(feedDraft.id!, {
           title: feedDraft.title.trim() || undefined,
           fetch_interval: feedDraft.fetch_interval,
-          group_id: feedDraft.group_id,
+          // 未分组要显式发 null：省略字段会让后端理解为“保持原分组”。
+          group_id: feedDraft.group_id ?? null,
         }),
         '订阅源已更新',
       )

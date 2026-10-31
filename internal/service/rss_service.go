@@ -172,8 +172,25 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 	return &rssFeed, nil
 }
 
-// UpdateFeed 更新订阅源标题、抓取间隔和所属分组。
-func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, groupID *uint64) error {
+// GroupUpdate 表达对订阅源 group_id 的更新意图。
+//
+// 三种状态必须分开：
+//   - Set=false             请求里没带 group_id，保持原值
+//   - Set=true, Value=nil   显式清空分组（写入 NULL）
+//   - Set=true, Value!=nil  移入指定分组
+//
+// 只用 *uint64 无法区分前两者：JSON 字段缺失和显式 null 都会绑成 nil。
+// 那正是“选未分组清不掉”的成因 —— 界面点了没反应，也不报错。
+type GroupUpdate struct {
+	Set   bool
+	Value *uint64
+}
+
+// buildFeedUpdates 把可选的更新意图翻译成 UPDATE 的 SET 子句。
+//
+// 空值表示“不改这个字段”，所以 title 为空、interval 非正、Set=false
+// 都各自跳过；而 Set=true 且 Value=nil 是要真的写入 NULL。
+func buildFeedUpdates(title string, fetchInterval int, group GroupUpdate) map[string]interface{} {
 	updates := map[string]interface{}{}
 	if title != "" {
 		updates["title"] = model.TruncateRunes(title, 255)
@@ -181,9 +198,19 @@ func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, grou
 	if fetchInterval > 0 {
 		updates["fetch_interval"] = fetchInterval
 	}
-	if groupID != nil {
-		updates["group_id"] = *groupID
+	if group.Set {
+		if group.Value == nil {
+			updates["group_id"] = nil
+		} else {
+			updates["group_id"] = *group.Value
+		}
 	}
+	return updates
+}
+
+// UpdateFeed 更新订阅源标题、抓取间隔和所属分组。
+func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, group GroupUpdate) error {
+	updates := buildFeedUpdates(title, fetchInterval, group)
 	if len(updates) == 0 {
 		return nil
 	}
