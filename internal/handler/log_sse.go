@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/logger"
@@ -51,13 +52,18 @@ func LogStream(c *gin.Context) {
 }
 
 // logEntryJSON SSE 推送用的精简日志 JSON。
+//
+// LogTime 保持 time.Time 而不是格式化成字符串：列表 API 直接序列化
+// model.LogEntry，编码结果是 RFC3339。手写格式串（曾用
+// "2006-01-02T15:04:05"）会丢掉时区，前端按浏览器本地时区解析后
+// 时间整体偏移。交给 encoding/json 就天然与列表接口一致。
 type logEntryJSON struct {
-	ID      uint64 `json:"id"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Source  string `json:"source"`
-	Fields  string `json:"fields,omitempty"`
-	LogTime string `json:"log_time"`
+	ID      uint64    `json:"id"`
+	Level   string    `json:"level"`
+	Message string    `json:"message"`
+	Source  string    `json:"source"`
+	Fields  string    `json:"fields,omitempty"`
+	LogTime time.Time `json:"log_time"`
 }
 
 func toLogEntryJSON(e *model.LogEntry) logEntryJSON {
@@ -67,6 +73,6 @@ func toLogEntryJSON(e *model.LogEntry) logEntryJSON {
 		Message: e.Message,
 		Source:  e.Source,
 		Fields:  e.Fields,
-		LogTime: e.LogTime.Format("2006-01-02T15:04:05"),
+		LogTime: e.LogTime,
 	}
 }
