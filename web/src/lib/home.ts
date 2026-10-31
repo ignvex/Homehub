@@ -4,7 +4,7 @@ export interface AuthStatus { logged_in: boolean; id?: number; username?: string
 export interface Bookmark { id: number; title: string; url: string; icon?: string }
 export interface BookmarkGroup { id: number; name: string; bookmarks?: Bookmark[] }
 export interface RSSFeed { id: number; title: string; url: string; site_url?: string; icon_url?: string }
-export interface RSSEntry { id: number; feed_ids: number[]; title: string; link: string; author?: string; magnet_url?: string; published: string }
+export interface RSSEntry { id: number; feed_ids: number[]; title: string; link: string; author?: string; content?: string; magnet_url?: string; published: string }
 export interface RSSPage { list: RSSEntry[]; total: number }
 export interface MediaAsset { id: number; file_path: string; media_type: 'image' | 'video' }
 export interface BackgroundSettings {
