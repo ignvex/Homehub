@@ -1,46 +1,541 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { ConfirmDialog, Notice, PageState } from '@/components/WorkspaceUI'
-import { settingsApi, type ConfigUpdate, type SafeConfig } from '@/lib/settings'
+import {
+  buildPayload,
+  emptySecrets,
+  sectionLabels,
+  settingsApi,
+  type SafeConfig,
+  type Secrets,
+  type SettingsSection,
+} from '@/lib/settings'
+
+// ============================================================
+// 设置页
+//
+// 每个模块一个面板、一个保存按钮。整页一起保存的问题是：
+// 改一个 Gravatar 样式也要先把数据库连接读一遍、再写一遍，
+// 而其中任何一处校验失败都会让整次保存回滚——用户分不清
+// 是哪一块填错了。
+//
+// 后端对未提供的顶层段完全不动（指针为 nil），所以这里每个
+// 面板只提交自己那一段。
+// ============================================================
+
+/** sectionFields 取出某个模块对应的配置片段。 */
+function sectionFields(cfg: SafeConfig, section: SettingsSection): Partial<SafeConfig> {
+  switch (section) {
+    case 'connection': return { server: cfg.server, database: cfg.database }
+    case 'auth': return { auth: cfg.auth }
+    case 'log': return { log: cfg.log }
+    case 'appearance': return { background: cfg.background }
+    case 'gravatar': return { gravatar: cfg.gravatar }
+    case 'bookmark': return { bookmark: cfg.bookmark }
+    case 'rss': return { rss: cfg.rss }
+    case 'extension': return { extension_hub: cfg.extension_hub }
+  }
+}
+
+/** sectionSnapshot 把模块拍成字符串，用于判断「有没有改动」。 */
+function sectionSnapshot(cfg: SafeConfig, section: SettingsSection): string {
+  return JSON.stringify(sectionFields(cfg, section))
+}
+
+/** hasPendingSecret 判断该模块是否有待写入的密钥。 */
+function hasPendingSecret(section: SettingsSection, secrets: Secrets): boolean {
+  switch (section) {
+    case 'connection': return secrets.database_password !== ''
+    case 'auth': return secrets.auth_password !== '' || secrets.session_secret !== ''
+    case 'gravatar': return secrets.gravatar_extension_token !== ''
+    case 'rss': return secrets.rss_extension_token !== ''
+    default: return false
+  }
+}
+
+/** clearSecrets 清掉某模块的密钥输入框。 */
+function clearSecrets(section: SettingsSection, secrets: Secrets): Secrets {
+  switch (section) {
+    case 'connection': return { ...secrets, database_password: '' }
+    case 'auth': return { ...secrets, auth_password: '', session_secret: '' }
+    case 'gravatar': return { ...secrets, gravatar_extension_token: '' }
+    case 'rss': return { ...secrets, rss_extension_token: '' }
+    default: return secrets
+  }
+}
 
 export function SettingsPage() {
   const [mode, setMode] = useState<'form' | 'json'>('form')
   const [config, setConfig] = useState<SafeConfig | null>(null)
   const [draft, setDraft] = useState<SafeConfig | null>(null)
   const [jsonText, setJsonText] = useState('')
-  const [secrets, setSecrets] = useState({ database_password: '', auth_password: '', session_secret: '' })
+  const [secrets, setSecrets] = useState<Secrets>(emptySecrets)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const [saving, setSaving] = useState<SettingsSection | 'json' | ''>('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  useEffect(() => { settingsApi.get().then(value => { setConfig(value); setDraft(structuredClone(value)); setJsonText(JSON.stringify(value, null, 2)) }).catch(cause => setError(cause instanceof Error ? cause.message : '无法读取配置')).finally(() => setLoading(false)) }, [])
-  function submit(event: FormEvent) { event.preventDefault(); setConfirming(true) }
-  async function save() {
-    if (!draft) return
-    const update: ConfigUpdate = {
-      server: draft.server,
-      database: { ...draft.database, ...(secrets.database_password ? { password: secrets.database_password } : {}) },
-      auth: { username: draft.auth.username, ...(secrets.auth_password ? { password: secrets.auth_password } : {}), ...(secrets.session_secret ? { session_secret: secrets.session_secret } : {}) },
-      log: draft.log,
-      background: draft.background,
-      proxy_enabled: draft.proxy_enabled,
-      gravatar: draft.gravatar,
-      bookmark: draft.bookmark,
-      rss: draft.rss,
-    }
-    setBusy(true)
-    try { await settingsApi.update(update); const refreshed = await settingsApi.get(); setConfig(refreshed); setDraft(structuredClone(refreshed)); setSecrets({ database_password: '', auth_password: '', session_secret: '' }); setMessage('配置已保存并触发热重载'); setError(''); setConfirming(false) }
-    catch (cause) { setError(cause instanceof Error ? cause.message : '保存失败'); setConfirming(false) }
-    finally { setBusy(false) }
+  const [confirmingJSON, setConfirmingJSON] = useState(false)
+
+  useEffect(() => {
+    settingsApi.get()
+      .then(value => {
+        setConfig(value)
+        setDraft(structuredClone(value))
+        setJsonText(JSON.stringify(value, null, 2))
+      })
+      .catch(cause => setError(cause instanceof Error ? cause.message : '无法读取配置'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  function patch(updater: (current: SafeConfig) => SafeConfig) {
+    setDraft(current => (current ? updater(current) : current))
   }
+
+  async function saveSection(section: SettingsSection) {
+    if (!draft) return
+    setSaving(section)
+    try {
+      await settingsApi.update(buildPayload(section, draft, secrets))
+      const refreshed = await settingsApi.get()
+      // 只把该模块的已保存值同步回来：其他模块里未保存的编辑不该被冲掉。
+      const fresh = sectionFields(refreshed, section)
+      setConfig(current => (current ? { ...current, ...fresh } : refreshed))
+      setDraft(current => (current ? { ...current, ...fresh } : refreshed))
+      setSecrets(current => clearSecrets(section, current))
+      setMessage(`${sectionLabels[section]} 已保存并热重载`)
+      setError('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存失败')
+    } finally {
+      setSaving('')
+    }
+  }
+
+  async function saveJSON() {
+    setSaving('json')
+    try {
+      const parsed = JSON.parse(jsonText) as SafeConfig
+      await settingsApi.update(parsed as unknown as Record<string, unknown>)
+      const refreshed = await settingsApi.get()
+      setConfig(refreshed)
+      setDraft(structuredClone(refreshed))
+      setJsonText(JSON.stringify(refreshed, null, 2))
+      setMessage('配置已保存并热触发重载')
+      setError('')
+      setConfirmingJSON(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存失败：JSON 格式错误或字段无效')
+      setConfirmingJSON(false)
+    } finally {
+      setSaving('')
+    }
+  }
+
   if (loading) return <PageState kind="loading" title="正在读取系统配置" />
   if (!draft || !config) return <PageState kind="error" title="无法读取系统配置" description={error} />
-  async function saveJSON() { try { const parsed = JSON.parse(jsonText); setBusy(true); await settingsApi.update(parsed as ConfigUpdate); const refreshed = await settingsApi.get(); setConfig(refreshed); setDraft(structuredClone(refreshed)); setJsonText(JSON.stringify(refreshed, null, 2)); setMessage('配置已保存并触发热重载'); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : '保存失败：JSON 格式错误或字段无效') } finally { setBusy(false) } }
-  return <div className="business-page"><div className="page-toolbar"><div><p>系统配置</p><h2>设置</h2></div><div className="toolbar-actions"><button className={`button ${mode === 'form' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('form')}>表单编辑</button><button className={`button ${mode === 'json' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('json')}>JSON 编辑</button></div></div><Notice message={error} tone="error" onDismiss={() => setError('')} /><Notice message={message} onDismiss={() => setMessage('')} />
-  {mode === 'json' ? <div><section className="data-panel"><header className="data-panel-head"><div><h2>直接编辑 JSON</h2><p>修改配置文件的 JSON 源，保存后会立即热重载。格式错误可能导致服务异常。</p></div></header><textarea className="config-editor" value={jsonText} onChange={event => setJsonText(event.target.value)} spellCheck={false} style={{ minHeight: 480, fontFamily: 'ui-monospace,monospace', fontSize: 13, lineHeight: 1.5, width: '100%', padding: 16, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-input-bg)', color: 'var(--color-text)', resize: 'vertical' }} /><div style={{ padding: 16, display: 'flex', gap: 8 }}><button className="button button--primary" disabled={busy} onClick={() => void saveJSON()}>{busy ? '保存中...' : '保存 JSON'}</button><button className="button button--quiet" onClick={() => { setJsonText(JSON.stringify(config, null, 2)); setError('') }}>放弃更改</button></div></section></div>
-  : <><Notice message="秘密字段不会从服务器返回；留空表示保持当前值。" tone="info" /><form className="settings-sections" onSubmit={submit}><SettingsSection title="服务与数据库" description="修改监听地址或数据库连接可能导致当前连接中断。"><div className="form-grid form-grid--three"><Field label="服务主机"><input value={draft.server.host} onChange={event => setDraft(current => current ? { ...current, server: { ...current.server, host: event.target.value } } : current)} /></Field><Field label="服务端口"><input type="number" min="1" max="65535" value={draft.server.port} onChange={event => setDraft(current => current ? { ...current, server: { ...current.server, port: Number(event.target.value) } } : current)} /></Field><Field label="数据库主机"><input value={draft.database.host} onChange={event => setDraft(current => current ? { ...current, database: { ...current.database, host: event.target.value } } : current)} /></Field><Field label="数据库端口"><input type="number" min="1" max="65535" value={draft.database.port} onChange={event => setDraft(current => current ? { ...current, database: { ...current.database, port: Number(event.target.value) } } : current)} /></Field><Field label="数据库用户"><input value={draft.database.user} onChange={event => setDraft(current => current ? { ...current, database: { ...current.database, user: event.target.value } } : current)} /></Field><Field label="数据库名称"><input value={draft.database.dbname} onChange={event => setDraft(current => current ? { ...current, database: { ...current.database, dbname: event.target.value } } : current)} /></Field><Field label="SSL 模式"><select value={draft.database.sslmode} onChange={event => setDraft(current => current ? { ...current, database: { ...current.database, sslmode: event.target.value } } : current)}><option value="disable">disable</option><option value="require">require</option><option value="verify-ca">verify-ca</option><option value="verify-full">verify-full</option></select></Field><Field label="新数据库密码"><input type="password" value={secrets.database_password} onChange={event => setSecrets(current => ({ ...current, database_password: event.target.value }))} placeholder="留空不修改" /></Field></div></SettingsSection><SettingsSection title="认证与日志"><div className="form-grid form-grid--three"><Field label="初始用户名"><input value={draft.auth.username} onChange={event => setDraft(current => current ? { ...current, auth: { username: event.target.value } } : current)} /></Field><Field label="新初始密码"><input type="password" value={secrets.auth_password} onChange={event => setSecrets(current => ({ ...current, auth_password: event.target.value }))} placeholder="留空不修改" /></Field><Field label="新会话密钥"><input type="password" minLength={32} value={secrets.session_secret} onChange={event => setSecrets(current => ({ ...current, session_secret: event.target.value }))} placeholder="留空不修改" /></Field><Field label="日志级别"><select value={draft.log.level} onChange={event => setDraft(current => current ? { ...current, log: { ...current.log, level: event.target.value } } : current)}><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></Field><Field label="日志格式"><select value={draft.log.format} onChange={event => setDraft(current => current ? { ...current, log: { ...current.log, format: event.target.value } } : current)}><option value="json">json</option><option value="colored">colored</option></select></Field><label className="choice-tile"><input type="checkbox" checked={draft.log.db_writer} onChange={event => setDraft(current => current ? { ...current, log: { ...current.log, db_writer: event.target.checked } } : current)} /><span>日志写入数据库</span></label></div></SettingsSection><SettingsSection title="背景与外观" description="控制页面背景的显示模式、轮播间隔和过渡效果。"><div className="form-grid form-grid--three"><Field label="背景模式"><select value={draft.background.mode} onChange={event => setDraft(current => current ? { ...current, background: { ...current.background, mode: event.target.value as 'single' | 'carousel' | 'random' } } : current)}><option value="single">单图</option><option value="carousel">顺序轮播</option><option value="random">随机轮播</option></select></Field><Field label="轮播间隔（秒）"><input type="number" min="1" value={draft.background.interval_seconds} onChange={event => setDraft(current => current ? { ...current, background: { ...current.background, interval_seconds: Number(event.target.value) } } : current)} /></Field><Field label="过渡效果"><select value={draft.background.transition_effect} onChange={event => setDraft(current => current ? { ...current, background: { ...current.background, transition_effect: event.target.value as 'fade' | 'slide' } } : current)}><option value="fade">淡入淡出</option><option value="slide">滑动</option></select></Field><Field label="过渡时长（毫秒）"><input type="number" min="0" max="10000" step="100" value={draft.background.fade_duration_ms} onChange={event => setDraft(current => current ? { ...current, background: { ...current.background, fade_duration_ms: Number(event.target.value) } } : current)} /></Field></div></SettingsSection><SettingsSection title="Gravatar 头像" description="配置 Gravatar 头像代理和默认样式。"><div className="form-grid form-grid--three"><label className="choice-tile"><input type="checkbox" checked={draft.gravatar.enabled} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, enabled: event.target.checked } } : current)} /><span>启用 Gravatar</span></label><label className="choice-tile"><input type="checkbox" checked={draft.gravatar.use_proxy} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, use_proxy: event.target.checked } } : current)} /><span>使用代理获取头像</span></label><Field label="默认样式"><select value={draft.gravatar.default_style} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, default_style: event.target.value } } : current)}><option value="mp">神秘人</option><option value="identicon">几何图案</option><option value="monsterid">小怪物</option><option value="wavatar">卡通脸</option><option value="retro">复古</option><option value="robohash">机器人</option></select></Field><Field label="默认尺寸（像素）"><input type="number" min="16" max="512" value={draft.gravatar.default_size} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, default_size: Number(event.target.value) } } : current)} /></Field><Field label="内容评级"><select value={draft.gravatar.rating} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, rating: event.target.value } } : current)}><option value="g">G - 大众</option><option value="pg">PG - 辅导</option><option value="r">R - 限制</option><option value="x">X - 严格</option></select></Field><Field label="代理名称"><input value={draft.gravatar.proxy_name} onChange={event => setDraft(current => current ? { ...current, gravatar: { ...current.gravatar, proxy_name: event.target.value } } : current)} placeholder="留空使用默认代理" /></Field></div></SettingsSection><SettingsSection title="网络与内容服务"><div className="form-grid form-grid--three"><label className="choice-tile"><input type="checkbox" checked={draft.proxy_enabled} onChange={event => setDraft(current => current ? { ...current, proxy_enabled: event.target.checked } : current)} /><span>全局代理开关</span></label><label className="choice-tile"><input type="checkbox" checked={draft.bookmark.use_proxy} onChange={event => setDraft(current => current ? { ...current, bookmark: { ...current.bookmark, use_proxy: event.target.checked } } : current)} /><span>书签图标使用代理</span></label><label className="choice-tile"><input type="checkbox" checked={draft.rss.use_proxy} onChange={event => setDraft(current => current ? { ...current, rss: { ...current.rss, use_proxy: event.target.checked } } : current)} /><span>RSS 使用代理</span></label><Field label="RSS 保留条数"><input type="number" min="1" value={draft.rss.retention_count} onChange={event => setDraft(current => current ? { ...current, rss: { ...current.rss, retention_count: Number(event.target.value) } } : current)} /></Field><Field label="后台抓取间隔（秒）"><input type="number" min="60" value={draft.rss.background_fetch_interval} onChange={event => setDraft(current => current ? { ...current, rss: { ...current.rss, background_fetch_interval: Number(event.target.value) } } : current)} /></Field><label className="choice-tile"><input type="checkbox" checked={draft.rss.background_fetch_enabled} onChange={event => setDraft(current => current ? { ...current, rss: { ...current.rss, background_fetch_enabled: event.target.checked } } : current)} /><span>启用 RSS 后台抓取</span></label></div></SettingsSection><div className="form-actions"><button type="button" className="button button--quiet" onClick={() => { setDraft(structuredClone(config)); setSecrets({ database_password: '', auth_password: '', session_secret: '' }) }}>放弃更改</button><button className="button button--primary">保存配置</button></div></form><ConfirmDialog open={confirming} title="保存系统配置" description="配置会写入 config.json 并立即热重载。监听地址、数据库、认证或代理设置错误可能导致服务不可用。" confirmLabel="保存并重载" busy={busy} onClose={() => setConfirming(false)} onConfirm={() => void save()} /></>}
+
+  const dirty = (section: SettingsSection) =>
+    sectionSnapshot(draft, section) !== sectionSnapshot(config, section) || hasPendingSecret(section, secrets)
+
+  const proxyNames = draft.proxy.map(item => item.name)
+
+  return <div className="business-page">
+    <div className="page-toolbar">
+      <div>
+        <p>系统配置</p>
+        <h2>设置</h2>
+      </div>
+      <div className="toolbar-actions">
+        <button className={`button ${mode === 'form' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('form')}>表单编辑</button>
+        <button className={`button ${mode === 'json' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('json')}>JSON 编辑</button>
+      </div>
+    </div>
+
+    <Notice message={error} tone="error" onDismiss={() => setError('')} />
+    <Notice message={message} onDismiss={() => setMessage('')} />
+
+    {mode === 'json'
+      ? <Section title="直接编辑 JSON" description="修改配置文件的 JSON 源，保存后立即热重载。格式错误会导致保存失败，不会写入。">
+        <Notice message="秘密字段不会从服务器返回；这里看到的是脱敏后的配置，直接保存会保留原有密钥。" tone="info" />
+        <textarea
+          className="config-editor"
+          value={jsonText}
+          onChange={event => setJsonText(event.target.value)}
+          spellCheck={false}
+          style={{
+            minHeight: 480,
+            fontFamily: 'ui-monospace,monospace',
+            fontSize: 13,
+            lineHeight: 1.5,
+            width: '100%',
+            padding: 16,
+            border: '1px solid var(--color-border)',
+            borderRadius: 8,
+            background: 'var(--color-input-bg)',
+            color: 'var(--color-text)',
+            resize: 'vertical',
+          }}
+        />
+        <div className="form-actions">
+          <button className="button button--quiet" onClick={() => { setJsonText(JSON.stringify(config, null, 2)); setError('') }}>放弃更改</button>
+          <button className="button button--primary" disabled={saving === 'json'} onClick={() => setConfirmingJSON(true)}>
+            {saving === 'json' ? '保存中...' : '保存 JSON'}
+          </button>
+        </div>
+      </Section>
+      : <div className="settings-sections">
+        <Notice message="每个模块单独保存。秘密字段不会从服务器返回；留空表示保持当前值。" tone="info" />
+
+        <Section
+          section="connection"
+          title="服务与数据库"
+          description="修改监听地址或数据库连接可能导致当前连接中断。"
+          dirty={dirty('connection')}
+          saving={saving === 'connection'}
+          onSave={() => void saveSection('connection')}
+          onReset={() => { patch(current => ({ ...current, ...sectionFields(config, 'connection') })); setSecrets(current => clearSecrets('connection', current)) }}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="服务主机">
+              <input value={draft.server.host} onChange={event => patch(current => ({ ...current, server: { ...current.server, host: event.target.value } }))} />
+            </Field>
+            <Field label="服务端口">
+              <input type="number" min="1" max="65535" value={draft.server.port} onChange={event => patch(current => ({ ...current, server: { ...current.server, port: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="数据库主机">
+              <input value={draft.database.host} onChange={event => patch(current => ({ ...current, database: { ...current.database, host: event.target.value } }))} />
+            </Field>
+            <Field label="数据库端口">
+              <input type="number" min="1" max="65535" value={draft.database.port} onChange={event => patch(current => ({ ...current, database: { ...current.database, port: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="数据库用户">
+              <input value={draft.database.user} onChange={event => patch(current => ({ ...current, database: { ...current.database, user: event.target.value } }))} />
+            </Field>
+            <Field label="数据库名称">
+              <input value={draft.database.dbname} onChange={event => patch(current => ({ ...current, database: { ...current.database, dbname: event.target.value } }))} />
+            </Field>
+            <Field label="SSL 模式">
+              <select value={draft.database.sslmode} onChange={event => patch(current => ({ ...current, database: { ...current.database, sslmode: event.target.value } }))}>
+                <option value="disable">disable</option>
+                <option value="require">require</option>
+                <option value="verify-ca">verify-ca</option>
+                <option value="verify-full">verify-full</option>
+              </select>
+            </Field>
+            <Field label="新数据库密码">
+              <input type="password" value={secrets.database_password} placeholder="留空不修改"
+                onChange={event => setSecrets(current => ({ ...current, database_password: event.target.value }))} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="auth"
+          title="认证"
+          description="登录用户名与密码。会话密钥改动会让所有现有会话失效。"
+          dirty={dirty('auth')}
+          saving={saving === 'auth'}
+          onSave={() => void saveSection('auth')}
+          onReset={() => { patch(current => ({ ...current, auth: config.auth })); setSecrets(current => clearSecrets('auth', current)) }}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="初始用户名">
+              <input value={draft.auth.username} onChange={event => patch(current => ({ ...current, auth: { username: event.target.value } }))} />
+            </Field>
+            <Field label="新初始密码">
+              <input type="password" value={secrets.auth_password} placeholder="留空不修改"
+                onChange={event => setSecrets(current => ({ ...current, auth_password: event.target.value }))} />
+            </Field>
+            <Field label="新会话密钥">
+              <input type="password" minLength={32} value={secrets.session_secret} placeholder="留空不修改"
+                onChange={event => setSecrets(current => ({ ...current, session_secret: event.target.value }))} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="log"
+          title="日志"
+          description="日志级别与输出格式，改动即时生效。"
+          dirty={dirty('log')}
+          saving={saving === 'log'}
+          onSave={() => void saveSection('log')}
+          onReset={() => patch(current => ({ ...current, log: config.log }))}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="日志级别">
+              <select value={draft.log.level} onChange={event => patch(current => ({ ...current, log: { ...current.log, level: event.target.value } }))}>
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+            </Field>
+            <Field label="日志格式">
+              <select value={draft.log.format} onChange={event => patch(current => ({ ...current, log: { ...current.log, format: event.target.value } }))}>
+                <option value="json">json</option>
+                <option value="colored">colored</option>
+              </select>
+            </Field>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.log.db_writer} onChange={event => patch(current => ({ ...current, log: { ...current.log, db_writer: event.target.checked } }))} />
+              <span>日志写入数据库</span>
+            </label>
+          </div>
+        </Section>
+
+        <Section
+          section="appearance"
+          title="背景与外观"
+          description="控制首页背景的显示模式、轮播间隔和过渡效果。"
+          dirty={dirty('appearance')}
+          saving={saving === 'appearance'}
+          onSave={() => void saveSection('appearance')}
+          onReset={() => patch(current => ({ ...current, background: config.background }))}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="背景模式">
+              <select value={draft.background.mode} onChange={event => patch(current => ({ ...current, background: { ...current.background, mode: event.target.value as 'single' | 'carousel' | 'random' } }))}>
+                <option value="single">单图</option>
+                <option value="carousel">顺序轮播</option>
+                <option value="random">随机轮播</option>
+              </select>
+            </Field>
+            <Field label="轮播间隔（秒）">
+              <input type="number" min="1" value={draft.background.interval_seconds} onChange={event => patch(current => ({ ...current, background: { ...current.background, interval_seconds: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="过渡效果">
+              <select value={draft.background.transition_effect} onChange={event => patch(current => ({ ...current, background: { ...current.background, transition_effect: event.target.value as 'fade' | 'slide' } }))}>
+                <option value="fade">淡入淡出</option>
+                <option value="slide">滑动</option>
+              </select>
+            </Field>
+            <Field label="过渡时长（毫秒）">
+              <input type="number" min="0" max="10000" step="100" value={draft.background.fade_duration_ms} onChange={event => patch(current => ({ ...current, background: { ...current.background, fade_duration_ms: Number(event.target.value) } }))} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="gravatar"
+          title="Gravatar 头像"
+          description="头像可以直连 Gravatar，也可以交给 Extension 代取。填了 Extension 地址时优先后者。"
+          dirty={dirty('gravatar')}
+          saving={saving === 'gravatar'}
+          onSave={() => void saveSection('gravatar')}
+          onReset={() => { patch(current => ({ ...current, gravatar: config.gravatar })); setSecrets(current => clearSecrets('gravatar', current)) }}
+        >
+          <div className="form-grid form-grid--three">
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.gravatar.enabled} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, enabled: event.target.checked } }))} />
+              <span>启用 Gravatar</span>
+            </label>
+            <Field label="默认样式">
+              <select value={draft.gravatar.default_style} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, default_style: event.target.value } }))}>
+                <option value="mp">神秘人</option>
+                <option value="identicon">几何图案</option>
+                <option value="monsterid">小怪物</option>
+                <option value="wavatar">卡通脸</option>
+                <option value="retro">复古</option>
+                <option value="robohash">机器人</option>
+              </select>
+            </Field>
+            <Field label="默认尺寸（像素）">
+              <input type="number" min="16" max="512" value={draft.gravatar.default_size} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, default_size: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="内容评级">
+              <select value={draft.gravatar.rating} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, rating: event.target.value } }))}>
+                <option value="g">G - 大众</option>
+                <option value="pg">PG - 辅导</option>
+                <option value="r">R - 限制</option>
+                <option value="x">X - 严格</option>
+              </select>
+            </Field>
+            <Field label="直连代理">
+              <select
+                value={draft.gravatar.proxy_names[0] ?? ''}
+                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, proxy_names: event.target.value ? [event.target.value] : [] } }))}
+              >
+                <option value="">不使用代理</option>
+                {proxyNames.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </Field>
+            <Field label="请求超时（秒）">
+              <input type="number" min="1" max="120" value={draft.gravatar.timeout_seconds}
+                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="Extension 地址">
+              <input value={draft.gravatar.extension_url} placeholder="留空则直连 Gravatar"
+                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, extension_url: event.target.value } }))} />
+            </Field>
+            <Field label="Extension Token">
+              <input type="password" autoComplete="off"
+                value={secrets.gravatar_extension_token}
+                placeholder={draft.gravatar.extension_token_set ? '已配置，留空不修改' : '未配置'}
+                onChange={event => setSecrets(current => ({ ...current, gravatar_extension_token: event.target.value }))} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="bookmark"
+          title="书签"
+          description="书签图标抓取使用的代理链。"
+          dirty={dirty('bookmark')}
+          saving={saving === 'bookmark'}
+          onSave={() => void saveSection('bookmark')}
+          onReset={() => patch(current => ({ ...current, bookmark: config.bookmark }))}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="代理链（逗号分隔）">
+              <input
+                value={draft.bookmark.proxy_names.join(',')}
+                placeholder="router,backup"
+                onChange={event => patch(current => ({
+                  ...current,
+                  bookmark: { proxy_names: event.target.value.split(',').map(item => item.trim()).filter(Boolean) },
+                }))}
+              />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="rss"
+          title="RSS"
+          description="订阅抓取、图片缓存与 Extension 代抓。填了 Extension 地址时抓取交给它。"
+          dirty={dirty('rss')}
+          saving={saving === 'rss'}
+          onSave={() => void saveSection('rss')}
+          onReset={() => { patch(current => ({ ...current, rss: config.rss })); setSecrets(current => clearSecrets('rss', current)) }}
+        >
+          <div className="form-grid form-grid--three">
+            <Field label="保留条数">
+              <input type="number" min="1" value={draft.rss.retention_count} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, retention_count: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="后台抓取间隔（秒）">
+              <input type="number" min="60" value={draft.rss.background_fetch_interval} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_interval: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="抓取并发">
+              <input type="number" min="1" max="32" value={draft.rss.fetch_concurrency} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, fetch_concurrency: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="单源超时（秒）">
+              <input type="number" min="5" max="600" value={draft.rss.fetch_timeout_seconds} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, fetch_timeout_seconds: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="代理链（逗号分隔）">
+              <input
+                value={draft.rss.proxy_names.join(',')}
+                placeholder="router,backup"
+                onChange={event => patch(current => ({
+                  ...current,
+                  rss: {
+                    ...current.rss,
+                    proxy_names: event.target.value.split(',').map(item => item.trim()).filter(Boolean),
+                  },
+                }))}
+              />
+            </Field>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.rss.background_fetch_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_enabled: event.target.checked } }))} />
+              <span>启用后台抓取</span>
+            </label>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.rss.image_cache_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cache_enabled: event.target.checked } }))} />
+              <span>缓存条目图片</span>
+            </label>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.rss.image_cleanup_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_enabled: event.target.checked } }))} />
+              <span>自动清理无引用图片</span>
+            </label>
+            <Field label="Extension 地址">
+              <input value={draft.rss.extension_url} placeholder="留空则由本机抓取"
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, extension_url: event.target.value } }))} />
+            </Field>
+            <Field label="Extension Token">
+              <input type="password" autoComplete="off"
+                value={secrets.rss_extension_token}
+                placeholder={draft.rss.extension_token_set ? '已配置，留空不修改' : '未配置'}
+                onChange={event => setSecrets(current => ({ ...current, rss_extension_token: event.target.value }))} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section
+          section="extension"
+          title="Extension 对接（签名通道）"
+          description="与上面的 extension_url 不同：这条通道用 Ed25519 签名，Extension 会持久化订阅与访问密钥。未启用时留空即可。"
+          dirty={dirty('extension')}
+          saving={saving === 'extension'}
+          onSave={() => void saveSection('extension')}
+          onReset={() => patch(current => ({ ...current, extension_hub: config.extension_hub }))}
+        >
+          <div className="form-grid form-grid--three">
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.extension_hub.enabled}
+                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, enabled: event.target.checked } }))} />
+              <span>启用签名通道</span>
+            </label>
+            <Field label="API 根地址">
+              <input value={draft.extension_hub.base_url} placeholder="https://ext.example.com/api/v1"
+                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, base_url: event.target.value } }))} />
+            </Field>
+            <Field label="宿主私钥路径">
+              <input value={draft.extension_hub.private_key_path} placeholder="/etc/homehub/extension-hub.key"
+                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, private_key_path: event.target.value } }))} />
+            </Field>
+            <Field label="请求超时（秒）">
+              <input type="number" min="1" max="300" value={draft.extension_hub.timeout_seconds}
+                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, timeout_seconds: Number(event.target.value) } }))} />
+            </Field>
+          </div>
+          <Notice message="base_url 必须带 /api/v1 前缀。私钥内容不会经过这个页面，只填路径。" tone="info" />
+        </Section>
+      </div>}
+
+    <ConfirmDialog
+      open={confirmingJSON}
+      title="保存系统配置"
+      description="配置会写入 config.json 并立即热重载。监听地址、数据库、认证或代理设置错误可能导致服务不可用。"
+      confirmLabel="保存并重载"
+      busy={saving === 'json'}
+      onClose={() => setConfirmingJSON(false)}
+      onConfirm={() => void saveJSON()}
+    />
   </div>
 }
 
-function SettingsSection({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) { return <section className="data-panel"><header className="data-panel-head"><div><h2>{title}</h2>{description && <p>{description}</p>}</div></header><div className="modal-body">{children}</div></section> }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="form-field">{label}{children}</label> }
+// ------------------------------------------------------------
+// 局部组件
+// ------------------------------------------------------------
+
+/** Section 是一个可独立保存的配置面板。 */
+function Section({ title, description, children, section, dirty, saving, onSave, onReset }: {
+  title: string
+  description?: string
+  children: ReactNode
+  section?: SettingsSection
+  dirty?: boolean
+  saving?: boolean
+  onSave?: () => void
+  onReset?: () => void
+}) {
+  return <section className="data-panel">
+    <header className="data-panel-head">
+      <div>
+        <h2>{title}</h2>
+        {description && <p>{description}</p>}
+      </div>
+      {section && <div className="toolbar-actions">
+        {dirty && <span style={{ fontSize: 11, color: 'var(--color-warning)' }}>未保存</span>}
+        <button className="button button--quiet" type="button" disabled={!dirty || saving} onClick={onReset}>还原</button>
+        <button className="button button--primary" type="button" disabled={!dirty || saving} onClick={onSave}>
+          {saving ? '保存中...' : '保存'}
+        </button>
+      </div>}
+    </header>
+    <div className="modal-body">{children}</div>
+  </section>
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return <label className="form-field">{label}{children}</label>
+}
