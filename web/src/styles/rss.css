@@ -10,6 +10,18 @@
   grid-template-columns: 248px minmax(0, 1fr);
   gap: var(--panel-gap);
   align-items: start;
+  transition: grid-template-columns var(--dur-fast) ease;
+}
+/* 收起订阅源栏：右栏吃掉全部宽度。用 0fr 而不是 display:none，
+   否则过渡会跳变（display 不可动画）。 */
+.rss-layout.is-sidebar-collapsed {
+  grid-template-columns: 0 minmax(0, 1fr);
+  gap: 0;
+}
+.rss-layout.is-sidebar-collapsed .rss-sidebar {
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* ============ 左栏：订阅源导航 ============ */
@@ -23,6 +35,43 @@
   border-radius: var(--radius-panel);
   background: var(--color-surface);
 }
+/* 收起后浮在右栏左上角的小按钮，用于重新展开。
+   单独定位是因为侧栏本身已经宽度为 0，按钮没地方放。 */
+.rss-sidebar-reopen {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.rss-sidebar-reopen:hover { color: var(--color-text); border-color: var(--color-border-strong); }
+
+.rss-sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.rss-sidebar-toggle {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  cursor: pointer;
+}
+.rss-sidebar-toggle:hover { color: var(--color-text); border-color: var(--color-border-strong); }
+
 .rss-sidebar-head {
   display: flex;
   align-items: center;
@@ -135,12 +184,89 @@
 .rss-group-feeds { display: flex; flex-direction: column; }
 .rss-group-feeds .rss-nav-item { padding-left: calc(var(--panel-head-pad-x) + var(--space-4)); }
 
+/* ---------- 订阅源卡片 ----------
+   每张卡片两行：第一行是订阅源本身（点它筛选条目），第二行是
+   状态与操作。抓取方式与暂停做成可直接点的 chip——原先只能打开
+   编辑弹窗改，而这是最常动的两个字段。 */
+.rss-feed-card {
+  /* 与 .rss-nav-item 共用类名以复用配色，但它是 grid 且不可整体点击：
+     这里必须显式重置继承来的 flex 布局与 cursor。 */
+  display: grid;
+  align-items: stretch;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--panel-head-pad-x);
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: default;
+}
+.rss-feed-card:hover { background: color-mix(in srgb, var(--color-interactive) 6%, transparent); }
+.rss-feed-card.is-active {
+  border-left-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
+}
+.rss-feed-card .rss-feed-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-base);
+  text-align: left;
+  cursor: pointer;
+}
+.rss-feed-card.is-active .rss-feed-main {
+  color: var(--color-primary-hover);
+  font-weight: 650;
+}
+.rss-feed-card .rss-nav-remark {
+  margin: 0 0 0 calc(var(--space-3) + 6px);
+}
+.rss-feed-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: calc(var(--space-3) + 6px);
+}
+.rss-feed-actions .rss-nav-count {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+}
+
+/* chip 是卡片里的微型切换，比 button 小一档 */
+.rss-chip {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+  cursor: pointer;
+}
+.rss-chip:hover:not(:disabled) { border-color: var(--color-border-strong); color: var(--color-text); }
+.rss-chip:disabled { cursor: not-allowed; opacity: .5; }
+.rss-chip.is-remote {
+  border-color: color-mix(in srgb, var(--color-interactive) 45%, transparent);
+  color: var(--color-interactive);
+  background: color-mix(in srgb, var(--color-interactive) 10%, transparent);
+}
+.rss-chip.is-paused {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+}
+
 /* 订阅源项上的状态灯 */
 .rss-nav-item .status-dot { width: 6px; height: 6px; }
 .rss-nav-item .status-dot.is-error { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-error) 22%, transparent); }
 
 /* ============ 右栏：条目流 ============ */
 .rss-main {
+  position: relative; /* 收起侧栏后的「展开」按钮定位在左上角 */
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -189,7 +315,9 @@
 .rss-entry-body { flex: 1; min-width: 0; display: grid; gap: var(--space-1); }
 .rss-entry-title {
   color: var(--color-text);
-  font-size: var(--text-md);
+  /* 与 --text-md(14px) 相比放大一档：在「全部条目」里连续扫标题时，
+     14px 读起来偏累，尤其是密集列表。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   line-height: var(--leading-tight);
   text-decoration: none;
@@ -201,7 +329,7 @@
   gap: var(--space-3);
   flex-wrap: wrap;
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  font-size: var(--text-base);
 }
 .rss-entry-meta .meta-dot { opacity: .5; }
 .rss-entry-source {
@@ -243,8 +371,8 @@
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
   color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: 1.65;
+  font-size: var(--text-md);
+  line-height: 1.7;
 }
 .rss-entry-content * {
   max-width: 100% !important;
@@ -335,5 +463,8 @@
   .rss-main-head { flex-direction: column; align-items: flex-start; }
   .rss-main-actions { width: 100%; }
   .rss-main-actions .button { flex: 1; }
-  .rss-entry-title { font-size: var(--text-base); }
+  /* 窄屏原先压到 --text-base(13px)，比桌面还小——而手机上更需要
+     字号撑起来。收到 --text-md(14px) 作为折中：比原来大一档，
+     又不会让一条标题占到三行。 */
+  .rss-entry-title { font-size: var(--text-md); }
 }

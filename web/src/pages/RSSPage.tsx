@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ConfirmDialog, Modal, Notice, PageState, Pagination, StatusBadge } from '@/components/WorkspaceUI'
 import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup, type ScheduleState } from '@/lib/rss'
+import { extensionHubApi } from '@/lib/extensionHub'
 import { isUsableTimestamp, relativeTime } from '@/lib/format'
 import { formatDateTime } from '@/lib/types'
 
 const perPage = 20
+const SIDEBAR_KEY = 'homehub-rss-sidebar-collapsed'
 
 // ============================================================
 // RSS 阅读 — 双栏：左侧订阅源导航，右侧条目流
@@ -41,6 +43,14 @@ export function RSSPage() {
   const [selectedGroup, setSelectedGroup] = useState<number | null>(null)
   const [page, setPage] = useState(1)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(() => new Set())
+  // 侧栏收起状态记在本机：这是一次性的阅读偏好，不该占服务端配置。
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
   const [loading, setLoading] = useState(true)
   const [entriesLoading, setEntriesLoading] = useState(false)
   const [error, setError] = useState('')
@@ -57,6 +67,18 @@ export function RSSPage() {
   const [editGroup, setEditGroup] = useState<RSSGroup | null>(null)
   const [pendingDeleteFeed, setPendingDeleteFeed] = useState<RSSFeed | null>(null)
   const [pendingDeleteGroup, setPendingDeleteGroup] = useState<RSSGroup | null>(null)
+
+  function toggleSidebar() {
+    setSidebarCollapsed(current => {
+      const next = !current
+      try {
+        localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0')
+      } catch {
+        // 隐私模式下 localStorage 会抛错；折叠本身仍然生效。
+      }
+      return next
+    })
+  }
 
   // ---------- 数据加载 ----------
   async function loadFeeds() {
@@ -84,6 +106,62 @@ export function RSSPage() {
     } catch {
       // 调度视图是附加信息，读不到不影响阅读。
       setSchedule(null)
+    }
+  }
+
+  /** toggleFetchBy 在「本机」与「Extension」之间切换这个源的抓取归属。 */
+  async function toggleFetchBy(feed: RSSFeed) {
+    const next = feed.fetch_by === 'extension' ? 'local' : 'extension'
+    setBusy(true)
+    try {
+      await rssApi.updateFeed(feed.id, { fetch_by: next })
+      // 切到远端不会自动推送：推送会真的让对端开始抓取，属于外部副作用，
+      // 不该由一个下拉切换顺手触发。所以提示里必须说清「还差一步」。
+      setMessage(next === 'extension'
+        ? `「${feed.title || feed.url}」已标为交给 Extension。本机不再抓它；还需要到「Extension 对接」页点推送，对端才会开始抓。`
+        : `「${feed.title || feed.url}」已改回本机抓取，下一轮调度会重新带上它`)
+      setError('')
+      await Promise.all([loadFeeds(), loadSchedule()])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '切换抓取方式失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** pushToExtension 把这个源推给 Extension 抓取。 */
+  async function pushToExtension(feed: RSSFeed) {
+    setBusy(true)
+    try {
+      const result = await extensionHubApi.push(feed.id, { fetchNow: true })
+      setMessage(result.created
+        ? `已推送「${feed.title || feed.url}」到 Extension，对端开始抓取`
+        : `已更新 Extension 上的「${feed.title || feed.url}」`)
+      setError('')
+    } catch (cause) {
+      const text = cause instanceof Error ? cause.message : '推送失败'
+      // 最常见的原因是没启用签名通道；直接说出来，别让人去查网络。
+      setError(text.includes('未启用') || text.includes('70001')
+        ? '还没有启用 Extension 签名通道：到「设置 → Extension 对接」填好地址与私钥后再推送'
+        : text)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** togglePaused 暂停/恢复这个源的后台调度。 */
+  async function togglePaused(feed: RSSFeed) {
+    const next = !(feed.fetch_enabled ?? true)
+    setBusy(true)
+    try {
+      await rssApi.updateFeed(feed.id, { fetch_enabled: next })
+      setMessage(next ? `已恢复「${feed.title || feed.url}」的调度` : `已暂停「${feed.title || feed.url}」`)
+      setError('')
+      await Promise.all([loadFeeds(), loadSchedule()])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '切换失败')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -301,12 +379,23 @@ export function RSSPage() {
         description="添加 RSS 或 Atom 链接后，抓取到的文章会出现在这里。"
         action={<button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button>}
       />
-      : <div className="rss-layout">
+      : <div className={`rss-layout${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
         {/* ---------- 左栏 ---------- */}
         <aside className="rss-sidebar" aria-label="订阅源导航">
           <div className="rss-sidebar-head">
             <strong>订阅源</strong>
-            <button type="button" onClick={selectAll}>全部条目</button>
+            <div className="rss-sidebar-head-actions">
+              <button type="button" onClick={selectAll}>全部条目</button>
+              <button
+                type="button"
+                className="rss-sidebar-toggle"
+                onClick={toggleSidebar}
+                aria-label="收起订阅源栏"
+                title="收起订阅源栏，让条目占满宽度"
+              >
+                ⇤
+              </button>
+            </div>
           </div>
           <nav className="rss-nav">
             {groups.map(group => {
@@ -326,7 +415,16 @@ export function RSSPage() {
                 {expanded && <div className="rss-group-feeds">
                   {groupFeeds.length === 0
                     ? <span className="rss-nav-item" style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>暂无订阅源</span>
-                    : groupFeeds.map(feed => <FeedNavItem key={feed.id} feed={feed} active={selectedFeed === feed.id} onSelect={() => selectFeed(feed.id)} />)}
+                    : groupFeeds.map(feed => <FeedNavItem
+                      key={feed.id}
+                      feed={feed}
+                      active={selectedFeed === feed.id}
+                      busy={busy}
+                      onSelect={() => selectFeed(feed.id)}
+                      onToggleFetchBy={() => void toggleFetchBy(feed)}
+                      onTogglePaused={() => void togglePaused(feed)}
+                      onPush={() => void pushToExtension(feed)}
+                    />)}
                   <button
                     type="button"
                     className="rss-nav-item"
@@ -346,7 +444,16 @@ export function RSSPage() {
                 <span className="rss-nav-count">{grouped.loose.length}</span>
               </span>
               <div className="rss-group-feeds">
-                {grouped.loose.map(feed => <FeedNavItem key={feed.id} feed={feed} active={selectedFeed === feed.id} onSelect={() => selectFeed(feed.id)} />)}
+                {grouped.loose.map(feed => <FeedNavItem
+                  key={feed.id}
+                  feed={feed}
+                  active={selectedFeed === feed.id}
+                  busy={busy}
+                  onSelect={() => selectFeed(feed.id)}
+                  onToggleFetchBy={() => void toggleFetchBy(feed)}
+                  onTogglePaused={() => void togglePaused(feed)}
+                  onPush={() => void pushToExtension(feed)}
+                />)}
               </div>
             </div>}
           </nav>
@@ -354,6 +461,14 @@ export function RSSPage() {
 
         {/* ---------- 右栏 ---------- */}
         <section className="rss-main" aria-label="订阅条目">
+          {sidebarCollapsed && <button
+            type="button"
+            className="rss-sidebar-reopen"
+            onClick={toggleSidebar}
+            title="展开订阅源栏"
+          >
+            ⇥ 订阅源
+          </button>}
           <header className="rss-main-head">
             <div>
               <h2>{heading}</h2>
@@ -678,7 +793,21 @@ function formatInterval(seconds: number): string {
   return `${Number.isInteger(days) ? days : days.toFixed(1)} 天`
 }
 
-function FeedNavItem({ feed, active, onSelect }: { feed: RSSFeed; active: boolean; onSelect: () => void }) {
+/** FeedNavItem 是左栏的一张订阅源卡片。
+ *
+ * 卡片头是订阅源本身（点它筛选条目），下面一行是状态与操作。
+ * 抓取方式做成可直接点的按钮：原先只在编辑弹窗里能改，想切一个源
+ * 得打开弹窗、找下拉框、保存——而这正是最常改的字段。
+ */
+function FeedNavItem({ feed, active, busy, onSelect, onToggleFetchBy, onTogglePaused, onPush }: {
+  feed: RSSFeed
+  active: boolean
+  busy: boolean
+  onSelect: () => void
+  onToggleFetchBy: () => void
+  onTogglePaused: () => void
+  onPush: () => void
+}) {
   const title = feed.title || feed.url
   const remote = feed.fetch_by === 'extension'
   const paused = feed.fetch_enabled === false
@@ -689,15 +818,42 @@ function FeedNavItem({ feed, active, onSelect }: { feed: RSSFeed; active: boolea
     paused ? '调度已暂停' : '',
   ].filter(Boolean).join(' · ')
 
-  return <button
-    type="button"
-    className={`rss-nav-item${active ? ' is-active' : ''}`}
-    onClick={onSelect}
-    title={hint || title}
-  >
-    <span className={`status-dot ${remote || paused ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
-    <span className="rss-nav-label">{title}</span>
-    {feed.remark && <span className="rss-nav-remark">{feed.remark}</span>}
-    <span className="rss-nav-count">{remote ? '远端' : paused ? '已暂停' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
-  </button>
+  return <div className={`rss-nav-item rss-feed-card${active ? ' is-active' : ''}`}>
+    <button type="button" className="rss-feed-main" onClick={onSelect} title={hint || title}>
+      <span className={`status-dot ${remote || paused ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
+      <span className="rss-nav-label">{title}</span>
+    </button>
+    {feed.remark && <p className="rss-nav-remark">{feed.remark}</p>}
+    <div className="rss-feed-actions">
+      <button
+        type="button"
+        className={`rss-chip${remote ? ' is-remote' : ''}`}
+        disabled={busy}
+        onClick={onToggleFetchBy}
+        title={remote ? '当前由 Extension 抓取，点击改为本机抓取' : '当前由本机抓取，点击改为交给 Extension'}
+      >
+        {remote ? '远端' : '本机'}
+      </button>
+      {remote
+        ? <button
+          type="button"
+          className="rss-chip"
+          disabled={busy}
+          onClick={onPush}
+          title="把这个源推给 Extension，对端会立即抓一次"
+        >
+          推送
+        </button>
+        : <button
+          type="button"
+          className={`rss-chip${paused ? ' is-paused' : ''}`}
+          disabled={busy}
+          onClick={onTogglePaused}
+          title={paused ? '点击恢复后台抓取' : '点击暂停后台抓取'}
+        >
+          {paused ? '已暂停' : '调度中'}
+        </button>}
+      <span className="rss-nav-count">{remote ? '—' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
+    </div>
+  </div>
 }
