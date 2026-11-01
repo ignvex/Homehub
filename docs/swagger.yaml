@@ -343,6 +343,16 @@ definitions:
     - password
     - username
     type: object
+  handler.issueExtensionKeyRequest:
+    properties:
+      expires_in:
+        description: ExpiresIn 是 Go 风格的时长串（如 "720h"）。省略表示永不过期。
+        type: string
+      name:
+        type: string
+    required:
+    - name
+    type: object
   handler.loginRequest:
     properties:
       password:
@@ -377,6 +387,21 @@ definitions:
         type: string
       id:
         type: string
+    type: object
+  handler.pushExtensionSubscriptionRequest:
+    properties:
+      enabled:
+        description: |-
+          Enabled 省略表示不碰 Extension 侧的启停状态；显式 true 会把
+          被自动停用的源恢复，并清零对方的连续失败计数。
+        type: boolean
+      feed_id:
+        type: integer
+      fetch_now:
+        description: FetchNow 省略时为 true，与协议默认一致。
+        type: boolean
+    required:
+    - feed_id
     type: object
   handler.reorderBookmarksRequest:
     properties:
@@ -491,6 +516,85 @@ definitions:
       role:
         type: string
       username:
+        type: string
+    type: object
+  hubclient.AccessKey:
+    properties:
+      client_id:
+        type: string
+      created_at:
+        type: integer
+      expires_at:
+        type: integer
+      id:
+        type: string
+      last_used_at:
+        type: integer
+      live:
+        description: |-
+          Live 是服务端算好的"未撤销且未过期"。对账只看这一个字段，
+          不要自己拿 ExpiresAt 与本地时间比较 —— 时钟偏差会得出相反结论。
+        type: boolean
+      name:
+        type: string
+      revoked:
+        type: boolean
+    type: object
+  hubclient.CreatedKey:
+    properties:
+      client_id:
+        type: string
+      created_at:
+        type: integer
+      expires_at:
+        type: integer
+      id:
+        type: string
+      key:
+        type: string
+      last_used_at:
+        type: integer
+      live:
+        description: |-
+          Live 是服务端算好的"未撤销且未过期"。对账只看这一个字段，
+          不要自己拿 ExpiresAt 与本地时间比较 —— 时钟偏差会得出相反结论。
+        type: boolean
+      name:
+        type: string
+      revoked:
+        type: boolean
+    type: object
+  hubclient.Subscription:
+    properties:
+      created_at:
+        type: integer
+      enabled:
+        type: boolean
+      error_count:
+        description: 连续失败次数，成功一次即清零
+        type: integer
+      fetch_interval:
+        description: 紧凑写法，如 "30m"、"1h30m"
+        type: string
+      id:
+        type: integer
+      last_error:
+        description: 已截断到 500 字符，成功时为空
+        type: string
+      last_fetch_at:
+        type: integer
+      last_status:
+        description: 最近一次 HTTP 状态码，0 表示还没抓过
+        type: integer
+      next_fetch_at:
+        type: integer
+      site_url:
+        type: string
+      title:
+        type: string
+      unread_count:
+        type: integer
+      url:
         type: string
     type: object
   model.Bookmark:
@@ -658,6 +762,114 @@ definitions:
         type: string
       user:
         type: string
+    type: object
+  service.ExtensionHubPushResult:
+    properties:
+      created:
+        type: boolean
+      feed_id:
+        type: integer
+      remote:
+        $ref: '#/definitions/hubclient.Subscription'
+      remote_id:
+        description: RemoteID 是 Extension 侧的订阅 id，与本地 feed id 无关。
+        type: integer
+    type: object
+  service.ExtensionHubRemoteSubscription:
+    properties:
+      created_at:
+        type: integer
+      enabled:
+        type: boolean
+      error_count:
+        description: 连续失败次数，成功一次即清零
+        type: integer
+      fetch_interval:
+        description: 紧凑写法，如 "30m"、"1h30m"
+        type: string
+      id:
+        type: integer
+      in_local:
+        type: boolean
+      last_error:
+        description: 已截断到 500 字符，成功时为空
+        type: string
+      last_fetch_at:
+        type: integer
+      last_status:
+        description: 最近一次 HTTP 状态码，0 表示还没抓过
+        type: integer
+      local_feed_id:
+        type: integer
+      next_fetch_at:
+        type: integer
+      site_url:
+        type: string
+      title:
+        type: string
+      unread_count:
+        type: integer
+      url:
+        type: string
+    type: object
+  service.ExtensionHubStatus:
+    properties:
+      authenticated:
+        type: boolean
+      base_url:
+        type: string
+      configured:
+        type: boolean
+      enabled:
+        type: boolean
+      error_code:
+        description: |-
+          ErrorCode 优先取协议错误码（invalid_request / unauthenticated / …）；
+          配置与网络层的问题用本包自定的 disabled / config / network。
+        type: string
+      error_message:
+        type: string
+      public_key:
+        description: |-
+          PublicKey 是宿主公钥（标准 base64），供部署时与 Extension 侧核对。
+          它本来就是公开信息，不构成泄露。
+        type: string
+      reachable:
+        type: boolean
+      rss_available:
+        type: boolean
+      subscription_count:
+        description: SubscriptionCount 只在 RSSAvailable 为真时有意义。
+        type: integer
+    type: object
+  service.ExtensionHubSyncItem:
+    properties:
+      error:
+        type: string
+      feed_id:
+        type: integer
+      remote_id:
+        type: integer
+      status:
+        description: created / updated / failed
+        type: string
+      url:
+        type: string
+    type: object
+  service.ExtensionHubSyncResult:
+    properties:
+      created:
+        type: integer
+      failed:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/service.ExtensionHubSyncItem'
+        type: array
+      total:
+        type: integer
+      updated:
+        type: integer
     type: object
   service.LogUpdate:
     properties:
@@ -830,7 +1042,7 @@ info:
     name: HomeHub
   description: 个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、系统日志、配置管理等功能。
   title: HomeHub API
-  version: "1.0"
+  version: "1.1"
 paths:
   /admin/logs:
     delete:
@@ -1774,6 +1986,204 @@ paths:
       summary: 更新应用配置
       tags:
       - 配置
+  /extension/keys:
+    get:
+      description: 响应不含明文也不含哈希；live 由服务端计算，宿主不要自己比较过期时间
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/hubclient.AccessKey'
+                  type: array
+              type: object
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 列出访问密钥
+      tags:
+      - Extension 对接
+    post:
+      consumes:
+      - application/json
+      description: 明文 key 只在本响应出现一次，之后任何接口都拿不回
+      parameters:
+      - description: 名称与有效期
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.issueExtensionKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/hubclient.CreatedKey'
+              type: object
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 签发访问密钥
+      tags:
+      - Extension 对接
+  /extension/keys/{id}:
+    delete:
+      description: 同时撤销它换出去的会话；该密钥名下的数据仍可被同一主人的其他凭证读取
+      parameters:
+      - description: 密钥 ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 已撤销或本就不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 撤销访问密钥
+      tags:
+      - Extension 对接
+  /extension/status:
+    get:
+      description: 返回配置是否齐全、网络是否可达、签名是否通过、对方 RSS 模块是否启用
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.ExtensionHubStatus'
+              type: object
+      summary: 查询 Extension 对接状态
+      tags:
+      - Extension 对接
+  /extension/subscriptions:
+    get:
+      description: 含抓取状态、连续失败次数与未读数，并标注本地是否也有同 URL 的订阅
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/service.ExtensionHubRemoteSubscription'
+                  type: array
+              type: object
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 列出 Extension 侧订阅
+      tags:
+      - Extension 对接
+    post:
+      consumes:
+      - application/json
+      description: 按 URL 幂等：首次推送新建，再次推送更新。省略的字段在对方侧保持原值
+      parameters:
+      - description: 订阅源 ID 与可选的启停覆盖
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.pushExtensionSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.ExtensionHubPushResult'
+              type: object
+        "404":
+          description: 本地订阅源不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 推送单条订阅
+      tags:
+      - Extension 对接
+  /extension/subscriptions/{id}:
+    delete:
+      description: 同时清理对方已抓取的条目与 blob 引用，不可恢复
+      parameters:
+      - description: Extension 侧订阅 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 已删除或本就不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除 Extension 侧订阅
+      tags:
+      - Extension 对接
+  /extension/subscriptions/sync:
+    post:
+      description: 只推送不删除：删除会连带清掉对方已抓取的条目，必须逐条确认
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.ExtensionHubSyncResult'
+              type: object
+        "502":
+          description: 上游 Extension 不可达或返回错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 全量对账
+      tags:
+      - Extension 对接
   /health:
     get:
       description: 返回服务运行状态、数据库连通性和启动时长

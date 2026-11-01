@@ -109,6 +109,34 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+// TestExtensionHubRoutesRequireAuth 确认整个 Extension 对接组都在认证链后面。
+//
+// 这一组会向外发起签名请求，也能签发登录凭证。漏挂 AuthRequired 的后果
+// 比普通内容端点更重，所以每个端点都要单独验证。
+func TestExtensionHubRoutesRequireAuth(t *testing.T) {
+	r := newTestEngine()
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/v1/extension/status"},
+		{http.MethodGet, "/api/v1/extension/subscriptions"},
+		{http.MethodPost, "/api/v1/extension/subscriptions"},
+		{http.MethodPost, "/api/v1/extension/subscriptions/sync"},
+		{http.MethodDelete, "/api/v1/extension/subscriptions/7"},
+		{http.MethodGet, "/api/v1/extension/keys"},
+		{http.MethodPost, "/api/v1/extension/keys"},
+		{http.MethodDelete, "/api/v1/extension/keys/01JC8Z"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}")))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 未登录时状态码 = %d，期望 401", tc.method, tc.path, w.Code)
+		}
+	}
+}
+
 // TestConfigRoutesRequireAdmin 确认配置接口只对管理员开放。
 //
 // /config 可改写数据库连接与 session_secret，普通用户若能调用，

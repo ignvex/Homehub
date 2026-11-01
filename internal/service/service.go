@@ -24,23 +24,27 @@ type Services struct {
 	Todo       *TodoService
 	Balance    *BalanceService
 	Paste      *PasteService
+	// ExtensionHub 是 HomeHub 作为宿主调用 Extension `/api/v1/hub/*` 的
+	// 签名通道。未配置时所有方法返回 ErrExtensionHubDisabled。
+	ExtensionHub *ExtensionHubService
 }
 
 // NewServices 创建并返回所有 Service 实例。
 func NewServices(db *gorm.DB) *Services {
 	return &Services{
-		Auth:       NewAuthService(db),
-		Bookmark:   NewBookmarkService(db),
-		Config:     NewConfigService(),
-		Media:      NewMediaService(db),
-		Background: NewBackgroundService(),
-		Gravatar:   NewGravatarService(db),
-		Favicon:    NewFaviconService(db),
-		RSS:        NewRSSService(db),
-		Search:     NewSearchService(db),
-		Log:        NewLogService(db),
-		Todo:       NewTodoService(db),
-		Balance:    NewBalanceService(),
-		Paste:      NewPasteService(db),
+		Auth:         NewAuthService(db),
+		Bookmark:     NewBookmarkService(db),
+		Config:       NewConfigService(),
+		Media:        NewMediaService(db),
+		Background:   NewBackgroundService(),
+		Gravatar:     NewGravatarService(db),
+		Favicon:      NewFaviconService(db),
+		RSS:          NewRSSService(db),
+		Search:       NewSearchService(db),
+		Log:          NewLogService(db),
+		Todo:         NewTodoService(db),
+		Balance:      NewBalanceService(),
+		Paste:        NewPasteService(db),
+		ExtensionHub: NewExtensionHubService(db),
 	}
 }

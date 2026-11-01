@@ -186,6 +186,32 @@ func registerRoutes(r *gin.Engine) {
 			balance.POST("/refresh", handler.BalanceRefresh)
 		}
 
+		// ---- Extension hub 通道 ----
+		//
+		// 两类权限分开：镜像订阅是内容写操作（3 级，与 RSS 写一致）；
+		// 签发密钥等同于发账号，需要 2 级；删除对方已抓取的内容不可逆，
+		// 也抬到 2 级，不跟内容写共用一个门槛。
+		extHubRead := authRequired.Group("/extension")
+		{
+			extHubRead.GET("/status", handler.ExtensionHubStatus)
+			extHubRead.GET("/subscriptions", handler.ExtensionHubListSubscriptions)
+		}
+
+		extHubPush := contentWrite.Group("/extension")
+		{
+			extHubPush.POST("/subscriptions", handler.ExtensionHubPushSubscription)
+			extHubPush.POST("/subscriptions/sync", handler.ExtensionHubSync)
+		}
+
+		extHubOps := authRequired.Group("/extension")
+		extHubOps.Use(middleware.AuthLevelRequired(model.LevelOperator))
+		{
+			extHubOps.DELETE("/subscriptions/:id", handler.ExtensionHubDeleteSubscription)
+			extHubOps.GET("/keys", handler.ExtensionHubListKeys)
+			extHubOps.POST("/keys", handler.ExtensionHubIssueKey)
+			extHubOps.DELETE("/keys/:id", handler.ExtensionHubRevokeKey)
+		}
+
 		// TODO 待办：读需登录，写需 3 级
 		todoRead := authRequired.Group("/todos")
 		{

@@ -29,6 +29,12 @@ const (
 	CodeUsernameExists   = 30002 // 用户名已存在
 	CodeUserNotFound     = 30003 // 用户不存在
 	CodeSelfOperation    = 30004 // 不能操作自己
+
+	// Extension 对接（7 段）。上游的状态码不透传：
+	// 401 会让前端误以为自己的会话失效，404 会让前端误以为
+	// HomeHub 里没有这个资源。两种都归入 70002。
+	CodeExtensionDisabled = 70001 // 对接未启用或配置不齐
+	CodeExtensionUpstream = 70002 // 上游 Extension 不可达或返回错误
 )
 
 // ============================================================

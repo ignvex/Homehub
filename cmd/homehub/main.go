@@ -6,7 +6,7 @@ package main
 // 启动编排在 internal/app 中，便于测试与将来被其他入口复用。
 //
 // @title           HomeHub API
-// @version         1.0
+// @version         1.1
 // @description     个人中枢项目 API 接口文档，包含认证、书签管理、RSS订阅、待办事项、媒体资源、系统日志、配置管理等功能。
 // @contact.name    HomeHub
 // @host            localhost:8080
