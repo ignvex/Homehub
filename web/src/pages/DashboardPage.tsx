@@ -25,10 +25,6 @@ function formatUptime(seconds?: number): string {
   return `${minutes} 分`
 }
 
-function clockOf(date: Date): string {
-  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
 /** 顶部指标格。 */
 function StatTile({ label, value, dot, note }: {
   label: string
@@ -86,7 +82,6 @@ export function DashboardPage() {
   const [balances, setBalances] = useState<BalanceTarget[]>([])
   const [extension, setExtension] = useState<ExtensionHubStatus | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [, setTick] = useState(0)
   const mountedRef = useRef(true)
 
@@ -113,7 +108,6 @@ export function DashboardPage() {
 
     setBalances(balanceResult.status === 'fulfilled' ? balanceResult.value ?? [] : [])
     setExtension(extensionResult.status === 'fulfilled' ? extensionResult.value : null)
-    setUpdatedAt(new Date())
     setRefreshing(false)
   }, [])
 
@@ -127,9 +121,10 @@ export function DashboardPage() {
     }
   }, [load])
 
-  // 「最后刷新」的相对时间需要自己往前走
+  // 余额卡片的「最后检查」是相对时间，需要自己往前走。
+  // 25 秒刷新一次，让「3 分钟前」这类文案不会停在原地。
   useEffect(() => {
-    const timer = window.setInterval(() => setTick(value => value + 1), 15_000)
+    const timer = window.setInterval(() => setTick(value => value + 1), 25_000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -157,7 +152,6 @@ export function DashboardPage() {
         : 'ok'
   const readyLabel = extension?.ready === true ? '就绪' : extension?.ready === false ? '未就绪' : '未探测到'
   const failedTargets = balances.filter(item => item.status === 'error').length
-  const lastChecked = updatedAt ? relativeTime(updatedAt.toISOString()) || '刚刚' : '—'
 
   return <div className="dashboard">
     <section className="dash-stats" aria-label="系统概况">
@@ -165,7 +159,6 @@ export function DashboardPage() {
       <StatTile label="数据库" value={dbLabel} dot={dbTone} note="PostgreSQL" />
       <StatTile label="Extension" value={extensionLabel} dot={extensionTone} note={extension?.enabled ? extension.base_url : '未配置'} />
       <StatTile label="运行时长" value={formatUptime(health?.uptime_seconds)} note="自上次启动以来" />
-      <StatTile label="最后刷新" value={updatedAt ? clockOf(updatedAt) : '—'} note={updatedAt ? lastChecked : '尚未完成首次检查'} />
     </section>
 
     <div className="dash-grid">
