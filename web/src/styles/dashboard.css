@@ -10,6 +10,10 @@
 }
 
 /* ============ 顶部指标条 ============ */
+/* 顶部指标条严格四格：系统状态 / 数据库 / Extension / 运行时长。
+   列数写死成 4，所以多加一格就会单独掉到第二行、只占最左一列，
+   整条看起来像排版坏了。要加指标就同时改这里的三处列数
+   （桌面 4、窄屏 2、手机 1），或者先想清楚这一格值不值得占位。 */
 .dash-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -206,7 +210,7 @@
   .dash-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dash-stat:nth-child(2) { border-right: 0; }
   .dash-stat:nth-child(1),
-  .dash-stat:nth-child(2) { border-bottom: 1px solid var(--color-border); }
+  .dash-stat:nth-child(2) { border-bottom: 1px solid var(--color-divider); }
   .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dash-tile:nth-child(2n) { border-right: 0; }
   .dash-tile:nth-child(1),
@@ -217,7 +221,7 @@
   .dash-stats { grid-template-columns: 1fr; }
   .dash-stat {
     border-right: 0;
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-divider);
   }
   .dash-stat:last-child { border-bottom: 0; }
   .dash-tiles { grid-template-columns: 1fr; }

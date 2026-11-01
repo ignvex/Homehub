@@ -293,7 +293,9 @@ a:focus-visible,
   justify-content: space-between;
   gap: var(--space-5);
   padding: var(--row-pad-y) var(--row-pad-x);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  /* 之前是 border 的 55% 透明，实际呈现色 #eaddc9 对卡片底只有 1.31:1，
+     比表格还淡——度量行因此糊成一片。改用 divider。 */
+  border-bottom: 1px solid var(--color-divider);
 }
 .metric-row:last-child { border-bottom: 0; }
 .metric-label {
@@ -363,7 +365,10 @@ a:focus-visible,
 .data-table th,
 .data-table td {
   padding: var(--row-pad-y) var(--row-pad-x);
-  border-bottom: 1px solid var(--color-border);
+  /* 用 divider 而不是 border：border 是「轻」的（面板外框、输入框描边），
+     对表头底色只有 1.41:1，肉眼几乎看不出分界，表格会糊成一整块。
+     divider 在两个方向上都是 3:1 以上。 */
+  border-bottom: 1px solid var(--color-divider);
   text-align: left;
   vertical-align: middle;
 }
@@ -605,7 +610,7 @@ a:focus-visible,
   display: grid;
   gap: var(--space-1);
   padding: var(--row-pad-y) var(--row-pad-x);
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-divider);
 }
 .result-row:hover { background: color-mix(in srgb, var(--color-interactive) 6%, transparent); }
 .result-row span {
@@ -636,7 +641,7 @@ a:focus-visible,
   .data-table td { display: block; width: 100%; }
   .data-table tr {
     padding: var(--space-2) 0;
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-divider);
   }
   .data-table td {
     display: grid;

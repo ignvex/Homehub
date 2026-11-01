@@ -34,6 +34,11 @@
   --color-text-secondary: #64716c;
   --color-border: #d8c3a5;
   --color-border-strong: var(--palette-clay);
+  /* 表格行分隔线。与 border 分开是因为 border 要「轻」——面板外框、
+     输入框描边都不该抢视线；而行分隔线要「看见」，否则表格会糊成
+     一整块。实测 border(#d8c3a5) 对表头底色只有 1.41:1，远低于
+     3:1 的可见门槛，这就是「表格没有横线」的由来。 */
+  --color-divider: #9c7f55;
   --color-link: var(--palette-pine-strong);
   --color-interactive: var(--palette-blue);
   --color-input-bg: #fffef8;
@@ -142,6 +147,7 @@ html[data-theme="dark"] {
 
   --color-border: #746954;
   --color-border-strong: #97836a;
+  --color-divider: #9a8c72;
 
   --color-link: #a7ca84;
   --color-interactive: #86a5ff;
