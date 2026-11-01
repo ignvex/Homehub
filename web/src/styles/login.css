@@ -28,14 +28,23 @@
   object-fit: cover;
 }
 .login-fallback {
+  /* 与站点主色一致：浅色下是米白基底（cream → 暖白 → 陶土棕的边缘光），
+     暗色下由 --color-bg 自动换成深墨绿。所有取值都是令牌，
+     主题切换只覆盖颜色值，不用为登录页再写一套暗色规则。 */
   background:
-    radial-gradient(circle at 20% 20%, #5577bb 0, transparent 35%),
-    linear-gradient(135deg, #111827, #283a66 58%, #101421);
+    radial-gradient(circle at 22% 16%, color-mix(in srgb, var(--color-surface) 88%, transparent) 0%, transparent 46%),
+    radial-gradient(circle at 84% 86%, color-mix(in srgb, var(--color-border-strong) 30%, transparent) 0%, transparent 52%),
+    linear-gradient(152deg, var(--color-bg) 0%, var(--color-surface-muted) 58%, var(--color-border) 100%);
 }
 .login-background span {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(7, 11, 21, .72), rgba(7, 11, 21, .2), rgba(7, 11, 21, .6));
+  /* 遮罩同样跟主题走：浅色下把背景图漂向米白，暗色下压深。
+     之前写死成深蓝黑，浅色主题的登录页因此永远是一块暗色。 */
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--color-bg) 88%, transparent),
+    color-mix(in srgb, var(--color-bg) 42%, transparent),
+    color-mix(in srgb, var(--color-bg) 78%, transparent));
 }
 
 /* 品牌标记 */
@@ -47,7 +56,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  color: #fffdf4;
+  /* 品牌标记：用文字令牌而不是写死白色。
+     浅色背景下白字不可见，这正是它以前只能配深色渐变的原因。 */
+  color: var(--color-text);
   font-size: var(--text-lg);
   font-weight: 700;
 }
@@ -70,7 +81,7 @@
   padding: var(--space-7);
   border: 1px solid color-mix(in srgb, var(--color-border-strong) 72%, transparent);
   border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(20px);
 }
@@ -170,5 +181,5 @@
     top: var(--space-5);
     right: var(--space-5);
   }
-  .login-background span { background: rgba(7, 11, 21, .52); }
+  .login-background span { background: color-mix(in srgb, var(--color-bg) 62%, transparent); }
 }
