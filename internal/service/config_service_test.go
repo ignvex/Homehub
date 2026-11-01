@@ -234,3 +234,64 @@ func TestUpdateTouchesOnlyTheGivenSection(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestUpdateRejectsInvalidConfigWithoutTouchingTheFile 锁住「校验在写盘之前」。
+//
+// 顺序反过来的后果很严重：用户填错一个字段（比如 base_url 少了 http://），
+// 保存返回错误，但 config.json 已经是无效的——重启服务就起不来，
+// 而界面上只显示「保存失败」，没人会想到文件已经被改坏。
+func TestUpdateRejectsInvalidConfigWithoutTouchingTheFile(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取原始配置失败: %v", err)
+	}
+
+	bad := &config.ExtensionHubConfig{
+		Enabled:        true,
+		BaseURL:        "ext.example.com/api/v1", // 少了 scheme
+		PrivateKeyPath: "/etc/homehub/hub.key",
+		TimeoutSeconds: 30,
+	}
+	updateErr := NewConfigService().Update(UpdateConfigRequest{ExtensionHub: bad})
+	if updateErr == nil {
+		t.Fatal("非法 base_url 必须被拒绝")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取配置失败: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("校验失败时文件不应被修改\n before=%s\n after=%s", before, after)
+	}
+
+	// 原配置仍然可用：再加载一次应当成功。
+	if err := config.Load(path); err != nil {
+		t.Fatalf("拒绝写入后原配置应仍可加载: %v", err)
+	}
+}
+
+// TestUpdateRejectsBaseURLWithoutVersionPrefix 确认缺 /api/v1 会被挡住。
+//
+// 少写前缀会让所有请求打到 /hub/* 之外，表现为一律 404——
+// 而 404 在协议里又表示「RSS 模块未启用」，两个问题撞在一起极难分辨。
+func TestUpdateRejectsBaseURLWithoutVersionPrefix(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+
+	err := NewConfigService().Update(UpdateConfigRequest{
+		ExtensionHub: &config.ExtensionHubConfig{
+			Enabled:        true,
+			BaseURL:        "https://ext.example.com",
+			PrivateKeyPath: "/etc/homehub/hub.key",
+			TimeoutSeconds: 30,
+		},
+	})
+	if err == nil {
+		t.Fatal("缺 /api/v1 的 base_url 必须被拒绝")
+	}
+	if !strings.Contains(err.Error(), "未写入文件") {
+		t.Fatalf("错误信息应说明文件未被修改，实际 %v", err)
+	}
+	_ = path
+}

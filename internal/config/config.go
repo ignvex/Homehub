@@ -329,9 +329,30 @@ func AtomicJSONUpdate(path string, fn func(raw map[string]any) error) error {
 		return fmt.Errorf("序列化配置失败: %w", err)
 	}
 
+	// 先校验后写盘。顺序反过来的后果是：一次填错字段就会把无效配置
+	// 写进文件，而调用方只看到「保存失败」——重启服务就再也起不来，
+	// 热重载也会反复报同一个错。校验放在写入之前，坏配置根本落不了地。
+	if err := validateCandidate(out); err != nil {
+		return fmt.Errorf("配置校验失败，未写入文件: %w", err)
+	}
+
 	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
 		return fmt.Errorf("写入配置文件失败: %w", err)
 	}
 
 	return Load(path)
+}
+
+// validateCandidate 用与 Load 相同的规则校验待写入的配置字节。
+//
+// 单独抽出来是为了让「校验」与「生效」可以分开：写入前先跑这一遍，
+// 写入后才真正替换全局配置。
+func validateCandidate(data []byte) error {
+	var candidate Config
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		return fmt.Errorf("解析失败: %w", err)
+	}
+	applyDefaults(&candidate)
+	applyExplicitBoolOverrides(data, &candidate)
+	return validate(&candidate)
 }
