@@ -109,6 +109,7 @@ func Run(opts Options) error {
 		&model.RSSImageSource{},
 		&model.RSSImageRef{},
 		&model.Todo{},
+		&model.BalanceTarget{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
@@ -128,6 +129,13 @@ func Run(opts Options) error {
 	// 5. 初始用户
 	// ============================================================
 	svc := service.NewServices(db)
+
+	// 把 config.json 里遗留的余额监控点导入数据库。
+	// 只在表为空时生效，失败不阻塞启动：余额监控是可选功能，
+	// 一条导入错误不该让整个服务起不来。
+	if err := svc.Balance.MigrateTargetsFromConfig(); err != nil {
+		logger.Warn("导入余额监控点失败", "error", err)
+	}
 
 	if cfg.Auth.Password != "" {
 		if err := svc.Auth.CreateInitialUser(cfg.Auth.Username, cfg.Auth.Password); err != nil {

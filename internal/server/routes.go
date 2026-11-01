@@ -186,6 +186,16 @@ func registerRoutes(r *gin.Engine) {
 			balance.POST("/refresh", handler.BalanceRefresh)
 		}
 
+		// 监控点的增删改属于内容写（与 RSS/书签一致）。
+		// api_key 只进不出：写接口收它，读接口一律只回掩码。
+		balanceWrite := contentWrite.Group("/balances")
+		{
+			balanceWrite.POST("", handler.BalanceCreate)
+			balanceWrite.PUT("/:id", handler.BalanceUpdate)
+			balanceWrite.DELETE("/:id", handler.BalanceDelete)
+			balanceWrite.POST("/:id/refresh", handler.BalanceRefreshOne)
+		}
+
 		// ---- Extension hub 通道 ----
 		//
 		// 两类权限分开：镜像订阅是内容写操作（3 级，与 RSS 写一致）；

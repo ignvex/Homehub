@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { MetricRow, Panel, StatusDot } from '@/components/Surface'
 import { toneOf } from '@/lib/tone'
 import { dashboardApi, type HealthStatus } from '@/lib/dashboard'
-import { balanceApi, type TargetResult } from '@/lib/balance'
+import { balanceApi, type BalanceTarget } from '@/lib/balance'
 import { relativeTime } from '@/lib/format'
 
 // ============================================================
@@ -78,7 +78,7 @@ export function DashboardPage() {
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [error, setError] = useState('')
-  const [balances, setBalances] = useState<TargetResult[]>([])
+  const [balances, setBalances] = useState<BalanceTarget[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [, setTick] = useState(0)

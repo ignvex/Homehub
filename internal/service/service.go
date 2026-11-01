@@ -43,7 +43,7 @@ func NewServices(db *gorm.DB) *Services {
 		Search:       NewSearchService(db),
 		Log:          NewLogService(db),
 		Todo:         NewTodoService(db),
-		Balance:      NewBalanceService(),
+		Balance:      NewBalanceService(db),
 		Paste:        NewPasteService(db),
 		ExtensionHub: NewExtensionHubService(db),
 	}

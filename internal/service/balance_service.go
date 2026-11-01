@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/logger"
+	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/imroc/req/v3"
 )
 
@@ -19,8 +23,20 @@ import (
 // 类型定义
 // ============================================================
 
+// 余额监控的业务错误。
+var (
+	ErrBalanceTargetNotFound = errors.New("监控点不存在")
+	ErrBalanceTargetExists   = errors.New("同名监控点已存在")
+	ErrBalanceInvalidType    = errors.New("不支持的供应商类型")
+	ErrBalanceMissingField   = errors.New("缺少必填字段")
+)
+
 // TargetResult 单个监控点的查询结果（内存缓存，不入库）。
+//
+// ID 是缓存的主键而不是 Name：监控点可以改名，而改名不该让历史结果
+// 漂到另一条记录上。
 type TargetResult struct {
+	ID            uint64    `json:"id"`
 	Name          string    `json:"name"`
 	Type          string    `json:"type"`
 	BaseURL       string    `json:"base_url"`
@@ -29,7 +45,7 @@ type TargetResult struct {
 	Currency      string    `json:"currency"`             // 货币单位，如 "CNY" / "USD" / "quota"
 	LastCheckedAt time.Time `json:"last_checked_at"`      // 最后查询时间
 	LastError     string    `json:"last_error,omitempty"` // 最近错误信息
-	Status        string    `json:"status"`               // "ok" / "error" / "checking"
+	Status        string    `json:"status"`               // "ok" / "error" / "checking" / "idle"
 }
 
 // BalanceStatus 监控模块整体状态。
@@ -41,23 +57,63 @@ type BalanceStatus struct {
 	LastRefresh time.Time `json:"last_refresh_at"`
 }
 
+// BalanceTargetView 是对外暴露的监控点，含脱敏后的密钥与最新结果。
+//
+// 与 model.BalanceTarget 的区别只有一处但很关键：APIKey 不在其中，
+// 只给掩码与「有没有配」的布尔。密钥一旦出现在响应里，浏览器缓存、
+// 开发者工具、日志中间件都可能把它复制走。
+type BalanceTargetView struct {
+	ID        uint64 `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	BaseURL   string `json:"base_url"`
+	Enabled   bool   `json:"enabled"`
+	SortOrder int    `json:"sort_order"`
+
+	HasAPIKey    bool   `json:"has_api_key"`
+	APIKeyMasked string `json:"api_key_masked,omitempty"`
+
+	// 以下是运行时结果，来自内存缓存；从未刷新过时为零值。
+	Balance       float64   `json:"balance"`
+	Currency      string    `json:"currency,omitempty"`
+	Status        string    `json:"status"`
+	LastError     string    `json:"last_error,omitempty"`
+	LastCheckedAt time.Time `json:"last_checked_at"`
+}
+
+// BalanceTargetInput 创建与更新共用的请求体。
+//
+// 指针字段区分「没传」与「传了零值」：更新时不传 enabled 与显式传
+// false 是两件事，前者是「别动」，后者是「停用」。
+type BalanceTargetInput struct {
+	Name      *string `json:"name"`
+	Type      *string `json:"type"`
+	BaseURL   *string `json:"base_url"`
+	APIKey    *string `json:"api_key"`
+	Enabled   *bool   `json:"enabled"`
+	SortOrder *int    `json:"sort_order"`
+}
+
 // ============================================================
 // BalanceService
 // ============================================================
 
 // BalanceService 余额监控服务。
 //
-// 不依赖数据库，所有余额结果仅存于内存缓存中。
-// 后台 goroutine 按配置间隔定时刷新所有启用的监控点。
+// 监控点存在数据库里（balance_targets），余额结果只在内存缓存中——
+// 余额是易变的外部状态，落库只会得到一份过时的副本。
+// 后台 goroutine 按配置间隔刷新所有启用的监控点。
 type BalanceService struct {
+	db *gorm.DB
+
 	mu          sync.RWMutex
-	results     map[string]*TargetResult // key = target Name
+	results     map[uint64]*TargetResult // key = target ID
 	client      *req.Client
 	lastRefresh time.Time
 }
 
 // NewBalanceService 创建余额监控服务实例。
-func NewBalanceService() *BalanceService {
+func NewBalanceService(db *gorm.DB) *BalanceService {
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     30 * time.Second,
@@ -70,9 +126,328 @@ func NewBalanceService() *BalanceService {
 	client.GetClient().Transport = transport
 
 	return &BalanceService{
-		results: make(map[string]*TargetResult),
+		db:      db,
+		results: make(map[uint64]*TargetResult),
 		client:  client,
 	}
+}
+
+// ============================================================
+// 迁移：config.json → 数据库
+// ============================================================
+
+// MigrateTargetsFromConfig 把 config.json 里的监控点导入数据库。
+//
+// 只在**表为空**时导入，且不清空 config.json 里的原值：
+//
+//   - 表非空说明用户已经在 Web 端管理过，此时再导入会造出重复条目。
+//   - 不清空 config 是因为那是用户的文件，且保留原值让回滚可行——
+//     删掉数据库里的行就能回到旧行为。
+//
+// 导入后 config 的 targets 不再被读取，日志会明确说出来，避免有人继续
+// 改配置文件然后困惑于「为什么没生效」。
+func (s *BalanceService) MigrateTargetsFromConfig() error {
+	if s.db == nil {
+		return nil
+	}
+	cfg := config.Get()
+	if cfg == nil || len(cfg.BalanceMonitor.Targets) == 0 {
+		return nil
+	}
+
+	var count int64
+	if err := s.db.Model(&model.BalanceTarget{}).Count(&count).Error; err != nil {
+		return fmt.Errorf("统计监控点失败: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	targets := make([]model.BalanceTarget, 0, len(cfg.BalanceMonitor.Targets))
+	for i, t := range cfg.BalanceMonitor.Targets {
+		// 配置校验已经保证 name/type/base_url/api_key 非空且类型受支持，
+		// 这里不再做兵底：留着只会让人以为空值能被容忍。
+		targets = append(targets, model.BalanceTarget{
+			Name:      strings.TrimSpace(t.Name),
+			Type:      strings.ToLower(strings.TrimSpace(t.Type)),
+			BaseURL:   strings.TrimRight(strings.TrimSpace(t.BaseURL), "/"),
+			APIKey:    t.APIKey,
+			Enabled:   t.Enabled,
+			SortOrder: i,
+		})
+	}
+
+	if err := s.db.Create(&targets).Error; err != nil {
+		return fmt.Errorf("导入监控点失败: %w", err)
+	}
+	logger.Info("[balance] 已把 config.json 中的监控点导入数据库",
+		"count", len(targets),
+		"note", "balance_monitor.targets 从此不再生效，请在 Web 端管理监控点")
+	return nil
+}
+
+// ============================================================
+// 监控点 CRUD
+// ============================================================
+
+// ListTargets 返回全部监控点（按 sort_order、id 排序），合并最新缓存结果。
+func (s *BalanceService) ListTargets() ([]BalanceTargetView, error) {
+	var rows []model.BalanceTarget
+	if err := s.db.Order("sort_order ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("查询监控点失败: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]BalanceTargetView, 0, len(rows))
+	for i := range rows {
+		out = append(out, s.viewOf(&rows[i]))
+	}
+	return out, nil
+}
+
+// GetTarget 读取单条监控点（含明文密钥，仅供内部使用）。
+func (s *BalanceService) GetTarget(id uint64) (*model.BalanceTarget, error) {
+	var t model.BalanceTarget
+	if err := s.db.First(&t, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrBalanceTargetNotFound
+		}
+		return nil, fmt.Errorf("查询监控点失败: %w", err)
+	}
+	return &t, nil
+}
+
+// CreateTarget 新建一个监控点。
+func (s *BalanceService) CreateTarget(in BalanceTargetInput) (*BalanceTargetView, error) {
+	t := model.BalanceTarget{Enabled: true}
+	if err := applyBalanceInput(&t, in, true); err != nil {
+		return nil, err
+	}
+	if err := validateBalanceTarget(&t); err != nil {
+		return nil, err
+	}
+	if err := s.assertNameFree(t.Name, 0); err != nil {
+		return nil, err
+	}
+
+	if err := s.db.Create(&t).Error; err != nil {
+		return nil, fmt.Errorf("创建监控点失败: %w", err)
+	}
+
+	s.mu.RLock()
+	view := s.viewOf(&t)
+	s.mu.RUnlock()
+
+	logger.Info("[balance] 已创建监控点", "id", t.ID, "name", t.Name, "type", t.Type)
+	return &view, nil
+}
+
+// UpdateTarget 更新监控点。省略的字段保持原值。
+func (s *BalanceService) UpdateTarget(id uint64, in BalanceTargetInput) (*BalanceTargetView, error) {
+	t, err := s.GetTarget(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := applyBalanceInput(t, in, false); err != nil {
+		return nil, err
+	}
+	if err := validateBalanceTarget(t); err != nil {
+		return nil, err
+	}
+	if err := s.assertNameFree(t.Name, id); err != nil {
+		return nil, err
+	}
+
+	// 显式列更新而不是 Save：Save 会连 CreatedAt 和软删除列一起写回，
+	// 把这条记录建库时的旧快照覆盖到可能已被并发改动的行上。
+	if err := s.db.Model(&model.BalanceTarget{}).Where("id = ?", id).Updates(map[string]any{
+		"name":       t.Name,
+		"type":       t.Type,
+		"base_url":   t.BaseURL,
+		"api_key":    t.APIKey,
+		"enabled":    t.Enabled,
+		"sort_order": t.SortOrder,
+	}).Error; err != nil {
+		return nil, fmt.Errorf("更新监控点失败: %w", err)
+	}
+
+	s.mu.Lock()
+	// 名称/地址可能变了，旧结果立刻失效——继续展示只会让人以为
+	// 改完名称就拿到了新地址的数据。
+	if entry, ok := s.results[id]; ok {
+		entry.Name = t.Name
+		entry.Type = t.Type
+		entry.BaseURL = t.BaseURL
+		entry.Enabled = t.Enabled
+		entry.Status = "idle"
+		entry.LastError = ""
+	}
+	s.mu.Unlock()
+
+	refreshed, err := s.GetTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	view := s.viewOf(refreshed)
+	s.mu.RUnlock()
+
+	logger.Info("[balance] 已更新监控点", "id", id, "name", t.Name)
+	return &view, nil
+}
+
+// DeleteTarget 删除监控点并清掉它的缓存结果。
+func (s *BalanceService) DeleteTarget(id uint64) error {
+	t, err := s.GetTarget(id)
+	if err != nil {
+		return err
+	}
+
+	// 硬删除：这是一条纯配置记录，留软删除只会让唯一性校验
+	// 与「同名重建」纠缠在一起。
+	if err := s.db.Unscoped().Delete(&model.BalanceTarget{}, id).Error; err != nil {
+		return fmt.Errorf("删除监控点失败: %w", err)
+	}
+
+	s.mu.Lock()
+	delete(s.results, id)
+	s.mu.Unlock()
+
+	logger.Info("[balance] 已删除监控点", "id", id, "name", t.Name)
+	return nil
+}
+
+// RefreshOne 立即查询单个监控点并返回结果。
+func (s *BalanceService) RefreshOne(id uint64) (*BalanceTargetView, error) {
+	t, err := s.GetTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	if !t.Enabled {
+		return nil, fmt.Errorf("%w: 监控点已停用，先启用再查询", ErrBalanceMissingField)
+	}
+
+	s.fetchOne(t)
+
+	refreshed, err := s.GetTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	view := s.viewOf(refreshed)
+	s.mu.RUnlock()
+	return &view, nil
+}
+
+// validateBalanceTarget 校验必填与类型，并顺手规范化。
+func validateBalanceTarget(t *model.BalanceTarget) error {
+	t.Name = strings.TrimSpace(t.Name)
+	t.BaseURL = strings.TrimRight(strings.TrimSpace(t.BaseURL), "/")
+	t.Type = strings.ToLower(strings.TrimSpace(t.Type))
+
+	if t.Name == "" {
+		return fmt.Errorf("%w: 名称不能为空", ErrBalanceMissingField)
+	}
+	if t.BaseURL == "" {
+		return fmt.Errorf("%w: base_url 不能为空", ErrBalanceMissingField)
+	}
+	if !strings.HasPrefix(t.BaseURL, "http://") && !strings.HasPrefix(t.BaseURL, "https://") {
+		return fmt.Errorf("%w: base_url 必须是完整的 http(s) 地址", ErrBalanceMissingField)
+	}
+	if !model.IsValidBalanceTargetType(t.Type) {
+		return fmt.Errorf("%w: %q（支持 %s）", ErrBalanceInvalidType, t.Type, strings.Join(model.BalanceTargetTypes(), "、"))
+	}
+	return nil
+}
+
+// assertNameFree 保证名称唯一（排除自身）。
+//
+// 名称是使用者用来辨认的标签，重名会让「DeepSeek 主号」出现两次，
+// 缓存也分不清谁是谁。不看软删除列：删掉的名字应当可以重新用。
+func (s *BalanceService) assertNameFree(name string, excludeID uint64) error {
+	var count int64
+	q := s.db.Unscoped().Model(&model.BalanceTarget{}).Where("name = ?", name)
+	if excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	if err := q.Count(&count).Error; err != nil {
+		return fmt.Errorf("校验名称失败: %w", err)
+	}
+	if count > 0 {
+		return ErrBalanceTargetExists
+	}
+	return nil
+}
+
+// applyBalanceInput 把请求体合并进模型。
+//
+// create 为真时执行额外处理：新建必须有 api_key（没有密钥的监控点
+// 查询必然失败，让它建出来只是给用户埋一个红色状态），并补上默认值。
+func applyBalanceInput(t *model.BalanceTarget, in BalanceTargetInput, create bool) error {
+	if in.Name != nil {
+		t.Name = *in.Name
+	}
+	if in.Type != nil {
+		t.Type = *in.Type
+	} else if create {
+		t.Type = "deepseek"
+	}
+	if in.BaseURL != nil {
+		t.BaseURL = *in.BaseURL
+	} else if create {
+		t.BaseURL = defaultBaseURLFor(t.Type)
+	}
+	if in.APIKey != nil {
+		// 显式空串表示「清空密钥」，nil 表示「别动」。
+		t.APIKey = strings.TrimSpace(*in.APIKey)
+	}
+	if in.Enabled != nil {
+		t.Enabled = *in.Enabled
+	}
+	if in.SortOrder != nil {
+		t.SortOrder = *in.SortOrder
+	}
+
+	if create && t.APIKey == "" {
+		return fmt.Errorf("%w: api_key 不能为空", ErrBalanceMissingField)
+	}
+	return nil
+}
+
+// defaultBaseURLFor 给出供应商的默认地址，省掉新建时的一次查文档。
+func defaultBaseURLFor(kind string) string {
+	switch strings.ToLower(kind) {
+	case "deepseek":
+		return "https://api.deepseek.com"
+	default:
+		return ""
+	}
+}
+
+// viewOf 把模型与缓存结果合成对外视图。调用方需持有读锁。
+func (s *BalanceService) viewOf(t *model.BalanceTarget) BalanceTargetView {
+	v := BalanceTargetView{
+		ID:           t.ID,
+		Name:         t.Name,
+		Type:         t.Type,
+		BaseURL:      t.BaseURL,
+		Enabled:      t.Enabled,
+		SortOrder:    t.SortOrder,
+		HasAPIKey:    t.APIKey != "",
+		APIKeyMasked: model.MaskAPIKey(t.APIKey),
+		Status:       "idle",
+	}
+	if r, ok := s.results[t.ID]; ok {
+		v.Balance = r.Balance
+		v.Currency = r.Currency
+		v.Status = r.Status
+		v.LastError = r.LastError
+		v.LastCheckedAt = r.LastCheckedAt
+	}
+	return v
 }
 
 // ============================================================
@@ -137,13 +512,19 @@ func (s *BalanceService) GetAllResults() []TargetResult {
 }
 
 // GetStatus 返回监控模块整体状态。
+//
+// 总数以数据库为准，而不是只看缓存：刚加进来还没刷过的监控点也该
+// 计入总数，否则界面上会显示「1/1 可用」而实际有 3 个。
 func (s *BalanceService) GetStatus() BalanceStatus {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	status := BalanceStatus{}
 
-	status := BalanceStatus{
-		LastRefresh: s.lastRefresh,
+	var enabled int64
+	if s.db != nil {
+		s.db.Model(&model.BalanceTarget{}).Where("enabled = ?", true).Count(&enabled)
 	}
+
+	s.mu.RLock()
+	status.LastRefresh = s.lastRefresh
 	for _, r := range s.results {
 		if !r.Enabled {
 			continue
@@ -154,6 +535,13 @@ func (s *BalanceService) GetStatus() BalanceStatus {
 		} else {
 			status.ErrorCount++
 		}
+	}
+	s.mu.RUnlock()
+
+	// 缓存里还没有的启用项（刚建、还没刷）也要计入，否则进度看起来是错的。
+	if pending := int(enabled) - status.TargetCount; pending > 0 {
+		status.TargetCount += pending
+		status.ErrorCount += pending
 	}
 
 	cfg := config.Get()
@@ -173,44 +561,49 @@ func (s *BalanceService) RefreshAll() []TargetResult {
 // 内部刷新逻辑
 // ============================================================
 
+// loadEnabledTargets 从数据库读出启用的监控点。
+func (s *BalanceService) loadEnabledTargets() ([]model.BalanceTarget, error) {
+	var rows []model.BalanceTarget
+	if err := s.db.Where("enabled = ?", true).
+		Order("sort_order ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("查询监控点失败: %w", err)
+	}
+	return rows, nil
+}
+
 func (s *BalanceService) refreshAll() {
-	cfg := config.Get()
-	if cfg == nil {
+	targets, err := s.loadEnabledTargets()
+	if err != nil {
+		logger.Warn("[balance] 读取监控点失败", "error", err)
 		return
 	}
-
-	targets := cfg.BalanceMonitor.Targets
 	if len(targets) == 0 {
+		s.mu.Lock()
+		s.lastRefresh = time.Now()
+		s.mu.Unlock()
 		return
 	}
 
-	// 先填充/更新缓存条目（基于配置），标记为 checking
+	// 先填充/更新缓存条目（基于数据库），标记为 checking
 	s.mu.Lock()
-	for _, t := range targets {
-		entry, exists := s.results[t.Name]
+	for i := range targets {
+		t := &targets[i]
+		entry, exists := s.results[t.ID]
 		if !exists {
-			entry = &TargetResult{
-				Name:    t.Name,
-				Type:    t.Type,
-				BaseURL: t.BaseURL,
-			}
-			s.results[t.Name] = entry
+			entry = &TargetResult{ID: t.ID}
+			s.results[t.ID] = entry
 		}
-		entry.Enabled = t.Enabled
+		entry.Name = t.Name
 		entry.Type = t.Type
 		entry.BaseURL = t.BaseURL
-		if t.Enabled {
-			entry.Status = "checking"
-		}
+		entry.Enabled = t.Enabled
+		entry.Status = "checking"
 	}
 	s.mu.Unlock()
 
-	// 逐个查询启用的目标
-	for _, t := range targets {
-		if !t.Enabled {
-			continue
-		}
-		s.fetchOne(t)
+	for i := range targets {
+		s.fetchOne(&targets[i])
 	}
 
 	s.mu.Lock()
@@ -218,7 +611,7 @@ func (s *BalanceService) refreshAll() {
 	s.mu.Unlock()
 }
 
-func (s *BalanceService) fetchOne(t config.BalanceTarget) {
+func (s *BalanceService) fetchOne(t *model.BalanceTarget) {
 	var (
 		balance  float64
 		currency string
@@ -235,9 +628,10 @@ func (s *BalanceService) fetchOne(t config.BalanceTarget) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, exists := s.results[t.Name]
+	entry, exists := s.results[t.ID]
 	if !exists {
-		return
+		entry = &TargetResult{ID: t.ID, Name: t.Name, Type: t.Type, BaseURL: t.BaseURL, Enabled: t.Enabled}
+		s.results[t.ID] = entry
 	}
 
 	entry.LastCheckedAt = time.Now()
@@ -270,7 +664,7 @@ type deepseekBalanceResp struct {
 	} `json:"balance_infos"`
 }
 
-func (s *BalanceService) fetchDeepSeek(t config.BalanceTarget) (float64, string, error) {
+func (s *BalanceService) fetchDeepSeek(t *model.BalanceTarget) (float64, string, error) {
 	url := strings.TrimRight(t.BaseURL, "/") + "/user/balance"
 
 	resp, err := s.client.R().
