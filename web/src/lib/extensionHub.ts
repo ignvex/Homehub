@@ -1,0 +1,106 @@
+import { api } from '@/lib/api'
+
+// ============================================================
+// Extension hub 通道
+//
+// 这一组接口把 HomeHub 作为宿主，接到 HomeHub Extension 的
+// /api/v1/hub/* 签名通道。上游的状态码在服务端已经折成 502/503，
+// 这里不需要区分「上游 401」与「网络断了」——按 error_code 分支即可。
+// ============================================================
+
+/** ExtensionHubStatus 是对接状态。四层是独立的问题，前端按层给提示。 */
+export interface ExtensionHubStatus {
+  enabled: boolean
+  configured: boolean
+  base_url?: string
+  public_key?: string
+  reachable: boolean
+  authenticated: boolean
+  rss_available: boolean
+  subscription_count: number
+  error_code?: string
+  error_message?: string
+}
+
+/** RemoteSubscription 是 Extension 侧的订阅。 */
+export interface RemoteSubscription {
+  id: number
+  url: string
+  title: string
+  site_url: string
+  enabled: boolean
+  fetch_interval: string
+  next_fetch_at: number | null
+  last_fetch_at: number | null
+  created_at: number
+  last_status: number
+  last_error: string
+  error_count: number
+  unread_count: number
+  /** 本地存在同 URL 的订阅源时给出它的 id。 */
+  local_feed_id?: number
+  in_local: boolean
+}
+
+export interface PushResult {
+  feed_id: number
+  remote_id: number
+  created: boolean
+  remote: RemoteSubscription
+}
+
+export interface SyncItem {
+  feed_id: number
+  url: string
+  status: 'created' | 'updated' | 'failed'
+  remote_id?: number
+  error?: string
+}
+
+export interface SyncResult {
+  total: number
+  created: number
+  updated: number
+  failed: number
+  items: SyncItem[]
+}
+
+/** AccessKey 是已签发的访问密钥。响应里永远不含明文。 */
+export interface AccessKey {
+  id: string
+  name: string
+  client_id: string
+  created_at: number
+  expires_at: number | null
+  last_used_at: number | null
+  revoked: boolean
+  /** live 由服务端计算，前端不要自己比较 expires_at 与本机时间。 */
+  live: boolean
+}
+
+/** CreatedKey 的 key 只出现这一次。 */
+export interface CreatedKey extends AccessKey {
+  key: string
+}
+
+export const extensionHubApi = {
+  status: () => api.get<ExtensionHubStatus>('/extension/status'),
+  listSubscriptions: () => api.get<RemoteSubscription[]>('/extension/subscriptions'),
+  push: (feedId: number, options: { enabled?: boolean; fetchNow?: boolean } = {}) =>
+    api.post<PushResult>('/extension/subscriptions', {
+      feed_id: feedId,
+      ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
+      ...(options.fetchNow === undefined ? {} : { fetch_now: options.fetchNow }),
+    }),
+  sync: () => api.post<SyncResult>('/extension/subscriptions/sync'),
+  removeSubscription: (id: number) =>
+    api.delete<{ deleted: boolean; already_deleted: boolean }>(`/extension/subscriptions/${id}`),
+  listKeys: () => api.get<AccessKey[]>('/extension/keys'),
+  issueKey: (name: string, expiresIn?: string) =>
+    api.post<CreatedKey>('/extension/keys', {
+      name,
+      ...(expiresIn ? { expires_in: expiresIn } : {}),
+    }),
+  revokeKey: (id: string) =>
+    api.delete<{ revoked: boolean; already_deleted: boolean }>(`/extension/keys/${id}`),
+}

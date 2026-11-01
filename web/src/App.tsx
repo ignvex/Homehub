@@ -14,6 +14,7 @@ import { ProfilePage } from '@/pages/ProfilePage'
 import { RSSPage } from '@/pages/RSSPage'
 import { SearchPage } from '@/pages/SearchPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { ExtensionPage } from '@/pages/ExtensionPage'
 import { TodosPage } from '@/pages/TodosPage'
 import { UsersPage } from '@/pages/UsersPage'
 
@@ -83,6 +84,7 @@ const pages: Record<string, PageDefinition> = {
   '/users': { component: UsersPage, meta: { eyebrow: '访问控制', title: '用户管理', description: '管理成员、角色与账户状态。' }, admin: true },
   '/logs': { component: LogsPage, meta: { eyebrow: '系统事件', title: '系统日志', description: '筛选和定位后端运行事件。' }, admin: true },
   '/settings': { component: SettingsPage, meta: { eyebrow: '系统配置', title: '设置', description: '按配置域修改后端支持的参数。' }, admin: true },
+  '/extension': { component: ExtensionPage, meta: { eyebrow: '跳实例集成', title: 'Extension 对接', description: '把订阅镜像到 Extension，并为用户签发访问密钥。' }, admin: true },
   '/appearance': { component: AppearancePage, meta: { eyebrow: '界面偏好', title: '外观', description: '管理当前浏览器主题与服务端背景配置。' } },
   '/balance': { component: BalancePage, meta: { eyebrow: '服务监视', title: 'LLM 余额', description: '查看各平台 API 余额与监控状态。' } },
 }

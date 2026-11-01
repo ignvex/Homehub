@@ -43,6 +43,7 @@ const navigation: NavGroup[] = [
       { href: '/users', label: '用户管理', admin: true, icon: icon(<><circle cx="9" cy="8" r="3" /><path d="M3 20c.5-4 2.5-6 6-6s5.5 2 6 6M16 7h5m-2.5-2.5v5" /></>) },
       { href: '/logs', label: '系统日志', admin: true, icon: icon(<><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></>) },
       { href: '/settings', label: '设置', admin: true, icon: icon(<><circle cx="12" cy="12" r="3" /><path d="m19 13.5 1-1.5-1-1.5.1-1.8-1.7-.7-.9-1.5-1.8.2L14.2 5 12.5 4l-1.4 1.1-1.8-.2-.9 1.6-1.7.7.1 1.8-1 1.5 1 1.5-.1 1.8 1.7.7.9 1.5 1.8-.2 1.4 1.1 1.7-1.1 1.8.2.9-1.5 1.7-.7z" /></>) },
+      { href: '/extension', label: 'Extension 对接', admin: true, icon: icon(<><path d="M9 3v6m6-6v6M7 9h10v3a5 5 0 0 1-10 0z" /><path d="M12 17v4" /></>) },
     ]
   },
 ]
