@@ -86,6 +86,17 @@ export interface CreatedKey extends AccessKey {
   key: string
 }
 
+/** 签名私钥的来源与公钥。**不含私钥本身**。 */
+export interface KeyInfo {
+  /** database / file / none */
+  source: 'database' | 'file' | 'none'
+  in_database: boolean
+  public_key?: string
+  fingerprint?: string
+  updated_at?: string
+  file_path?: string
+}
+
 export const extensionHubApi = {
   status: () => api.get<ExtensionHubStatus>('/extension/status'),
   listSubscriptions: () => api.get<RemoteSubscription[]>('/extension/subscriptions'),
@@ -106,4 +117,9 @@ export const extensionHubApi = {
     }),
   revokeKey: (id: string) =>
     api.delete<{ revoked: boolean; already_deleted: boolean }>(`/extension/keys/${id}`),
+
+  // 签名私钥。读取只回公钥与指纹；写入收 PEM 或 base64，永不回读。
+  getKey: () => api.get<KeyInfo>('/extension/key'),
+  setKey: (privateKey: string) => api.put<KeyInfo>('/extension/key', { private_key: privateKey }),
+  deleteKey: () => api.delete<{ deleted: boolean }>('/extension/key'),
 }

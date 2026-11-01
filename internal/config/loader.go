@@ -438,9 +438,9 @@ func validate(cfg *Config) error {
 			// 与“RSS 模块未启用”撞在同一个状态码上，很难查。这里提前拦下。
 			errs = append(errs, "extension_hub.base_url 必须以 /api/v1 结尾，例如 https://ext.example.com/api/v1")
 		}
-		if strings.TrimSpace(cfg.ExtensionHub.PrivateKeyPath) == "" {
-			errs = append(errs, "extension_hub.private_key_path 不能为空（启用后必须有宿主私钥）")
-		}
+		// private_key_path 可以为空：私钥也可以只存在数据库里
+		// （多实例共用同一个库时，库里的那一份才是共享来源）。
+		// 两处都没有的情况由运行时判断并报错——配置层不知道库里的状态。
 		if cfg.ExtensionHub.TimeoutSeconds < 1 || cfg.ExtensionHub.TimeoutSeconds > 300 {
 			errs = append(errs, "extension_hub.timeout_seconds 必须在 1-300 之间")
 		}

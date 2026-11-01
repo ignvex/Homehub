@@ -9,7 +9,7 @@ import {
   type Secrets,
   type SettingsSection,
 } from '@/lib/settings'
-import { extensionHubApi, type ExtensionHubStatus } from '@/lib/extensionHub'
+import { extensionHubApi, type ExtensionHubStatus, type KeyInfo } from '@/lib/extensionHub'
 
 // ============================================================
 // 设置页
@@ -78,6 +78,10 @@ export function SettingsPage() {
   // 对接状态来自后端探测（不读数据库），用来把「卡在哪一步」直接显示在面板上。
   const [hubStatus, setHubStatus] = useState<ExtensionHubStatus | null>(null)
   const [hubChecking, setHubChecking] = useState(false)
+  const [keyInfo, setKeyInfo] = useState<KeyInfo | null>(null)
+  const [keyDraft, setKeyDraft] = useState('')
+  const [keyBusy, setKeyBusy] = useState(false)
+  const [confirmingKeyDelete, setConfirmingKeyDelete] = useState(false)
 
   useEffect(() => {
     settingsApi.get()
@@ -106,7 +110,49 @@ export function SettingsPage() {
     }
   }
 
-  useEffect(() => { void probeHub() }, [])
+  const loadKeyInfo = async () => {
+    try {
+      setKeyInfo(await extensionHubApi.getKey())
+    } catch {
+      setKeyInfo(null)
+    }
+  }
+
+  async function saveKey() {
+    if (!keyDraft.trim()) return
+    setKeyBusy(true)
+    try {
+      const info = await extensionHubApi.setKey(keyDraft)
+      setKeyInfo(info)
+      setKeyDraft('')
+      setMessage('私钥已存入数据库，所有实例重启后自动共用')
+      setError('')
+      await probeHub()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存私钥失败')
+    } finally {
+      setKeyBusy(false)
+    }
+  }
+
+  async function deleteKey() {
+    setKeyBusy(true)
+    try {
+      const result = await extensionHubApi.deleteKey()
+      setMessage(result.deleted ? '已移除数据库里的私钥' : '数据库里本来就没有私钥')
+      setError('')
+      setConfirmingKeyDelete(false)
+      await loadKeyInfo()
+      await probeHub()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '删除私钥失败')
+      setConfirmingKeyDelete(false)
+    } finally {
+      setKeyBusy(false)
+    }
+  }
+
+  useEffect(() => { void probeHub(); void loadKeyInfo() }, [])
 
   async function saveSection(section: SettingsSection) {
     if (!draft) return
@@ -544,6 +590,71 @@ export function SettingsPage() {
               </div>
             </div>}
 
+            <div className="metric-row">
+              <div className="metric-label">
+                <span>签名私钥</span>
+                <small>{keySourceHint(keyInfo)}</small>
+              </div>
+              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <StatusBadge tone={keyInfo?.source === 'none' ? 'danger' : keyInfo?.source === 'database' ? 'success' : 'warning'}>
+                  {keyInfo?.source === 'database' ? '已存入数据库' : keyInfo?.source === 'file' ? '使用本机文件' : '缺失'}
+                </StatusBadge>
+                {keyInfo?.fingerprint && <code style={{ fontSize: 'var(--text-xs)' }}>{keyInfo.fingerprint}</code>}
+                {keyInfo?.in_database && <button
+                  type="button"
+                  className="button button--quiet"
+                  disabled={keyBusy}
+                  onClick={() => setConfirmingKeyDelete(true)}
+                >
+                  移除
+                </button>}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="form-field" style={{ margin: 0 }}>
+                把私钥存入数据库（多实例共用同一个库时只需配置一次）
+                <textarea
+                  value={keyDraft}
+                  onChange={event => setKeyDraft(event.target.value)}
+                  spellCheck={false}
+                  placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"
+                  style={{
+                    minHeight: 96,
+                    fontFamily: 'ui-monospace,monospace',
+                    fontSize: 12,
+                    padding: 10,
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 6,
+                    background: 'var(--color-input-bg)',
+                    color: 'var(--color-text)',
+                    resize: 'vertical',
+                  }}
+                />
+              </label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="button button--primary"
+                  disabled={keyBusy || !keyDraft.trim()}
+                  onClick={() => void saveKey()}
+                >
+                  {keyBusy ? '保存中...' : '保存私钥'}
+                </button>
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  disabled={keyBusy}
+                  onClick={() => { setKeyDraft(''); setError('') }}
+                >
+                  清空输入
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  接受 PKCS#8 PEM、base64 种子或私钥原文。入库前会自签自验，读接口永不返回私钥。
+                </span>
+              </div>
+            </div>
+
             <div style={{ background: 'var(--color-surface-muted)', borderRadius: 6, padding: 16, fontSize: 12, lineHeight: 1.7 }}>
               <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
               <ol style={{ margin: 0, paddingLeft: 18 }}>
@@ -560,6 +671,17 @@ export function SettingsPage() {
       </div>}
 
     <ConfirmDialog
+      open={confirmingKeyDelete}
+      title="移除数据库里的签名私钥"
+      description="移除后如果配置里填了私钥路径，会回退到那个文件；两处都没有则无法再签名，所有 /hub/* 调用会失败。"
+      confirmLabel="移除"
+      danger
+      busy={keyBusy}
+      onClose={() => setConfirmingKeyDelete(false)}
+      onConfirm={() => void deleteKey()}
+    />
+
+    <ConfirmDialog
       open={confirmingJSON}
       title="保存系统配置"
       description="配置会写入 config.json 并立即热重载。监听地址、数据库、认证或代理设置错误可能导致服务不可用。"
@@ -574,6 +696,16 @@ export function SettingsPage() {
 // ------------------------------------------------------------
 // 局部组件
 // ------------------------------------------------------------
+
+/** keySourceHint 说明密钥来自哪里，以及该去哪改。 */
+function keySourceHint(info: KeyInfo | null): string {
+  if (!info) return '无法读取密钥状态'
+  switch (info.source) {
+    case 'database': return '来自数据库，所有共用该库的实例都使用同一把'
+    case 'file': return info.file_path ? `来自文件 ${info.file_path}` : '来自本机文件'
+    default: return '数据库与文件里都没有可用私钥'
+  }
+}
 
 /** hubLabel 把四层探测结果压成一句话。 */
 function hubLabel(status: ExtensionHubStatus | null): string {

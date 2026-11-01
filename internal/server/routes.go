@@ -213,6 +213,17 @@ func registerRoutes(r *gin.Engine) {
 			extHubPush.POST("/subscriptions/sync", handler.ExtensionHubSync)
 		}
 
+		// 签名私钥是身份凭据：改它等于换掉整个实例的身份，
+		// 所有签名会立刻失效直到 Extension 侧换公钥。这是配置级操作，
+		// 抬到 1 级（与 /config 同一道门槛），不跟「签发访问密钥」并列。
+		extHubKey := authRequired.Group("/extension")
+		extHubKey.Use(middleware.AuthAdminRequired())
+		{
+			extHubKey.GET("/key", handler.ExtensionHubGetKey)
+			extHubKey.PUT("/key", handler.ExtensionHubSetKey)
+			extHubKey.DELETE("/key", handler.ExtensionHubDeleteKey)
+		}
+
 		extHubOps := authRequired.Group("/extension")
 		extHubOps.Use(middleware.AuthLevelRequired(model.LevelOperator))
 		{

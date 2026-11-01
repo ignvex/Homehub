@@ -250,3 +250,80 @@ func failExtensionHub(c *gin.Context, err error) {
 	httpStatus, code, message := responseErrorCode(err)
 	Fail(c, httpStatus, code, message)
 }
+
+// ============================================================
+// 签名私钥
+//
+// 三个接口都不返回私钥本身：GET 只给公钥、指纹与来源。
+// 这是与「签发访问密钥」一致的原则——凭据可以写进去，但读不出来。
+// ============================================================
+
+// ExtensionHubGetKey 查询当前签名私钥的来源与公钥。
+//
+//	@Summary		查询签名私钥来源
+//	@Description	返回密钥来自数据库还是文件，以及公钥与指纹；永不返回私钥
+//	@Tags			Extension 对接
+//	@Produce		json
+//	@Success		200	{object}	Response{data=service.ExtensionHubKeyInfo}
+//	@Router			/extension/key [get]
+func ExtensionHubGetKey(c *gin.Context) {
+	info, err := svc.ExtensionHub.KeyInfo()
+	if err != nil {
+		failExtensionHub(c, err)
+		return
+	}
+	Success(c, info)
+}
+
+// setExtensionKeyRequest 上传私钥。
+type setExtensionKeyRequest struct {
+	// PrivateKey 接受 PKCS#8 PEM、裸 32 字节种子的 base64、或 openssl 的原文。
+	PrivateKey string `json:"private_key" binding:"required"`
+}
+
+// ExtensionHubSetKey 把签名私钥存入数据库。
+//
+//	@Summary		保存签名私钥到数据库
+//	@Description	接受 PKCS#8 PEM 或 base64；入库前自签自验。多实例共用同一个数据库时只需配置一次
+//	@Tags			Extension 对接
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		setExtensionKeyRequest	true	"私钥内容"
+//	@Success		200		{object}	Response{data=service.ExtensionHubKeyInfo}
+//	@Failure		400		{object}	Response	"私钥无法解析或自检失败"
+//	@Router			/extension/key [put]
+func ExtensionHubSetKey(c *gin.Context) {
+	var req setExtensionKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		FailBadRequest(c, "请求参数错误："+err.Error())
+		return
+	}
+
+	info, err := svc.ExtensionHub.SetKey(req.PrivateKey)
+	if err != nil {
+		if errors.Is(err, service.ErrExtensionHubInvalidInput) {
+			FailBadRequest(c, err.Error())
+			return
+		}
+		failExtensionHub(c, err)
+		return
+	}
+	Success(c, info)
+}
+
+// ExtensionHubDeleteKey 移除数据库里的私钥，来源退回 private_key_path。
+//
+//	@Summary		移除数据库里的签名私钥
+//	@Description	删除后若配置了 private_key_path 会回退到文件；两处都没有则无法签名
+//	@Tags			Extension 对接
+//	@Produce		json
+//	@Success		200	{object}	Response
+//	@Router			/extension/key [delete]
+func ExtensionHubDeleteKey(c *gin.Context) {
+	removed, err := svc.ExtensionHub.DeleteKey()
+	if err != nil {
+		failExtensionHub(c, err)
+		return
+	}
+	Success(c, gin.H{"deleted": removed})
+}

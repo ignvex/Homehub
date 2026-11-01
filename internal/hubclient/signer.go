@@ -70,11 +70,43 @@ func LoadSigner(path string) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hubclient: 读取私钥失败: %w", err)
 	}
-	key, err := parsePrivateKey(raw)
+	signer, err := LoadSignerFromBytes(raw)
 	if err != nil {
 		return nil, fmt.Errorf("hubclient: %s: %w", path, err)
 	}
+	return signer, nil
+}
+
+// LoadSignerFromBytes 从内存里的内容构造签名器，接受与 LoadSigner
+// 完全相同的三种形态。
+//
+// 需要它是因为私钥不总在文件里：存进数据库之后，取出来的是一段字节，
+// 再写临时文件去读只是多一次不必要的落盘（而落盘正是要避开的）。
+func LoadSignerFromBytes(raw []byte) (*Signer, error) {
+	key, err := parsePrivateKey(raw)
+	if err != nil {
+		return nil, err
+	}
 	return NewSigner(key)
+}
+
+// ParsePublicKeyPEM 把 PKIX PEM 形式的公钥解析成 base64 字符串。
+//
+// 只用于展示与核对（部署时要把公钥贴到 Extension 侧），不参与验签。
+func ParsePublicKeyPEM(raw []byte) (string, error) {
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return "", fmt.Errorf("不是 PEM 格式")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("解析公钥失败: %w", err)
+	}
+	pub, ok := parsed.(ed25519.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("公钥不是 Ed25519（实际 %T）", parsed)
+	}
+	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
 // parsePrivateKey 把 PEM / 原始字节 / base64 文本解析成 Ed25519 私钥。
@@ -196,3 +228,27 @@ func NewNonce() (string, error) {
 
 // Now 返回签名用的时间戳，抽成变量方便测试替换。
 var Now = func() time.Time { return time.Now() }
+
+// SignRaw 对任意字节做一次裸 Ed25519 签名。
+//
+// 不用于协议（协议走 Sign 的七行消息），只给「私钥自检」这类内部用途：
+// 能解析不代表能用，签一次再验一次才能确认内容没被截断。
+func (s *Signer) SignRaw(msg []byte) []byte {
+	return ed25519.Sign(s.key, msg)
+}
+
+// PrivateKeyPEM 把私钥规范成 PKCS#8 PEM。
+//
+// 入库前统一成一种格式：输入的三种形态（PEM / 裸种子 / base64 文本）
+// 都归一到 PEM，回读时不用再猜是哪种。
+func (s *Signer) PrivateKeyPEM() (string, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(s.key)
+	if err != nil {
+		return "", fmt.Errorf("编码私钥失败: %w", err)
+	}
+	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if block == nil {
+		return "", fmt.Errorf("生成 PEM 失败")
+	}
+	return string(block), nil
+}

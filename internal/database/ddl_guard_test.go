@@ -39,23 +39,24 @@ var (
 // 新增表时**必须**在这里加一行，否则 TestDDLOnlyTargetsHomeHubTables 会失败。
 // 这个约束比旧的前缀检查更强：任何不在列表里的表名都会被拦下。
 var homeHubTables = map[string]struct{}{
-	"users":             {},
-	"sessions":          {},
-	"avatar_caches":     {},
-	"bookmark_groups":   {},
-	"bookmarks":         {},
-	"media_assets":      {},
-	"log_entries":       {},
-	"rss_groups":        {},
-	"rss_feeds":         {},
-	"rss_entries":       {},
-	"rss_entry_feeds":   {},
-	"rss_images":        {},
-	"rss_image_sources": {},
-	"rss_image_refs":    {},
-	"todos":             {},
-	"pastes":            {},
-	"balance_targets":   {},
+	"users":              {},
+	"sessions":           {},
+	"avatar_caches":      {},
+	"bookmark_groups":    {},
+	"bookmarks":          {},
+	"media_assets":       {},
+	"log_entries":        {},
+	"rss_groups":         {},
+	"rss_feeds":          {},
+	"rss_entries":        {},
+	"rss_entry_feeds":    {},
+	"rss_images":         {},
+	"rss_image_sources":  {},
+	"rss_image_refs":     {},
+	"todos":              {},
+	"pastes":             {},
+	"balance_targets":    {},
+	"extension_hub_keys": {},
 }
 
 // ownedTable 判断表名是否属于本仓库（忽略 schema 限定符）。
@@ -222,6 +223,7 @@ func TestAllModelsHaveRegisteredTable(t *testing.T) {
 		{"Todo", model.Todo{}.TableName()},
 		{"Paste", model.Paste{}.TableName()},
 		{"BalanceTarget", model.BalanceTarget{}.TableName()},
+		{"ExtensionHubKey", model.ExtensionHubKey{}.TableName()},
 	}
 
 	for _, m := range models {

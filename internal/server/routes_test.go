@@ -128,6 +128,9 @@ func TestExtensionHubRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/api/v1/extension/keys"},
 		{http.MethodPost, "/api/v1/extension/keys"},
 		{http.MethodDelete, "/api/v1/extension/keys/01JC8Z"},
+		{http.MethodGet, "/api/v1/extension/key"},
+		{http.MethodPut, "/api/v1/extension/key"},
+		{http.MethodDelete, "/api/v1/extension/key"},
 	} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}")))
