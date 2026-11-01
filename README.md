@@ -8,6 +8,7 @@
 |------|------|
 | [docs/features.md](docs/features.md) | 各功能模块的行为、配置、接口与已知限制 |
 | [docs/extension.md](docs/extension.md) | 外部资源代理服务（RSS 抓取 / Gravatar 头像）的通信契约 |
+| [docs/extension-hub.md](docs/extension-hub.md) | HomeHub 作为宿主接入 Extension 签名通道：配置、端点、三态语义与排障 |
 | [docs/hub-integration.md](docs/hub-integration.md) | Extension `/api/v1/hub/*` 机器通道：Ed25519 请求签名、订阅与密钥端点 |
 | [docs/swagger.yaml](docs/swagger.yaml) | API 请求/响应结构（运行时 `/swagger/index.html`） |
 | [docs/tables.md](docs/tables.md) | 全部数据库表的字段、索引、删除语义与已识别问题 |
