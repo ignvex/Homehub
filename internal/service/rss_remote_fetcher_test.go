@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestRemoteFetcherParsesXML 确认 extension 返回原始 XML 时能解析。
@@ -125,5 +126,63 @@ func TestAutoFetcherFollowsConfig(t *testing.T) {
 	loadConfigWith(t, `,"rss": {}`)
 	if _, ok := a.pick().(httpFeedFetcher); !ok {
 		t.Errorf("清空 extension_url 后应回到本地抓取，实际 %T", a.pick())
+	}
+}
+
+// TestRemoteFetcherRejectsHTMLEndpoint 确认配错 extension_url 时给出准确错误。
+//
+// 这是真实踩到的：extension_url 指向一个没有 /fetch 的普通站点时，对方
+// 用 200 返回首页 HTML，而 gofeed 的 "failed to detect feed type" 会让人
+// 以为订阅源本身有问题——实际是地址配错了。
+func TestRemoteFetcherRejectsHTMLEndpoint(t *testing.T) {
+	html := `<!doctype html><html lang="zh-CN"><head><title>Homehub</title></head><body></body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(html))
+	}))
+	defer srv.Close()
+
+	loadConfigWith(t, fmt.Sprintf(`,"rss": {"extension_url": %q}`, srv.URL))
+
+	fetcher := NewRemoteFetcher(5 * time.Second)
+	_, err := fetcher.Fetch(context.Background(), "https://example.com/feed.xml")
+	if err == nil {
+		t.Fatal("HTML 响应必须被拒绝")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTML") {
+		t.Fatalf("错误应点明返回的是 HTML，实际 %q", msg)
+	}
+	if !strings.Contains(msg, "/fetch") {
+		t.Fatalf("错误应指向 /fetch 端点，实际 %q", msg)
+	}
+	if strings.Contains(msg, "detect feed type") {
+		t.Fatalf("不应把 gofeed 的原始报错抛给用户，实际 %q", msg)
+	}
+}
+
+// TestRemoteFetcherRejectsHTMLEvenWithWrongContentType 确认只靠嗅探也能拦住。
+//
+// 有些服务的 fallback 会把 HTML 标成 application/octet-stream；
+// 只看声明会漏过去。
+func TestRemoteFetcherRejectsHTMLEvenWithWrongContentType(t *testing.T) {
+	html := `<!doctype html><html><body>oops</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte(html))
+	}))
+	defer srv.Close()
+
+	loadConfigWith(t, fmt.Sprintf(`,"rss": {"extension_url": %q}`, srv.URL))
+
+	fetcher := NewRemoteFetcher(5 * time.Second)
+	_, err := fetcher.Fetch(context.Background(), "https://example.com/feed.xml")
+	if err == nil {
+		t.Fatal("声明错误的 HTML 也必须被拦住")
+	}
+	if !strings.Contains(err.Error(), "HTML") {
+		t.Fatalf("错误应点明 HTML，实际 %q", err)
 	}
 }

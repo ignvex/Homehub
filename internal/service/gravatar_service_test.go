@@ -245,8 +245,11 @@ func TestGetAvatarDataRejectsNonImage(t *testing.T) {
 	expectCacheMiss(mock) // singleflight 内复查
 
 	_, err := svc.GetAvatarData(context.Background(), 1)
-	if !errors.Is(err, ErrAvatarInvalid) {
-		t.Fatalf("错误 = %v，期望 ErrAvatarInvalid", err)
+	// 核心是「不被存进缓存」，错误归到哪一类次要：HTML 现在走更专门的
+	// ErrAvatarEndpointHTML（提示检查 extension_url），非 HTML 的坏数据
+	// 仍是 ErrAvatarInvalid。
+	if !errors.Is(err, ErrAvatarInvalid) && !errors.Is(err, ErrAvatarEndpointHTML) {
+		t.Fatalf("错误 = %v，期望 ErrAvatarInvalid 或 ErrAvatarEndpointHTML", err)
 	}
 	// 没有 Begin/Create 期望：任何写入都会让 ExpectationsWereMet 失败。
 	if err := mock.ExpectationsWereMet(); err != nil {

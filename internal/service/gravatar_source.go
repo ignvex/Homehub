@@ -35,6 +35,12 @@ var (
 	ErrAvatarUpstream = errors.New("头像上游请求失败")
 	// ErrAvatarInvalid 表示上游响应不是受支持的位图（可能是 HTML 错误页或 SVG）。
 	ErrAvatarInvalid = errors.New("上游返回的头像格式不合法")
+	// ErrAvatarEndpointHTML 表示 avatar endpoint 返回了一个 HTML 页面。
+	//
+	// 与 ErrAvatarInvalid 分开是因为原因不同：后者是「对方给了个坏图片」，
+	// 前者几乎总是「extension_url 指向了一个没有 /avatar 端点的服务」。
+	// 两者的修法完全不同，压成一句话会把人送去查图片格式。
+	ErrAvatarEndpointHTML = errors.New("头像端点返回了 HTML 页面，检查 extension_url")
 )
 
 // ============================================================
@@ -322,6 +328,10 @@ func validateAvatarImage(data []byte) (string, error) {
 	}
 	if allowedAvatarContentTypes[detected] {
 		return detected, nil
+	}
+	// HTML 单独归类：这几乎总是「配错了 extension_url」而不是「图片坏了」。
+	if strings.HasPrefix(detected, "text/html") {
+		return "", fmt.Errorf("%w（嗅探到 %s）", ErrAvatarEndpointHTML, detected)
 	}
 	return "", fmt.Errorf("%w: 嗅探到 %s", ErrAvatarInvalid, detected)
 }

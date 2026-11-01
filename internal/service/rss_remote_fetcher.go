@@ -103,7 +103,33 @@ func (f *remoteFetcher) Fetch(ctx context.Context, feedURL string) (*gofeed.Feed
 		return nil, fmt.Errorf("读取 extension 响应失败: %w", err)
 	}
 
+	// 先拦住 HTML。这是部署配错时最常见的形式：extension_url 指向一个
+	// 没有 /fetch 的服务（比如一个普通的 SPA 站点），对方用 200 返回
+	// 首页 HTML，而「XML 解析失败」这种错误会把排查方向引到 XML 本身。
+	if looksLikeHTML(body, resp.Header.Get("Content-Type")) {
+		return nil, fmt.Errorf(
+			"extension 返回的是 HTML 而不是 feed：%s 上可能没有 /fetch 端点。"+
+				"检查 rss.extension_url 是否指向实现了 extension 契约的服务", endpoint)
+	}
+
 	return parseExtensionBody(body, resp.Header.Get("Content-Type"))
+}
+
+// looksLikeHTML 判断响应是否为一个 HTML 页面。
+//
+// 只看嗅探结果不看声明：很多 SPA 的 fallback 会把 Content-Type 写成
+// text/html，但也不排有服务声明错的。两者任一命中都算 HTML——
+// 一个 feed 不可能是 HTML，所以这里没有误判风险。
+func looksLikeHTML(body []byte, contentType string) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return true
+	}
+	head := body
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	sniffed := strings.ToLower(http.DetectContentType(head))
+	return strings.HasPrefix(sniffed, "text/html")
 }
 
 // parseExtensionBody 兼容 XML 与 JSON 两种响应形态。

@@ -223,6 +223,8 @@ func TestValidateAvatarImage(t *testing.T) {
 		{"jpeg", jpeg, "image/jpeg", true},
 		{"gif", gif, "image/gif", true},
 		{"webp", webp, "image/webp", true},
+		// HTML 走专门的错误（见 TestValidateAvatarImageFlagsHTMLEndpoint），
+		// 这里只断言它被拒绝，不断言具体分类。
 		{"html", []byte("<html><body>error</body></html>"), "", false},
 		{"svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>`), "", false},
 		{"empty", nil, "", false},
@@ -240,8 +242,8 @@ func TestValidateAvatarImage(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, ErrAvatarInvalid) {
-				t.Errorf("错误 = %v，期望 ErrAvatarInvalid", err)
+			if !errors.Is(err, ErrAvatarInvalid) && !errors.Is(err, ErrAvatarEndpointHTML) {
+				t.Errorf("错误 = %v，期望 ErrAvatarInvalid 或 ErrAvatarEndpointHTML", err)
 			}
 		})
 	}
@@ -299,5 +301,40 @@ func TestGravatarTimeoutFallback(t *testing.T) {
 	cfg := &config.Config{Gravatar: config.GravatarConfig{TimeoutSeconds: 3}}
 	if got := gravatarTimeout(cfg); got != 3*time.Second {
 		t.Errorf("超时 = %v，期望 3s", got)
+	}
+}
+
+// TestValidateAvatarImageFlagsHTMLEndpoint 确认 HTML 响应归到专门的错误。
+//
+// 配错 extension_url 指向一个没有 /avatar 的服务时，对方会用 200
+// 返回首页 HTML。「上游返回的头像格式不合法」会把人送去查图片格式，
+// 而真正的修法是改地址——两种情况必须能分开。
+func TestValidateAvatarImageFlagsHTMLEndpoint(t *testing.T) {
+	html := []byte("<!doctype html><html><head><title>Homehub</title></head><body></body></html>")
+
+	_, err := validateAvatarImage(html)
+	if err == nil {
+		t.Fatal("HTML 必须被拒绝")
+	}
+	if !errors.Is(err, ErrAvatarEndpointHTML) {
+		t.Fatalf("HTML 应归入 ErrAvatarEndpointHTML，实际 %v", err)
+	}
+	if errors.Is(err, ErrAvatarInvalid) {
+		t.Fatal("不应同时算作「格式不合法」，两者修法不同")
+	}
+}
+
+// TestValidateAvatarImageKeepsInvalidForNonHTML 确认非 HTML 的坏数据
+// 仍走原来的分类，不被新分支抢走。
+func TestValidateAvatarImageKeepsInvalidForNonHTML(t *testing.T) {
+	_, err := validateAvatarImage([]byte("\x00\x01\x02not-an-image"))
+	if err == nil {
+		t.Fatal("无法识别的数据必须被拒绝")
+	}
+	if errors.Is(err, ErrAvatarEndpointHTML) {
+		t.Fatal("非 HTML 不应归入端点配置错误")
+	}
+	if !errors.Is(err, ErrAvatarInvalid) {
+		t.Fatalf("应归入 ErrAvatarInvalid，实际 %v", err)
 	}
 }

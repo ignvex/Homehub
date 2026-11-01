@@ -117,6 +117,9 @@ func AvatarRefresh(c *gin.Context) {
 			Fail(c, http.StatusNotFound, CodeUserNotFound, "用户不存在")
 		case errors.Is(err, service.ErrAvatarUnavailable):
 			FailBadRequest(c, "用户未设置邮箱")
+		case errors.Is(err, service.ErrAvatarEndpointHTML):
+			Fail(c, http.StatusBadGateway, CodeInternalError,
+				"头像端点返回了 HTML 页面：extension_url 可能指向了没有 /avatar 的服务，请检查配置")
 		case errors.Is(err, service.ErrAvatarUpstream), errors.Is(err, service.ErrAvatarInvalid):
 			Fail(c, http.StatusBadGateway, CodeInternalError, "头像上游不可用")
 		default:
@@ -166,6 +169,8 @@ func writeAvatarError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrAvatarUnavailable),
 		errors.Is(err, service.ErrAvatarNotFound):
 		c.String(http.StatusNotFound, "头像不可用")
+	case errors.Is(err, service.ErrAvatarEndpointHTML):
+		c.String(http.StatusBadGateway, "头像端点返回 HTML，请检查 extension_url")
 	case errors.Is(err, service.ErrAvatarUpstream),
 		errors.Is(err, service.ErrAvatarInvalid):
 		c.String(http.StatusBadGateway, "头像上游不可用")
