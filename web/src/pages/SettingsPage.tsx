@@ -567,26 +567,66 @@ export function SettingsPage() {
 
             {hubStatus?.error_message && <Notice message={hubStatus.error_message} tone="error" />}
 
-            {hubStatus?.public_key && <div className="metric-row">
-              <div className="metric-label">
-                <span>宿主公钥</span>
-                <small>把这一串填进 Extension 的 auth.hub.public_key_path 对应文件</small>
+            {hubStatus?.public_key_pem && <div style={{ display: 'grid', gap: 8 }}>
+              <div className="metric-row">
+                <div className="metric-label">
+                  <span>宿主公钥</span>
+                  <small>整段（含 BEGIN/END）写进 Extension 的 public_key_path 指向的文件</small>
+                </div>
+                <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <StatusBadge tone="success">与私钥配对</StatusBadge>
+                  {hubStatus.key_fingerprint && <code style={{ fontSize: 'var(--text-xs)' }}>{hubStatus.key_fingerprint}</code>}
+                </div>
               </div>
-              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <code style={{ fontSize: 'var(--text-xs)', wordBreak: 'break-all' }}>{hubStatus.public_key}</code>
+              <textarea
+                readOnly
+                value={hubStatus.public_key_pem}
+                spellCheck={false}
+                onFocus={event => event.currentTarget.select()}
+                style={{
+                  minHeight: 84,
+                  fontFamily: 'ui-monospace,monospace',
+                  fontSize: 12,
+                  padding: 10,
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 6,
+                  background: 'var(--color-input-bg)',
+                  color: 'var(--color-text)',
+                  resize: 'vertical',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={() => {
+                    const value = hubStatus.public_key_pem ?? ''
+                    void navigator.clipboard.writeText(value)
+                      .then(() => { setMessage('公钥 PEM 已复制，可直接粘贴'); setError('') })
+                      .catch(() => setError('复制失败，请手动选中上面的文本'))
+                  }}
+                >
+                  复制公钥
+                </button>
                 <button
                   type="button"
                   className="button button--quiet"
                   onClick={() => {
-                    // 闭包里不做类型窄化，先把值取出来。
-                    const value = hubStatus.public_key ?? ''
-                    void navigator.clipboard.writeText(value)
-                      .then(() => { setMessage('公钥已复制'); setError('') })
-                      .catch(() => setError('复制失败，请手动选中'))
+                    const value = hubStatus.public_key_pem ?? ''
+                    const blob = new Blob([value], { type: 'application/x-pem-file' })
+                    const url = URL.createObjectURL(blob)
+                    const link = document.createElement('a')
+                    link.href = url
+                    link.download = 'homehub.pub'
+                    link.click()
+                    URL.revokeObjectURL(url)
                   }}
                 >
-                  复制
+                  下载 .pub 文件
                 </button>
+                <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  用 PEM 而不是裸 base64：两者内容不同，选错会被对端当成无效公钥。
+                </span>
               </div>
             </div>}
 
@@ -659,7 +699,7 @@ export function SettingsPage() {
               <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
               <ol style={{ margin: 0, paddingLeft: 18 }}>
                 <li>在 HomeHub 主机生成密钥：<code>openssl genpkey -algorithm ed25519 -out /etc/homehub/extension-hub.key</code></li>
-                <li>导出公钥：<code>openssl pkey -in … -pubout -out hub.pub</code>，放到 Extension 主机的 <code>auth.hub.public_key_path</code>，重启它</li>
+                <li>把上面的<strong>公钥 PEM</strong>整段存成文件（或点「下载 .pub 文件」），放到 Extension 主机的 <code>auth.hub.public_key_path</code>，重启它</li>
                 <li>回到这里填 <strong>API 根地址</strong>（必须带 <code>/api/v1</code>）与<strong>私钥路径</strong>，勾上启用并保存，然后点「重新探测」</li>
               </ol>
               <p style={{ margin: '8px 0 0', color: 'var(--color-text-secondary)' }}>

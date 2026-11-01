@@ -14,6 +14,11 @@ export interface ExtensionHubStatus {
   configured: boolean
   base_url?: string
   public_key?: string
+  public_key_pem?: string
+  /** 公钥 SHA-256 前 16 位，便于在日志里核对。 */
+  key_fingerprint?: string
+  /** 私钥来处：database / file / none。 */
+  key_source?: string
   reachable: boolean
   authenticated: boolean
   rss_available: boolean
@@ -92,6 +97,8 @@ export interface KeyInfo {
   source: 'database' | 'file' | 'none'
   in_database: boolean
   public_key?: string
+  /** PKIX PEM 全文，部署时优先用它（自带类型标记，无歧义）。 */
+  public_key_pem?: string
   fingerprint?: string
   updated_at?: string
   file_path?: string

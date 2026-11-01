@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -284,6 +287,8 @@ type ExtensionHubStatus struct {
 	// PublicKey 是宿主公钥（标准 base64），供部署时与 Extension 侧核对。
 	// 它本来就是公开信息，不构成泄露。
 	PublicKey string `json:"public_key,omitempty"`
+	// PublicKeyPEM 是同一把公钥的 PKIX PEM 全文，部署时用它。
+	PublicKeyPEM string `json:"public_key_pem,omitempty"`
 	// KeySource 是这把密钥的来处：database / file / none。
 	// 多实例共用数据库时，靠它确认「用的到底是共享那份还是本机文件」。
 	KeySource string `json:"key_source,omitempty"`
@@ -339,6 +344,7 @@ func (s *ExtensionHubService) Status(ctx context.Context) ExtensionHubStatus {
 	st.Configured = true
 	if signer != nil {
 		st.PublicKey = signer.PublicKeyBase64()
+		st.PublicKeyPEM, _ = signer.PublicKeyPEM()
 		st.KeyFingerprint = fingerprintKey(st.PublicKey)
 	}
 	// 密钥来源要单独查一次：client() 只回 signer，不带来源标记。
@@ -672,6 +678,9 @@ type ExtensionHubKeyInfo struct {
 	// InDatabase 为真表示库里有一行密钥，删掉它会把来源退回文件。
 	InDatabase bool   `json:"in_database"`
 	PublicKey  string `json:"public_key,omitempty"`
+	// PublicKeyPEM 是 PKIX PEM 全文，部署时优先用它：
+	// 自带类型标记，不会与「DER 的 base64」混淆。
+	PublicKeyPEM string `json:"public_key_pem,omitempty"`
 	// Fingerprint 是公钥的 SHA-256 前 16 位，便于在日志里核对。
 	Fingerprint string     `json:"fingerprint,omitempty"`
 	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
@@ -679,12 +688,42 @@ type ExtensionHubKeyInfo struct {
 	FilePath string `json:"file_path,omitempty"`
 }
 
-// fingerprintKey 取公钥 SHA-256 的前 16 位（8 字节 hex）。
+// fingerprintKey 取**裸公钥字节** SHA-256 的前 16 位（8 字节 hex）。
 //
-// 16 位足够区分「是不是同一把」，又不至于让指纹本身变成可检索的标识。
-func fingerprintKey(publicKey string) string {
-	sum := sha256.Sum256([]byte(publicKey))
+// 必须哈希裸字节而不是 base64 字符串：同一把公钥的 PEM 与 base64
+// 两种写法字符串完全不同，若按字符串算就会得到两个指纹，而指纹的
+// 全部用处就是「换个地方看到的一串是不是同一把」。
+//
+// 输入接受裸 32 字节 base64（库里存的格式）。解析不出来时退化为
+// 对字符串取哈希：宁可给一个不完美的值，也不要让状态接口跟着失败。
+func fingerprintKey(publicBase64 string) string {
+	if raw, err := base64.StdEncoding.DecodeString(publicBase64); err == nil && len(raw) == ed25519.PublicKeySize {
+		sum := sha256.Sum256(raw)
+		return hex.EncodeToString(sum[:8])
+	}
+	sum := sha256.Sum256([]byte(publicBase64))
 	return hex.EncodeToString(sum[:8])
+}
+
+// publicKeyPEMFromBase64 把裸 32 字节公钥的 base64 还原成 PKIX PEM。
+//
+// 库里只存 base64（省一半空间，且与 Status.PublicKey 同格式），
+// 但部署时要的是 PEM。这里补 12 字节的 ASN.1 头再包一层 PEM：
+// Ed25519 的 PKIX 头是固定的 302a300506032b6570032100。
+//
+// 变换失败时返回空串而不是报错：公钥只是展示用，缺它不影响
+// 「密钥到底有没有」这个主结论。
+func publicKeyPEMFromBase64(b64 string) string {
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return ""
+	}
+	der, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(raw))
+	if err != nil {
+		return ""
+	}
+	block := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	return string(block)
 }
 
 // KeyInfo 描述当前生效的密钥来源，不含私钥。
@@ -709,6 +748,7 @@ func (s *ExtensionHubService) KeyInfo() (*ExtensionHubKeyInfo, error) {
 			info.Source = KeySourceDatabase
 			info.InDatabase = true
 			info.PublicKey = head.PublicKey
+			info.PublicKeyPEM = publicKeyPEMFromBase64(head.PublicKey)
 			info.Fingerprint = fingerprintKey(head.PublicKey)
 			info.UpdatedAt = &at
 			return info, nil
@@ -721,6 +761,7 @@ func (s *ExtensionHubService) KeyInfo() (*ExtensionHubKeyInfo, error) {
 			if signer, perr := hubclient.LoadSignerFromBytes(raw); perr == nil {
 				info.Source = KeySourceFile
 				info.PublicKey = signer.PublicKeyBase64()
+				info.PublicKeyPEM, _ = signer.PublicKeyPEM()
 				info.Fingerprint = fingerprintKey(info.PublicKey)
 			}
 		}

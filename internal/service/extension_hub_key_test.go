@@ -409,3 +409,101 @@ func TestStatusReportsKeySource(t *testing.T) {
 	_ = publicB64
 	_ = hubclient.SignDomain
 }
+
+// TestKeyInfoProvidesPEMForDeployment 确认返回可直接粘贴的 PEM。
+//
+// 界面上原先给的是裸 32 字节公钥的 base64。协议文档说 Extension「接受
+// PKIX PEM、裸 base64 或文件路径」，但没说明「裸 base64」指的是 32 字节
+// 还是 DER 的 base64 —— 两者差 12 字节 ASN.1 头，选错会被当成无效公钥。
+// PEM 自带类型标记，没有这个歧义，所以部署路径上应该给 PEM。
+func TestKeyInfoProvidesPEMForDeployment(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	_, publicB64 := newPEMKey(t)
+	expectKeyHead(mock, publicB64, time.Now())
+
+	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
+	svc.db = db
+
+	info, err := svc.KeyInfo()
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+
+	pemText := info.PublicKeyPEM
+	if pemText == "" {
+		t.Fatal("应给出 PEM 形式的公钥")
+	}
+	if !strings.HasPrefix(pemText, "-----BEGIN PUBLIC KEY-----") {
+		t.Fatalf("PEM 头不对: %q", pemText[:40])
+	}
+	if !strings.HasSuffix(strings.TrimSpace(pemText), "-----END PUBLIC KEY-----") {
+		t.Fatal("PEM 尾不对")
+	}
+
+	// PEM 解回来必须与 base64 那串是同一把。
+	parsed, err := hubclient.ParsePublicKeyPEM([]byte(pemText))
+	if err != nil {
+		t.Fatalf("PEM 无法解析: %v", err)
+	}
+	if parsed != info.PublicKey {
+		t.Fatalf("PEM 与 base64 不是同一把\n  PEM → %s\n  b64 → %s", parsed, info.PublicKey)
+	}
+
+	// 而且不能与「DER 的 base64」混为一谈。
+	if strings.Contains(pemText, info.PublicKey) == false {
+		t.Fatal("PEM 主体应包含那把裸公钥的 base64")
+	}
+	if len(info.PublicKey) == len(strings.TrimSpace(strings.Split(pemText, "\n")[1])) {
+		t.Fatal("裸 base64 与 DER base64 长度不应相同，说明转换没生效")
+	}
+}
+
+// TestFingerprintIsStableAcrossEncodings 锁住指纹的语义。
+//
+// 指纹的全部用处是「换个地方看到的一串是不是同一把」。同一把公钥的
+// PEM 与 base64 两种写法字符串完全不同，若按字符串算哈希就会得到两个
+// 指纹，那个用处就没了。
+func TestFingerprintIsStableAcrossEncodings(t *testing.T) {
+	pemText, publicB64 := newPEMKey(t)
+
+	// 文件路径下由私钥推导出来的指纹。
+	fromBase64 := fingerprintKey(publicB64)
+	if fromBase64 == "" {
+		t.Fatal("指纹不能为空")
+	}
+
+	// 同一把公钥经 PEM 解析回 base64 后，指纹必须相同。
+	parsedPEM, err := hubclient.ParsePublicKeyPEM([]byte(pemText2PublicPEM(t, pemText, publicB64)))
+	if err != nil {
+		t.Fatalf("解析 PEM 失败: %v", err)
+	}
+	if got := fingerprintKey(parsedPEM); got != fromBase64 {
+		t.Fatalf("同一把公钥换个编码后指纹变了\n  base64 → %s\n  PEM    → %s", fromBase64, got)
+	}
+
+	// 不同的公钥必须得到不同指纹。
+	_, otherB64 := newPEMKey(t)
+	if fingerprintKey(otherB64) == fromBase64 {
+		t.Fatal("不同公钥不能有相同指纹")
+	}
+}
+
+// pemText2PublicPEM 从私钥 PEM 导出对应的公钥 PEM。
+func pemText2PublicPEM(t *testing.T, privatePEM, wantPublicB64 string) string {
+	t.Helper()
+
+	signer, err := hubclient.LoadSignerFromBytes([]byte(privatePEM))
+	if err != nil {
+		t.Fatalf("加载私钥失败: %v", err)
+	}
+	if signer.PublicKeyBase64() != wantPublicB64 {
+		t.Fatal("私钥推导出的公钥与预期不符")
+	}
+	pub, err := signer.PublicKeyPEM()
+	if err != nil {
+		t.Fatalf("导出公钥 PEM 失败: %v", err)
+	}
+	return pub
+}

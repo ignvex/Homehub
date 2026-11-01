@@ -187,8 +187,28 @@ func (s *Signer) PublicKey() ed25519.PublicKey {
 }
 
 // PublicKeyBase64 按协议给出的形式（标准 base64）输出公钥。
+//
+// 注意这是**裸 32 字节**公钥的 base64，不是 PKIX DER 的 base64。两者
+// 相差 12 字节的 ASN.1 头（302a300506032b6570032100），粘贴给对方时
+// 选错格式会被当成无效公钥。要给人复制用 PublicKeyPEM 更稳。
 func (s *Signer) PublicKeyBase64() string {
 	return base64.StdEncoding.EncodeToString(s.PublicKey())
+}
+
+// PublicKeyPEM 输出 PKIX PEM 形式的公钥（带 BEGIN/END 头尾）。
+//
+// 部署时推荐用这个而不是裸 base64：PEM 自带类型标记，不会与「DER 的
+// base64」混淆，也正好对应 openssl pkey -pubout 的输出。
+func (s *Signer) PublicKeyPEM() (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(s.PublicKey())
+	if err != nil {
+		return "", fmt.Errorf("编码公钥失败: %w", err)
+	}
+	block := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if block == nil {
+		return "", fmt.Errorf("生成公钥 PEM 失败")
+	}
+	return string(block), nil
 }
 
 // Sign 生成 base64 编码的签名。
