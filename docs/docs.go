@@ -3937,6 +3937,10 @@ const docTemplate = `{
                     "description": "FetchBy 取 local / extension，省略时 local。",
                     "type": "string"
                 },
+                "fetch_enabled": {
+                    "description": "FetchEnabled 为 false 时保存但不参与调度。省略即为 true。",
+                    "type": "boolean"
+                },
                 "fetch_interval": {
                     "description": "FetchInterval 省略时默认 3600 秒。",
                     "type": "integer"
@@ -4220,6 +4224,10 @@ const docTemplate = `{
             "properties": {
                 "fetch_by": {
                     "type": "string"
+                },
+                "fetch_enabled": {
+                    "description": "FetchEnabled 暂停/恢复这个源的调度。省略表示不改。",
+                    "type": "boolean"
                 },
                 "fetch_interval": {
                     "type": "integer"
@@ -4951,6 +4959,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "enabled": {
+                    "description": "Enabled 是综合判定：全局开关打开、由本机抓、且单源未被暂停。\n界面上要同时看到这两个，才能分清「我停的」与「系统没开」。",
                     "type": "boolean"
                 },
                 "error_msg": {
@@ -4961,6 +4970,10 @@ const docTemplate = `{
                 },
                 "fetch_by": {
                     "type": "string"
+                },
+                "fetch_enabled": {
+                    "description": "FetchEnabled 是数据库里的单源开关（手动暂停时为 false）。",
+                    "type": "boolean"
                 },
                 "interval_seconds": {
                     "type": "integer"
