@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ConfirmDialog, Notice, PageState } from '@/components/WorkspaceUI'
+import { ConfirmDialog, Notice, PageState, StatusBadge } from '@/components/WorkspaceUI'
 import {
   buildPayload,
   emptySecrets,
@@ -9,6 +9,7 @@ import {
   type Secrets,
   type SettingsSection,
 } from '@/lib/settings'
+import { extensionHubApi, type ExtensionHubStatus } from '@/lib/extensionHub'
 
 // ============================================================
 // 设置页
@@ -74,6 +75,9 @@ export function SettingsPage() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [confirmingJSON, setConfirmingJSON] = useState(false)
+  // 对接状态来自后端探测（不读数据库），用来把「卡在哪一步」直接显示在面板上。
+  const [hubStatus, setHubStatus] = useState<ExtensionHubStatus | null>(null)
+  const [hubChecking, setHubChecking] = useState(false)
 
   useEffect(() => {
     settingsApi.get()
@@ -89,6 +93,20 @@ export function SettingsPage() {
   function patch(updater: (current: SafeConfig) => SafeConfig) {
     setDraft(current => (current ? updater(current) : current))
   }
+
+  const probeHub = async () => {
+    setHubChecking(true)
+    try {
+      setHubStatus(await extensionHubApi.status())
+    } catch {
+      // 探测失败不影响配置编辑；面板会停在「未知」。
+      setHubStatus(null)
+    } finally {
+      setHubChecking(false)
+    }
+  }
+
+  useEffect(() => { void probeHub() }, [])
 
   async function saveSection(section: SettingsSection) {
     if (!draft) return
@@ -318,7 +336,7 @@ export function SettingsPage() {
         <Section
           section="gravatar"
           title="Gravatar 头像"
-          description="头像可以直连 Gravatar，也可以交给 Extension 代取。填了 Extension 地址时优先后者。"
+          description="头像可以直连 Gravatar，也可以让 Extension 代取（省掉本机的出网代理）。填了代取地址时优先后者。"
           dirty={dirty('gravatar')}
           saving={saving === 'gravatar'}
           onSave={() => void saveSection('gravatar')}
@@ -363,11 +381,11 @@ export function SettingsPage() {
               <input type="number" min="1" max="120" value={draft.gravatar.timeout_seconds}
                 onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: Number(event.target.value) } }))} />
             </Field>
-            <Field label="Extension 地址">
-              <input value={draft.gravatar.extension_url} placeholder="留空则直连 Gravatar"
+            <Field label="头像代取地址（可选）">
+              <input value={draft.gravatar.extension_url} placeholder="例如 http://ext.local:8090，留空则直连 Gravatar"
                 onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, extension_url: event.target.value } }))} />
             </Field>
-            <Field label="Extension Token">
+            <Field label="代取 Token">
               <input type="password" autoComplete="off"
                 value={secrets.gravatar_extension_token}
                 placeholder={draft.gravatar.extension_token_set ? '已配置，留空不修改' : '未配置'}
@@ -402,7 +420,7 @@ export function SettingsPage() {
         <Section
           section="rss"
           title="RSS"
-          description="订阅抓取、图片缓存与 Extension 代抓。填了 Extension 地址时抓取交给它。"
+          description="订阅抓取与图片缓存。填了代取地址时抓取交给 Extension，本机只存结果。"
           dirty={dirty('rss')}
           saving={saving === 'rss'}
           onSave={() => void saveSection('rss')}
@@ -446,11 +464,11 @@ export function SettingsPage() {
               <input type="checkbox" checked={draft.rss.image_cleanup_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_enabled: event.target.checked } }))} />
               <span>自动清理无引用图片</span>
             </label>
-            <Field label="Extension 地址">
-              <input value={draft.rss.extension_url} placeholder="留空则由本机抓取"
+            <Field label="抓取代取地址（可选）">
+              <input value={draft.rss.extension_url} placeholder="例如 http://ext.local:8090，留空则由本机抓取"
                 onChange={event => patch(current => ({ ...current, rss: { ...current.rss, extension_url: event.target.value } }))} />
             </Field>
-            <Field label="Extension Token">
+            <Field label="代取 Token">
               <input type="password" autoComplete="off"
                 value={secrets.rss_extension_token}
                 placeholder={draft.rss.extension_token_set ? '已配置，留空不修改' : '未配置'}
@@ -461,8 +479,8 @@ export function SettingsPage() {
 
         <Section
           section="extension"
-          title="Extension 对接（签名通道）"
-          description="与上面的 extension_url 不同：这条通道用 Ed25519 签名，Extension 会持久化订阅与访问密钥。未启用时留空即可。"
+          title="订阅镜像与登录密钥（Extension 签名通道）"
+          description="上面两个「代取地址」是让 Extension 帮你抓取；这里才是把订阅推给它、为用户签发登录密钥。两者互不依赖。"
           dirty={dirty('extension')}
           saving={saving === 'extension'}
           onSave={() => void saveSection('extension')}
@@ -487,7 +505,57 @@ export function SettingsPage() {
                 onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, timeout_seconds: Number(event.target.value) } }))} />
             </Field>
           </div>
-          <Notice message="base_url 必须带 /api/v1 前缀。私钥内容不会经过这个页面，只填路径。" tone="info" />
+          <div style={{ display: 'grid', gap: 12, marginTop: 4 }}>
+            <div className="metric-row" style={{ alignItems: 'center' }}>
+              <div className="metric-label">
+                <span>当前状态</span>
+                <small>{hubStatus?.base_url || '未配置对接地址'}</small>
+              </div>
+              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <StatusBadge tone={hubTone(hubStatus)}>{hubLabel(hubStatus)}</StatusBadge>
+                <button type="button" className="button button--quiet" disabled={hubChecking} onClick={() => void probeHub()}>
+                  {hubChecking ? '探测中...' : '重新探测'}
+                </button>
+              </div>
+            </div>
+
+            {hubStatus?.error_message && <Notice message={hubStatus.error_message} tone="error" />}
+
+            {hubStatus?.public_key && <div className="metric-row">
+              <div className="metric-label">
+                <span>宿主公钥</span>
+                <small>把这一串填进 Extension 的 auth.hub.public_key_path 对应文件</small>
+              </div>
+              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <code style={{ fontSize: 'var(--text-xs)', wordBreak: 'break-all' }}>{hubStatus.public_key}</code>
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  onClick={() => {
+                    // 闭包里不做类型窄化，先把值取出来。
+                    const value = hubStatus.public_key ?? ''
+                    void navigator.clipboard.writeText(value)
+                      .then(() => { setMessage('公钥已复制'); setError('') })
+                      .catch(() => setError('复制失败，请手动选中'))
+                  }}
+                >
+                  复制
+                </button>
+              </div>
+            </div>}
+
+            <div style={{ background: 'var(--color-surface-muted)', borderRadius: 6, padding: 16, fontSize: 12, lineHeight: 1.7 }}>
+              <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                <li>在 HomeHub 主机生成密钥：<code>openssl genpkey -algorithm ed25519 -out /etc/homehub/extension-hub.key</code></li>
+                <li>导出公钥：<code>openssl pkey -in … -pubout -out hub.pub</code>，放到 Extension 主机的 <code>auth.hub.public_key_path</code>，重启它</li>
+                <li>回到这里填 <strong>API 根地址</strong>（必须带 <code>/api/v1</code>）与<strong>私钥路径</strong>，勾上启用并保存，然后点「重新探测」</li>
+              </ol>
+              <p style={{ margin: '8px 0 0', color: 'var(--color-text-secondary)' }}>
+                Extension 是单实例：一个 HomeHub 对接一个 Extension，不支持在这里添加多个。
+              </p>
+            </div>
+          </div>
         </Section>
       </div>}
 
@@ -506,6 +574,29 @@ export function SettingsPage() {
 // ------------------------------------------------------------
 // 局部组件
 // ------------------------------------------------------------
+
+/** hubLabel 把四层探测结果压成一句话。 */
+function hubLabel(status: ExtensionHubStatus | null): string {
+  if (!status) return '未探测'
+  if (!status.enabled) return '未启用'
+  if (!status.configured) return '私钥读取失败'
+  if (!status.reachable) return '网络不可达'
+  if (!status.authenticated) return '签名未通过'
+  if (status.ready === false) return '依赖未就绪'
+  if (status.rss_available) return `已连通 · ${status.subscription_count} 条订阅`
+  return '已连通（RSS 模块关闭）'
+}
+
+/** hubTone 给出状态徽章色调。 */
+function hubTone(status: ExtensionHubStatus | null): 'neutral' | 'warning' | 'danger' | 'success' {
+  if (!status) return 'neutral'
+  if (!status.enabled) return 'neutral'
+  if (!status.configured) return 'danger'
+  if (!status.reachable) return 'danger'
+  if (!status.authenticated) return 'danger'
+  if (status.ready === false) return 'warning'
+  return 'success'
+}
 
 /** Section 是一个可独立保存的配置面板。 */
 function Section({ title, description, children, section, dirty, saving, onSave, onReset }: {
