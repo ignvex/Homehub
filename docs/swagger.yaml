@@ -28,6 +28,27 @@ definitions:
           type: string
         type: array
     type: object
+  config.ExtensionHubConfig:
+    properties:
+      base_url:
+        description: |-
+          BaseURL 是 Extension 的 API 根，必须包含版本前缀，例如
+          `https://ext.example.com/api/v1`。端点路径会拼在它后面。
+        type: string
+      enabled:
+        description: Enabled 是否启用对接。默认 false。
+        type: boolean
+      private_key_path:
+        description: |-
+          PrivateKeyPath 是宿主 Ed25519 私钥（PKCS#8 PEM）的路径。
+          私钥只在本进程内读取，不写入日志、不入库、不下发到前端。
+        type: string
+      timeout_seconds:
+        description: |-
+          TimeoutSeconds 单次请求超时（秒），默认 30。
+          同步抓取端点 /refresh 另有 2 分钟的固定预算，不受这里约束。
+        type: integer
+    type: object
   config.GravatarConfig:
     properties:
       default_size:
@@ -748,6 +769,62 @@ definitions:
       target_count:
         type: integer
     type: object
+  service.BalanceTargetInput:
+    properties:
+      api_key:
+        type: string
+      base_url:
+        type: string
+      enabled:
+        type: boolean
+      name:
+        type: string
+      sort_order:
+        type: integer
+      type:
+        type: string
+    type: object
+  service.BalanceTargetView:
+    properties:
+      api_key_masked:
+        type: string
+      balance:
+        description: 以下是运行时结果，来自内存缓存；从未刷新过时为零值。
+        type: number
+      base_url:
+        type: string
+      currency:
+        type: string
+      enabled:
+        type: boolean
+      has_api_key:
+        type: boolean
+      id:
+        type: integer
+      last_checked_at:
+        type: string
+      last_error:
+        type: string
+      name:
+        type: string
+      sort_order:
+        type: integer
+      status:
+        type: string
+      type:
+        type: string
+    type: object
+  service.BookmarkSearchItem:
+    properties:
+      group_name:
+        type: string
+      id:
+        type: integer
+      title:
+        type: string
+      url:
+        type: string
+    type: object
   service.DatabaseUpdate:
     properties:
       dbname:
@@ -836,6 +913,16 @@ definitions:
         type: string
       reachable:
         type: boolean
+      ready:
+        description: |-
+          Ready 来自 Extension 的 /readyz（不签名、不进鉴权的那条探针）。
+
+          指针三态：nil 表示没探到（路径不对、端点不存在、超时）。
+          与 Authenticated 分开是因为它们是两个问题：签名通过只说明
+          「请求是真的」，不代表对端的数据库可读、blob 目录可写。
+        type: boolean
+      ready_detail:
+        type: string
       rss_available:
         type: boolean
       subscription_count:
@@ -915,6 +1002,28 @@ definitions:
       title:
         type: string
     type: object
+  service.RssEntrySearchItem:
+    properties:
+      author:
+        type: string
+      feed_ids:
+        items:
+          type: integer
+        type: array
+      feed_title:
+        type: string
+      id:
+        type: integer
+      link:
+        type: string
+      snippet:
+        description: |-
+          Snippet 是正文里命中关键词附近的一小段纯文本，供前端高亮。
+          为空表示命中在标题或作者上，正文摘要没有意义。
+        type: string
+      title:
+        type: string
+    type: object
   service.SafeAuthConfig:
     properties:
       username:
@@ -928,8 +1037,14 @@ definitions:
         $ref: '#/definitions/config.BookmarkConfig'
       database:
         $ref: '#/definitions/service.SafeDatabaseConfig'
+      extension_hub:
+        allOf:
+        - $ref: '#/definitions/config.ExtensionHubConfig'
+        description: |-
+          ExtensionHub 含私钥**路径**而不是内容。路径本身不是秘密，
+          而设置页需要它才能显示当前指向哪个文件。
       gravatar:
-        $ref: '#/definitions/config.GravatarConfig'
+        $ref: '#/definitions/service.SafeGravatarConfig'
       log:
         $ref: '#/definitions/config.LogConfig'
       proxy:
@@ -937,7 +1052,7 @@ definitions:
           $ref: '#/definitions/service.SafeProxyEntry'
         type: array
       rss:
-        $ref: '#/definitions/config.RSSConfig'
+        $ref: '#/definitions/service.SafeRSSConfig'
       server:
         $ref: '#/definitions/config.ServerConfig'
       webui:
@@ -956,6 +1071,48 @@ definitions:
       user:
         type: string
     type: object
+  service.SafeGravatarConfig:
+    properties:
+      default_size:
+        description: 头像缓存尺寸（像素），默认 256，范围 16-512
+        type: integer
+      default_style:
+        description: 默认头像风格：identicon / mp / robohash / retro / wavatar / blank /
+          404
+        type: string
+      enabled:
+        description: 是否启用以 Gravatar 生成头像
+        type: boolean
+      extension_token:
+        description: ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
+        type: string
+      extension_token_set:
+        type: boolean
+      extension_url:
+        description: |-
+          ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。
+
+          为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：
+          HomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=&d=&r=，
+          extension 不反向连接、不需要数据库凭据。
+        type: string
+      max_bytes:
+        description: |-
+          MaxBytes 单张头像的大小上限（字节），默认 2MB。
+          超过上限的响应直接丢弃，不截断写入缓存。
+        type: integer
+      proxy_names:
+        description: 直连模式下的代理名称列表（引用 proxy 池），空=直连
+        items:
+          type: string
+        type: array
+      rating:
+        description: 内容分级：g / pg / r / x
+        type: string
+      timeout_seconds:
+        description: TimeoutSeconds 单次上游请求超时（秒），默认 10。
+        type: integer
+    type: object
   service.SafeProxyEntry:
     properties:
       enabled:
@@ -964,6 +1121,115 @@ definitions:
         type: string
       type:
         type: string
+    type: object
+  service.SafeRSSConfig:
+    properties:
+      background_fetch_enabled:
+        description: 是否启用后台定时抓取，默认 true
+        type: boolean
+      background_fetch_interval:
+        description: 后台抓取间隔（秒），默认 300
+        type: integer
+      extension_token:
+        description: ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
+        type: string
+      extension_token_set:
+        type: boolean
+      extension_url:
+        description: |-
+          ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。
+
+          为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：
+          HomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。
+        type: string
+      fetch_concurrency:
+        description: |-
+          FetchConcurrency 同时抓取的订阅源数量，默认 4。
+          单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。
+        type: integer
+      fetch_timeout_seconds:
+        description: |-
+          FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。
+          超时只影响该订阅源，其他订阅源继续抓取。
+        type: integer
+      image_allow_private_hosts:
+        description: |-
+          ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。
+          仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。
+        type: boolean
+      image_cache_concurrency:
+        description: ImageCacheConcurrency 图片并发下载数，默认 6。
+        type: integer
+      image_cache_enabled:
+        description: |-
+          ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。
+          关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。
+        type: boolean
+      image_cleanup_enabled:
+        description: ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。
+        type: boolean
+      image_cleanup_interval_hours:
+        description: ImageCleanupIntervalHours 后台清理间隔（小时），默认 24。
+        type: integer
+      image_max_bytes:
+        description: |-
+          ImageMaxBytes 单张图片的大小上限（字节），默认 128MB。
+          超过上限的图片会被丢弃，而不是截断后写坏文件。
+          上限放到 2GB 是为高分辨率原图留余量；真正的约束是抓取预算，
+          单张图太大时会先撞上 fetch_timeout_seconds。
+        type: integer
+      image_retention_days:
+        description: |-
+          ImageRetentionDays 无引用图片的保留天数，默认 30。
+          只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。
+        type: integer
+      pikpak:
+        allOf:
+        - $ref: '#/definitions/config.PikPakConfig'
+        description: |-
+          PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，
+          锁定标记仍然可用（锁定本身不依赖 PikPak）。
+      proxy_names:
+        description: 代理名称列表（按优先级排列，fallback 链），空=直连
+        items:
+          type: string
+        type: array
+      retention_count:
+        description: 每个订阅源保留条目数，默认 5000
+        type: integer
+      user_agent:
+        description: 自定义 User-Agent，空则默认 Chrome 150
+        type: string
+    type: object
+  service.SearchResult:
+    properties:
+      bookmarks:
+        items:
+          $ref: '#/definitions/service.BookmarkSearchItem'
+        type: array
+      bookmarks_total:
+        type: integer
+      page:
+        description: |-
+          Page / PerPage 回传生效值：前端传了超限的 per_page 时，
+          它需要知道实际用了多少才能正确算页数。
+        type: integer
+      per_page:
+        type: integer
+      query:
+        type: string
+      rss_entries:
+        items:
+          $ref: '#/definitions/service.RssEntrySearchItem'
+        type: array
+      rss_entries_total:
+        type: integer
+      scope:
+        description: Scope 原样回传，让前端知道这次返回覆盖了哪些源。
+        type: string
+      took_ms:
+        description: TookMs 是服务端耗时，便于判断慢查询。
+        type: integer
     type: object
   service.ServerUpdate:
     properties:
@@ -984,6 +1250,8 @@ definitions:
         type: string
       enabled:
         type: boolean
+      id:
+        type: integer
       last_checked_at:
         description: 最后查询时间
         type: string
@@ -993,7 +1261,7 @@ definitions:
       name:
         type: string
       status:
-        description: '"ok" / "error" / "checking"'
+        description: '"ok" / "error" / "checking" / "idle"'
         type: string
       type:
         type: string
@@ -1021,6 +1289,10 @@ definitions:
         $ref: '#/definitions/config.BookmarkConfig'
       database:
         $ref: '#/definitions/service.DatabaseUpdate'
+      extension_hub:
+        allOf:
+        - $ref: '#/definitions/config.ExtensionHubConfig'
+        description: ExtensionHub 只接受路径与开关；私钥内容永远不会经过这里。
       gravatar:
         $ref: '#/definitions/config.GravatarConfig'
       log:
@@ -1614,7 +1886,7 @@ paths:
       - 背景
   /balances:
     get:
-      description: 返回所有已配置监控点的最新查询结果（内存缓存），包括 DeepSeek、智谱 AI、one-api/new-api 中转站
+      description: 返回全部监控点（含停用的）与最新缓存结果；api_key 只返回掩码
       produces:
       - application/json
       responses:
@@ -1622,13 +1894,137 @@ paths:
           description: 监控点列表
           schema:
             items:
-              $ref: '#/definitions/service.TargetResult'
+              $ref: '#/definitions/service.BalanceTargetView'
             type: array
         "500":
           description: 服务内部错误
           schema:
             $ref: '#/definitions/handler.Response'
-      summary: 获取所有余额
+      summary: 列出余额监控点
+      tags:
+      - 余额监控
+    post:
+      consumes:
+      - application/json
+      description: 名称唯一；api_key 必填，响应里只返回掩码
+      parameters:
+      - description: 监控点配置
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/service.BalanceTargetInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BalanceTargetView'
+              type: object
+        "400":
+          description: 字段不合法
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "409":
+          description: 同名监控点已存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 新建监控点
+      tags:
+      - 余额监控
+  /balances/{id}:
+    delete:
+      description: 同时清掉它的缓存结果；不可恢复
+      parameters:
+      - description: 监控点 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 监控点不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 删除监控点
+      tags:
+      - 余额监控
+    put:
+      consumes:
+      - application/json
+      description: 省略的字段保持原值；api_key 传空串表示清空，不传表示不改
+      parameters:
+      - description: 监控点 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 要修改的字段
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/service.BalanceTargetInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BalanceTargetView'
+              type: object
+        "404":
+          description: 监控点不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "409":
+          description: 同名监控点已存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 更新监控点
+      tags:
+      - 余额监控
+  /balances/{id}/refresh:
+    post:
+      description: 同步查询一次，返回最新余额与状态
+      parameters:
+      - description: 监控点 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BalanceTargetView'
+              type: object
+        "404":
+          description: 监控点不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 刷新单个监控点
       tags:
       - 余额监控
   /balances/refresh:
@@ -2787,7 +3183,7 @@ paths:
       - 磁力链接
   /search:
     get:
-      description: 在书签与 RSS 条目中执行全文搜索，支持指定数据源范围
+      description: 在书签（标题/URL/分组名）与 RSS 条目（标题/正文/作者）中搜索，支持分页、按源与分组过滤
       parameters:
       - description: 搜索关键词
         in: query
@@ -2798,15 +3194,36 @@ paths:
         in: query
         name: scope
         type: string
+      - description: 页码，从 1 开始（默认 1）
+        in: query
+        name: page
+        type: integer
+      - description: 每页条数（默认 20，上限 100）
+        in: query
+        name: per_page
+        type: integer
+      - description: 只搜该订阅源收录的条目
+        in: query
+        name: feed_id
+        type: integer
+      - description: 只搜该书签分组下的条目
+        in: query
+        name: group_id
+        type: integer
       produces:
       - application/json
       responses:
         "200":
-          description: 搜索结果
+          description: OK
           schema:
-            $ref: '#/definitions/handler.Response'
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.SearchResult'
+              type: object
         "400":
-          description: 缺少搜索关键词
+          description: 缺少搜索关键词或范围不合法
           schema:
             $ref: '#/definitions/handler.Response'
         "500":
