@@ -52,3 +52,6 @@ Thumbs.db
 
 # Windows 下载标记（NTFS 备用数据流）：跨平台仓库里不该被跟踪
 *:Zone.Identifier
+
+# 参考资料：另一个项目的文档快照，只用于本地对照，不入库
+hhe/
