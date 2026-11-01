@@ -333,7 +333,10 @@ func AtomicJSONUpdate(path string, fn func(raw map[string]any) error) error {
 	// 写进文件，而调用方只看到「保存失败」——重启服务就再也起不来，
 	// 热重载也会反复报同一个错。校验放在写入之前，坏配置根本落不了地。
 	if err := validateCandidate(out); err != nil {
-		return fmt.Errorf("配置校验失败，未写入文件: %w", err)
+		// 不写「配置校验失败」前缀：validate 自己已经带了，再包一层
+		// 会得到「配置校验失败：配置校验失败：…」。用户需要的额外
+		// 信息只有一句——文件没被动过。
+		return fmt.Errorf("%w（配置未写入，文件保持原样）", err)
 	}
 
 	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {

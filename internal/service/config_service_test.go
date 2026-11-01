@@ -290,7 +290,7 @@ func TestUpdateRejectsBaseURLWithoutVersionPrefix(t *testing.T) {
 	if err == nil {
 		t.Fatal("缺 /api/v1 的 base_url 必须被拒绝")
 	}
-	if !strings.Contains(err.Error(), "未写入文件") {
+	if !strings.Contains(err.Error(), "配置未写入") {
 		t.Fatalf("错误信息应说明文件未被修改，实际 %v", err)
 	}
 	_ = path
