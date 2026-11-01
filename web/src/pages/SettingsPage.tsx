@@ -47,8 +47,6 @@ function hasPendingSecret(section: SettingsSection, secrets: Secrets): boolean {
   switch (section) {
     case 'connection': return secrets.database_password !== ''
     case 'auth': return secrets.auth_password !== '' || secrets.session_secret !== ''
-    case 'gravatar': return secrets.gravatar_extension_token !== ''
-    case 'rss': return secrets.rss_extension_token !== ''
     default: return false
   }
 }
@@ -58,8 +56,6 @@ function clearSecrets(section: SettingsSection, secrets: Secrets): Secrets {
   switch (section) {
     case 'connection': return { ...secrets, database_password: '' }
     case 'auth': return { ...secrets, auth_password: '', session_secret: '' }
-    case 'gravatar': return { ...secrets, gravatar_extension_token: '' }
-    case 'rss': return { ...secrets, rss_extension_token: '' }
     default: return secrets
   }
 }
@@ -382,7 +378,7 @@ export function SettingsPage() {
         <Section
           section="gravatar"
           title="Gravatar 头像"
-          description="头像可以直连 Gravatar，也可以让 Extension 代取（省掉本机的出网代理）。填了代取地址时优先后者。"
+          description="头像直接向 Gravatar 取（需要代理时用下面的代理链），结果缓存到本地。"
           dirty={dirty('gravatar')}
           saving={saving === 'gravatar'}
           onSave={() => void saveSection('gravatar')}
@@ -427,16 +423,6 @@ export function SettingsPage() {
               <input type="number" min="1" max="120" value={draft.gravatar.timeout_seconds}
                 onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: Number(event.target.value) } }))} />
             </Field>
-            <Field label="头像代取地址（可选）">
-              <input value={draft.gravatar.extension_url} placeholder="例如 http://ext.local:8090，留空则直连 Gravatar"
-                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, extension_url: event.target.value } }))} />
-            </Field>
-            <Field label="代取 Token">
-              <input type="password" autoComplete="off"
-                value={secrets.gravatar_extension_token}
-                placeholder={draft.gravatar.extension_token_set ? '已配置，留空不修改' : '未配置'}
-                onChange={event => setSecrets(current => ({ ...current, gravatar_extension_token: event.target.value }))} />
-            </Field>
           </div>
         </Section>
 
@@ -466,7 +452,7 @@ export function SettingsPage() {
         <Section
           section="rss"
           title="RSS"
-          description="订阅抓取与图片缓存。填了代取地址时抓取交给 Extension，本机只存结果。"
+          description="订阅由本机按间隔抓取，条目与图片都缓存在这里。要让 Extension 抓取，请用它自己的界面或在「订阅镜像」里推送。"
           dirty={dirty('rss')}
           saving={saving === 'rss'}
           onSave={() => void saveSection('rss')}
@@ -510,27 +496,13 @@ export function SettingsPage() {
               <input type="checkbox" checked={draft.rss.image_cleanup_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_enabled: event.target.checked } }))} />
               <span>自动清理无引用图片</span>
             </label>
-            <Field label="抓取代取地址（可选）">
-              <input value={draft.rss.extension_url} placeholder="例如 http://ext.local:8090，留空则由本机抓取"
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, extension_url: event.target.value } }))} />
-            </Field>
-            <Field label="代取 Token">
-              <input type="password" autoComplete="off"
-                value={secrets.rss_extension_token}
-                placeholder={draft.rss.extension_token_set ? '已配置，留空不修改' : '未配置'}
-                onChange={event => setSecrets(current => ({ ...current, rss_extension_token: event.target.value }))} />
-            </Field>
           </div>
-          <Notice
-            message="当前 HomeHub Extension 版本不提供 /fetch 端点：填了这里的地址会拿到一个 HTML 页面并报「返回 HTML 而不是 feed」。留空则由本机抓取（需要代理时在下面配代理链）。要让 Extension 抓取，请用本页最后的「订阅镜像」通道，并在订阅源上把「由谁抓取」设为 Extension。"
-            tone="info"
-          />
         </Section>
 
         <Section
           section="extension"
           title="订阅镜像与登录密钥（Extension 签名通道）"
-          description="上面两个「代取地址」是让 Extension 帮你抓取；这里才是把订阅推给它、为用户签发登录密钥。两者互不依赖。"
+          description="把订阅推给 Extension、为用户签发登录密钥，并查看对端状态。这是与 Extension 唯一的集成方式。"
           dirty={dirty('extension')}
           saving={saving === 'extension'}
           onSave={() => void saveSection('extension')}
