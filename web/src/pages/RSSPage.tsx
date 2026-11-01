@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ConfirmDialog, Modal, Notice, PageState, Pagination, StatusBadge } from '@/components/WorkspaceUI'
 import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup, type ScheduleState } from '@/lib/rss'
-import { extensionHubApi } from '@/lib/extensionHub'
+import { extensionHubApi, type RemoteSubscription } from '@/lib/extensionHub'
 import { isUsableTimestamp, relativeTime } from '@/lib/format'
 import { formatDateTime } from '@/lib/types'
 
@@ -57,6 +57,8 @@ export function RSSPage() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [schedule, setSchedule] = useState<ScheduleState | null>(null)
+  // 远端订阅按 URL 索引，用于在调度面板里显示「对面到底抓到了没有」。
+  const [remoteByURL, setRemoteByURL] = useState<Record<string, RemoteSubscription>>({})
   const [showSchedule, setShowSchedule] = useState(false)
   // 一次只编辑一行的间隔：同时开多个输入框容易改错行。
   const [intervalDraft, setIntervalDraft] = useState<{ feedID: number; value: string } | null>(null)
@@ -109,17 +111,28 @@ export function RSSPage() {
     }
   }
 
-  /** toggleFetchBy 在「本机」与「Extension」之间切换这个源的抓取归属。 */
-  async function toggleFetchBy(feed: RSSFeed) {
-    const next = feed.fetch_by === 'extension' ? 'local' : 'extension'
+  /** loadRemote 取远端订阅状态。签名通道没启用时静默留空。 */
+  async function loadRemote() {
+    try {
+      const list = await extensionHubApi.listSubscriptions()
+      const map: Record<string, RemoteSubscription> = {}
+      for (const item of list) map[item.url] = item
+      setRemoteByURL(map)
+    } catch {
+      // 没启用或对端不可达：远端信息留空，不影响本机调度面板。
+      setRemoteByURL({})
+    }
+  }
+
+  /** toggleFetchBy 在「本机」与「Extension」之间切换抓取归属。 */
+  async function toggleFetchBy(feedID: number, label: string, current: FetchBy) {
+    const next: FetchBy = current === 'extension' ? 'local' : 'extension'
     setBusy(true)
     try {
-      await rssApi.updateFeed(feed.id, { fetch_by: next })
-      // 切到远端不会自动推送：推送会真的让对端开始抓取，属于外部副作用，
-      // 不该由一个下拉切换顺手触发。所以提示里必须说清「还差一步」。
+      await rssApi.updateFeed(feedID, { fetch_by: next })
       setMessage(next === 'extension'
-        ? `「${feed.title || feed.url}」已标为交给 Extension。本机不再抓它；还需要到「Extension 对接」页点推送，对端才会开始抓。`
-        : `「${feed.title || feed.url}」已改回本机抓取，下一轮调度会重新带上它`)
+        ? `「${label}」已标为交给 Extension。本机不再抓它；再点一次「推送」对端才会开始抓。`
+        : `「${label}」已改回本机抓取，下一轮调度会重新带上它`)
       setError('')
       await Promise.all([loadFeeds(), loadSchedule()])
     } catch (cause) {
@@ -130,13 +143,13 @@ export function RSSPage() {
   }
 
   /** pushToExtension 把这个源推给 Extension 抓取。 */
-  async function pushToExtension(feed: RSSFeed) {
+  async function pushToExtension(feedID: number, label: string) {
     setBusy(true)
     try {
-      const result = await extensionHubApi.push(feed.id, { fetchNow: true })
+      const result = await extensionHubApi.push(feedID, { fetchNow: true })
       setMessage(result.created
-        ? `已推送「${feed.title || feed.url}」到 Extension，对端开始抓取`
-        : `已更新 Extension 上的「${feed.title || feed.url}」`)
+        ? `已推送「${label}」到 Extension，对端开始抓取`
+        : `已更新 Extension 上的「${label}」`)
       setError('')
     } catch (cause) {
       const text = cause instanceof Error ? cause.message : '推送失败'
@@ -144,22 +157,6 @@ export function RSSPage() {
       setError(text.includes('未启用') || text.includes('70001')
         ? '还没有启用 Extension 签名通道：到「设置 → Extension 对接」填好地址与私钥后再推送'
         : text)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** togglePaused 暂停/恢复这个源的后台调度。 */
-  async function togglePaused(feed: RSSFeed) {
-    const next = !(feed.fetch_enabled ?? true)
-    setBusy(true)
-    try {
-      await rssApi.updateFeed(feed.id, { fetch_enabled: next })
-      setMessage(next ? `已恢复「${feed.title || feed.url}」的调度` : `已暂停「${feed.title || feed.url}」`)
-      setError('')
-      await Promise.all([loadFeeds(), loadSchedule()])
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '切换失败')
     } finally {
       setBusy(false)
     }
@@ -353,7 +350,7 @@ export function RSSPage() {
         <button className="button button--quiet" onClick={() => setShowGroups(true)}>管理分组</button>
         <button
           className="button button--quiet"
-          onClick={() => { setShowSchedule(true); void loadSchedule() }}
+          onClick={() => { setShowSchedule(true); void loadSchedule(); void loadRemote() }}
           title="查看每个源的下次抓取时间与到期情况"
         >
           调度{schedule && schedule.due_count > 0 ? ` · ${schedule.due_count} 待抓` : ''}
@@ -393,7 +390,7 @@ export function RSSPage() {
                 aria-label="收起订阅源栏"
                 title="收起订阅源栏，让条目占满宽度"
               >
-                ⇤
+                « 收起
               </button>
             </div>
           </div>
@@ -419,11 +416,7 @@ export function RSSPage() {
                       key={feed.id}
                       feed={feed}
                       active={selectedFeed === feed.id}
-                      busy={busy}
                       onSelect={() => selectFeed(feed.id)}
-                      onToggleFetchBy={() => void toggleFetchBy(feed)}
-                      onTogglePaused={() => void togglePaused(feed)}
-                      onPush={() => void pushToExtension(feed)}
                     />)}
                   <button
                     type="button"
@@ -448,11 +441,7 @@ export function RSSPage() {
                   key={feed.id}
                   feed={feed}
                   active={selectedFeed === feed.id}
-                  busy={busy}
                   onSelect={() => selectFeed(feed.id)}
-                  onToggleFetchBy={() => void toggleFetchBy(feed)}
-                  onTogglePaused={() => void togglePaused(feed)}
-                  onPush={() => void pushToExtension(feed)}
                 />)}
               </div>
             </div>}
@@ -467,7 +456,7 @@ export function RSSPage() {
             onClick={toggleSidebar}
             title="展开订阅源栏"
           >
-            ⇥ 订阅源
+            » 展开订阅源
           </button>}
           <header className="rss-main-head">
             <div>
@@ -525,7 +514,7 @@ export function RSSPage() {
       size="large"
       onClose={() => setShowSchedule(false)}
       footer={<>
-        <button className="button button--quiet" type="button" onClick={() => void loadSchedule()}>刷新</button>
+        <button className="button button--quiet" type="button" onClick={() => { void loadSchedule(); void loadRemote() }}>刷新</button>
         <button className="button button--primary" type="button" onClick={() => setShowSchedule(false)}>关闭</button>
       </>}
     >
@@ -568,11 +557,22 @@ export function RSSPage() {
                   <td data-label="订阅源">
                     <strong>{item.title || item.url}</strong>
                     {item.error_msg && <p className="table-subtext">{item.error_msg}</p>}
+                    {item.fetch_by === 'extension' && remoteByURL[item.url]?.last_error && (
+                      <p className="table-subtext">对端：{remoteByURL[item.url].last_error}</p>
+                    )}
                   </td>
                   <td data-label="执行者">
-                    <StatusBadge tone={item.fetch_by === 'extension' ? 'info' : 'neutral'}>
+                    {/* 这里才是切换抓取方式的地方：调度面板是控制台，
+                        侧栏只做浏览。 */}
+                    <button
+                      type="button"
+                      className={`rss-chip${item.fetch_by === 'extension' ? ' is-remote' : ''}`}
+                      disabled={busy}
+                      onClick={() => void toggleFetchBy(item.feed_id, item.title || item.url, item.fetch_by)}
+                      title={item.fetch_by === 'extension' ? '当前交给 Extension 抓取，点击改回本机' : '当前本机抓取，点击交给 Extension'}
+                    >
                       {item.fetch_by === 'extension' ? 'Extension' : '本机'}
-                    </StatusBadge>
+                    </button>
                   </td>
                   <td data-label="间隔">
                     {intervalDraft?.feedID === item.feed_id
@@ -603,11 +603,33 @@ export function RSSPage() {
                         {formatInterval(item.interval_seconds)}
                       </button>}
                   </td>
-                  <td data-label="上次抓取">{item.last_fetch_at ? formatDateTime(new Date(item.last_fetch_at * 1000).toISOString()) : '从未'}</td>
+                  <td data-label="上次抓取">{
+                    item.fetch_by === 'extension'
+                      ? (remoteByURL[item.url]?.last_fetch_at
+                        ? formatDateTime(new Date(remoteByURL[item.url].last_fetch_at! * 1000).toISOString())
+                        : '对面未抓')
+                      : item.last_fetch_at
+                        ? formatDateTime(new Date(item.last_fetch_at * 1000).toISOString())
+                        : '从未'
+                  }</td>
                   <td data-label="下次抓取">{item.next_fetch_at ? formatDateTime(new Date(item.next_fetch_at * 1000).toISOString()) : (item.fetch_by === 'local' ? '等待首轮' : '—')}</td>
                   <td data-label="状态">
                     {item.fetch_by === 'extension'
-                      ? <StatusBadge tone="neutral">不参与本机调度</StatusBadge>
+                      ? (() => {
+                        const remote = remoteByURL[item.url]
+                        if (!remote) {
+                          return <StatusBadge tone="warning">尚未推送</StatusBadge>
+                        }
+                        // 远端自己的抓取结果才是「有没有在工作」的答案：
+                        // 本机这里只存一个标记，条目在对面的库里。
+                        if (remote.last_status === 0 && !remote.last_fetch_at) {
+                          return <StatusBadge tone="neutral">已推送 · 待抓取</StatusBadge>
+                        }
+                        if (remote.error_count > 0) {
+                          return <StatusBadge tone="danger">对端失败 {remote.error_count} 次</StatusBadge>
+                        }
+                        return <StatusBadge tone="success">对端正常 · {remote.unread_count} 条未读</StatusBadge>
+                      })()
                       : !item.fetch_enabled
                         ? <StatusBadge tone="neutral">已暂停</StatusBadge>
                         : !schedule.enabled
@@ -618,15 +640,25 @@ export function RSSPage() {
                   </td>
                   <td data-label="操作">
                     <div className="table-actions">
-                      <button
-                        type="button"
-                        className="button button--quiet"
-                        disabled={busy || !item.fetch_enabled || item.fetch_by === 'extension'}
-                        title={item.fetch_by === 'extension' ? '这个源由 Extension 抓取，请到对面触发' : item.fetch_enabled ? '立即抓一次' : '先恢复调度'}
-                        onClick={() => void run(() => rssApi.fetchFeed(item.feed_id), `已抓取「${item.title || item.url}」`, true)}
-                      >
-                        抓取
-                      </button>
+                      {item.fetch_by === 'extension'
+                        ? <button
+                          type="button"
+                          className="button button--quiet"
+                          disabled={busy}
+                          title="把这个源推给 Extension，对端会抓一次"
+                          onClick={() => void pushToExtension(item.feed_id, item.title || item.url)}
+                        >
+                          推送
+                        </button>
+                        : <button
+                          type="button"
+                          className="button button--quiet"
+                          disabled={busy || !item.fetch_enabled}
+                          title={item.fetch_enabled ? '立即抓一次' : '先恢复调度'}
+                          onClick={() => void run(() => rssApi.fetchFeed(item.feed_id), `已抓取「${item.title || item.url}」`, true)}
+                        >
+                          抓取
+                        </button>}
                       <button
                         type="button"
                         className="button button--quiet"
@@ -793,20 +825,16 @@ function formatInterval(seconds: number): string {
   return `${Number.isInteger(days) ? days : days.toFixed(1)} 天`
 }
 
-/** FeedNavItem 是左栏的一张订阅源卡片。
+/** FeedNavItem 是左栏的一个订阅源条目。
  *
- * 卡片头是订阅源本身（点它筛选条目），下面一行是状态与操作。
- * 抓取方式做成可直接点的按钮：原先只在编辑弹窗里能改，想切一个源
- * 得打开弹窗、找下拉框、保存——而这正是最常改的字段。
+ * 只负责浏览与筛选：改抓取方式、暂停、推送都在「调度」面板里做。
+ * 侧栏是导航，不是控制台——把操作塞进这里会挤掉标题，而且每行
+ * 五个可点区域，误触比操作本身更常发生。
  */
-function FeedNavItem({ feed, active, busy, onSelect, onToggleFetchBy, onTogglePaused, onPush }: {
+function FeedNavItem({ feed, active, onSelect }: {
   feed: RSSFeed
   active: boolean
-  busy: boolean
   onSelect: () => void
-  onToggleFetchBy: () => void
-  onTogglePaused: () => void
-  onPush: () => void
 }) {
   const title = feed.title || feed.url
   const remote = feed.fetch_by === 'extension'
@@ -814,46 +842,21 @@ function FeedNavItem({ feed, active, busy, onSelect, onToggleFetchBy, onTogglePa
   const hint = [
     feed.remark,
     feed.error_msg ? `抓取失败：${feed.error_msg}` : '',
-    remote ? '由 Extension 抓取，本机不参与' : '',
+    remote ? '由 Extension 抓取' : '',
     paused ? '调度已暂停' : '',
   ].filter(Boolean).join(' · ')
 
-  return <div className={`rss-nav-item rss-feed-card${active ? ' is-active' : ''}`}>
-    <button type="button" className="rss-feed-main" onClick={onSelect} title={hint || title}>
-      <span className={`status-dot ${remote || paused ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
+  return <button
+    type="button"
+    className={`rss-nav-item${active ? ' is-active' : ''}`}
+    onClick={onSelect}
+    title={hint || title}
+  >
+    <span className={`status-dot ${remote || paused ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
+    <span className="rss-nav-body">
       <span className="rss-nav-label">{title}</span>
-    </button>
-    {feed.remark && <p className="rss-nav-remark">{feed.remark}</p>}
-    <div className="rss-feed-actions">
-      <button
-        type="button"
-        className={`rss-chip${remote ? ' is-remote' : ''}`}
-        disabled={busy}
-        onClick={onToggleFetchBy}
-        title={remote ? '当前由 Extension 抓取，点击改为本机抓取' : '当前由本机抓取，点击改为交给 Extension'}
-      >
-        {remote ? '远端' : '本机'}
-      </button>
-      {remote
-        ? <button
-          type="button"
-          className="rss-chip"
-          disabled={busy}
-          onClick={onPush}
-          title="把这个源推给 Extension，对端会立即抓一次"
-        >
-          推送
-        </button>
-        : <button
-          type="button"
-          className={`rss-chip${paused ? ' is-paused' : ''}`}
-          disabled={busy}
-          onClick={onTogglePaused}
-          title={paused ? '点击恢复后台抓取' : '点击暂停后台抓取'}
-        >
-          {paused ? '已暂停' : '调度中'}
-        </button>}
-      <span className="rss-nav-count">{remote ? '—' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
-    </div>
-  </div>
+      {feed.remark && <span className="rss-nav-remark">{feed.remark}</span>}
+    </span>
+    <span className="rss-nav-count">{remote ? '远端' : paused ? '已暂停' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
+  </button>
 }
