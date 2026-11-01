@@ -18,6 +18,9 @@ export interface ExtensionHubStatus {
   authenticated: boolean
   rss_available: boolean
   subscription_count: number
+  /** ready 来自 Extension 的 /readyz；null 表示没探到（端点不存在或超时）。 */
+  ready: boolean | null
+  ready_detail?: string
   error_code?: string
   error_message?: string
 }

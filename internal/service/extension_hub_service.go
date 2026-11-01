@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -51,6 +53,10 @@ type ExtensionHubService struct {
 	// 每次调用都重新读：配置热重载后无需重启，也不需要通知回调。
 	cfg func() config.ExtensionHubConfig
 
+	// readyClient 用于 /readyz 探测。它不走签名通道，所以不复用 hubclient。
+	// 超时给得短：这只是一条附加信息，不该拖慢状态接口。
+	readyClient *http.Client
+
 	mu     sync.Mutex
 	cached *extensionHubClient
 }
@@ -75,7 +81,8 @@ type extensionHubClient struct {
 // NewExtensionHubService 创建对接服务。
 func NewExtensionHubService(db *gorm.DB) *ExtensionHubService {
 	return &ExtensionHubService{
-		db: db,
+		db:          db,
+		readyClient: &http.Client{Timeout: 5 * time.Second},
 		cfg: func() config.ExtensionHubConfig {
 			if c := config.Get(); c != nil {
 				return c.ExtensionHub
@@ -180,6 +187,14 @@ type ExtensionHubStatus struct {
 	// SubscriptionCount 只在 RSSAvailable 为真时有意义。
 	SubscriptionCount int `json:"subscription_count"`
 
+	// Ready 来自 Extension 的 /readyz（不签名、不进鉴权的那条探针）。
+	//
+	// 指针三态：nil 表示没探到（路径不对、端点不存在、超时）。
+	// 与 Authenticated 分开是因为它们是两个问题：签名通过只说明
+	// 「请求是真的」，不代表对端的数据库可读、blob 目录可写。
+	Ready       *bool  `json:"ready"`
+	ReadyDetail string `json:"ready_detail,omitempty"`
+
 	// ErrorCode 优先取协议错误码（invalid_request / unauthenticated / …）；
 	// 配置与网络层的问题用本包自定的 disabled / config / network。
 	ErrorCode    string `json:"error_code,omitempty"`
@@ -249,7 +264,70 @@ func (s *ExtensionHubService) Status(ctx context.Context) ExtensionHubStatus {
 
 	st.RSSAvailable = true
 	st.SubscriptionCount = len(subs)
+
+	// 最后再探一次 /readyz。它不影响前面的结论：拿不到就保持 nil，
+	// 而不是判成「未就绪」——那会把一个没部署的探针演成故障。
+	st.Ready, st.ReadyDetail = s.probeReady(ctx, hub.BaseURL)
 	return st
+}
+
+// probeReady 请求 Extension 的 /readyz。
+//
+// base_url 形如 https://ext.example.com/api/v1，而 /readyz 挂在根上，
+// 所以要先把版本前缀去掉。该端点按 Extension 的约定不签名、不记日志，
+// 因此这里用裸 HTTP 请求，不走 hubclient。
+//
+// 整个过程是一个**尽力而为**的附加信息：超时、连不上、返回体不可解析
+// 都只是让 Ready 留在 nil，绝不影响已经得出的可达性与签名结论。
+func (s *ExtensionHubService) probeReady(ctx context.Context, baseURL string) (*bool, string) {
+	root, ok := apiRoot(baseURL)
+	if !ok {
+		return nil, ""
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, root+"/readyz", nil)
+	if err != nil {
+		return nil, ""
+	}
+
+	resp, err := s.readyClient.Do(req)
+	if err != nil {
+		return nil, ""
+	}
+	defer resp.Body.Close()
+
+	// 404 表示对端没有这个端点（旧版本、或被反向代理挡了）。
+	// 这时候「没探测到」比「未就绪」准确。
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ""
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	detail := strings.TrimSpace(string(body))
+	if len(detail) > 300 {
+		detail = detail[:300] + "…"
+	}
+
+	ready := resp.StatusCode == http.StatusOK
+	return &ready, detail
+}
+
+// apiRoot 把 API 根地址还原成站点根。
+//
+// https://ext.example.com/api/v1 → https://ext.example.com
+// 只有以 /api/v1 结尾时才能可靠地去掉：其他形式保留原样不可猜测。
+func apiRoot(baseURL string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", false
+	}
+	u.Path = strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), "/api/v1")
+	u.RawPath = ""
+	u.RawQuery = ""
+	return strings.TrimSuffix(u.String(), "/"), true
 }
 
 // classifyHubError 把错误压成 (错误码, 说明) 给前端按码分支。

@@ -53,6 +53,7 @@ func newTestSignerFile(t *testing.T) (path string, pub ed25519.PublicKey) {
 func newTestHubService(t *testing.T, srvURL, keyPath string) *ExtensionHubService {
 	t.Helper()
 	return &ExtensionHubService{
+		readyClient: &http.Client{Timeout: 2 * time.Second},
 		cfg: func() config.ExtensionHubConfig {
 			return config.ExtensionHubConfig{
 				Enabled:        true,
@@ -293,6 +294,7 @@ func TestStatusReportsDisabledWithoutTouchingNetwork(t *testing.T) {
 	// 未启用时不该发起任何请求。用一个必然失败的地址证明这一点：
 	// 若真的发了，error_code 会是 network 而不是 disabled。
 	svc := &ExtensionHubService{
+		readyClient: &http.Client{Timeout: time.Second},
 		cfg: func() config.ExtensionHubConfig {
 			return config.ExtensionHubConfig{Enabled: false, BaseURL: "http://127.0.0.1:1/api/v1"}
 		},
@@ -467,9 +469,12 @@ func TestClientRebuildsWhenBaseURLChanges(t *testing.T) {
 	// 热更新改了地址之后必须换实例，否则请求会继续打到旧地址。
 	keyPath, _ := newTestSignerFile(t)
 	baseURL := "http://127.0.0.1:1/api/v1"
-	svc := &ExtensionHubService{cfg: func() config.ExtensionHubConfig {
-		return config.ExtensionHubConfig{Enabled: true, BaseURL: baseURL, PrivateKeyPath: keyPath, TimeoutSeconds: 5}
-	}}
+	svc := &ExtensionHubService{
+		readyClient: &http.Client{Timeout: time.Second},
+		cfg: func() config.ExtensionHubConfig {
+			return config.ExtensionHubConfig{Enabled: true, BaseURL: baseURL, PrivateKeyPath: keyPath, TimeoutSeconds: 5}
+		},
+	}
 
 	first, _, err := svc.client()
 	if err != nil {
@@ -491,6 +496,7 @@ func TestStatusReportsEnabledButUnconfiguredWhenKeyIsMissing(t *testing.T) {
 	// 若这里报 false，界面会显示「对接未启用」，用户会去翻开关，
 	// 而真正要修的是键文件路径——错误提示比没有提示更糟。
 	svc := &ExtensionHubService{
+		readyClient: &http.Client{Timeout: time.Second},
 		cfg: func() config.ExtensionHubConfig {
 			return config.ExtensionHubConfig{
 				Enabled:        true,

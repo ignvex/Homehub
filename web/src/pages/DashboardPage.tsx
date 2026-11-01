@@ -4,6 +4,7 @@ import { MetricRow, Panel, StatusDot } from '@/components/Surface'
 import { toneOf } from '@/lib/tone'
 import { dashboardApi, type HealthStatus } from '@/lib/dashboard'
 import { balanceApi, type BalanceTarget } from '@/lib/balance'
+import { extensionHubApi, type ExtensionHubStatus } from '@/lib/extensionHub'
 import { relativeTime } from '@/lib/format'
 
 // ============================================================
@@ -61,6 +62,10 @@ function BoltIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z" /></svg>
 }
 
+function LinkIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true" {...strokeProps}><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7L11.7 6.6" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1.3-1.3" /></svg>
+}
+
 function RefreshIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 5v6h-6" /></svg>
 }
@@ -79,6 +84,7 @@ export function DashboardPage() {
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [error, setError] = useState('')
   const [balances, setBalances] = useState<BalanceTarget[]>([])
+  const [extension, setExtension] = useState<ExtensionHubStatus | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
   const [, setTick] = useState(0)
@@ -86,9 +92,12 @@ export function DashboardPage() {
 
   const load = useCallback(async (manual: boolean) => {
     if (manual) setRefreshing(true)
-    const [healthResult, balanceResult] = await Promise.allSettled([
+    // Extension 状态是可选的：未启用时接口返回 200 但 enabled=false，
+    // 所以这里不会因为“没配”而报错。
+    const [healthResult, balanceResult, extensionResult] = await Promise.allSettled([
       dashboardApi.health(),
       balanceApi.list(),
+      extensionHubApi.status(),
     ])
     if (!mountedRef.current) return
 
@@ -103,6 +112,7 @@ export function DashboardPage() {
     }
 
     setBalances(balanceResult.status === 'fulfilled' ? balanceResult.value ?? [] : [])
+    setExtension(extensionResult.status === 'fulfilled' ? extensionResult.value : null)
     setUpdatedAt(new Date())
     setRefreshing(false)
   }, [])
@@ -128,6 +138,24 @@ export function DashboardPage() {
   const dbLabel = health?.db === 'ok' ? '已连接' : health?.db ?? '—'
   const serviceLabel = healthy === null ? '检查中' : healthy ? '运行正常' : '连接异常'
   const okTargets = balances.filter(item => item.status === 'ok').length
+  // Extension 的四层状态压成一句话：仪表盘上不该给五盏灯。
+  const extensionLabel = !extension || !extension.enabled
+    ? '未启用'
+    : !extension.authenticated
+      ? (extension.error_code === 'config' ? '配置不完整' : '签名未通过')
+      : extension.ready === false
+        ? '依赖未就绪'
+        : extension.rss_available
+          ? `已连接 · ${extension.subscription_count} 条订阅`
+          : '已连接'
+  const extensionTone: 'ok' | 'error' | 'warn' | 'idle' = !extension || !extension.enabled
+    ? 'idle'
+    : !extension.authenticated
+      ? 'error'
+      : extension.ready === false
+        ? 'warn'
+        : 'ok'
+  const readyLabel = extension?.ready === true ? '就绪' : extension?.ready === false ? '未就绪' : '未探测到'
   const failedTargets = balances.filter(item => item.status === 'error').length
   const lastChecked = updatedAt ? relativeTime(updatedAt.toISOString()) || '刚刚' : '—'
 
@@ -135,6 +163,7 @@ export function DashboardPage() {
     <section className="dash-stats" aria-label="系统概况">
       <StatTile label="系统状态" value={serviceLabel} dot={serviceTone} note={health?.status ? `health: ${health.status}` : undefined} />
       <StatTile label="数据库" value={dbLabel} dot={dbTone} note="PostgreSQL" />
+      <StatTile label="Extension" value={extensionLabel} dot={extensionTone} note={extension?.enabled ? extension.base_url : '未配置'} />
       <StatTile label="运行时长" value={formatUptime(health?.uptime_seconds)} note="自上次启动以来" />
       <StatTile label="最后刷新" value={updatedAt ? clockOf(updatedAt) : '—'} note={updatedAt ? lastChecked : '尚未完成首次检查'} />
     </section>
@@ -159,6 +188,13 @@ export function DashboardPage() {
             <MetricRow label="数据库" hint="连接与查询" value={dbLabel} tone={toneOf(health?.db)} />
             <MetricRow label="整体状态" hint="综合判定" value={health?.status ?? '—'} tone={toneOf(health?.status)} />
             <MetricRow label="启动时长" hint="进程运行时间" value={formatUptime(health?.uptime_seconds)} />
+            {extension?.enabled && <MetricRow
+              label="Extension 依赖"
+              hint="/readyz"
+              value={readyLabel}
+              tone={toneOf(extension.ready === false ? 'error' : extension.ready === true ? 'ok' : 'idle')}
+              note={extension.ready_detail && extension.ready === false ? extension.ready_detail : undefined}
+            />}
           </>}
       </Panel>
 
@@ -191,6 +227,23 @@ export function DashboardPage() {
           })}
       </Panel>
     </div>
+
+    {extension?.enabled && <Panel
+      title="Extension 对接"
+      icon={<LinkIcon />}
+      action={<a className="table-link" href="/extension">管理 →</a>}
+      footer={<span>{extension.public_key ? `宿主公钥 ${extension.public_key.slice(0, 12)}…` : '未加载私钥'}</span>}
+    >
+      <MetricRow label="签名通道" hint="宿主私钥被认可" value={extension.authenticated ? '已通过' : '未通过'}
+        tone={toneOf(extension.authenticated ? 'ok' : 'error')}
+        note={!extension.authenticated ? extension.error_message : undefined} />
+      <MetricRow label="依赖就绪" hint="对端数据库与存储" value={readyLabel}
+        tone={toneOf(extension.ready === false ? 'error' : extension.ready === true ? 'ok' : 'idle')}
+        note={extension.ready === false ? extension.ready_detail : undefined} />
+      <MetricRow label="RSS 模块" hint="对端阅读器开关" value={extension.rss_available ? `已启用 · ${extension.subscription_count} 条订阅` : '未启用'}
+        tone={toneOf(extension.rss_available ? 'ok' : 'warn')} />
+      <MetricRow label="地址" value={extension.base_url ?? '—'} />
+    </Panel>}
 
     <Panel title="快捷入口" icon={<BoltIcon />}>
       <div className="dash-tiles">
