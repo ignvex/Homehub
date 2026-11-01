@@ -2,7 +2,7 @@
 
 这份文档写给 **Homehub 宿主的实现者**：你在宿主里推送订阅、查询抓取状态、为用户签发登录密钥。它不解释 Extension 内部怎么实现，只说明你必须遵守的协议，以及出错时该怎么判断。
 
-浏览器端与 REST API 的完整约定见 [api.md](api.md)；本文只覆盖 `/api/v1/hub/*` 这条机器通道。
+浏览器端与 REST API 的完整约定见 Extension 仓库的 [docs/api.md](https://github.com/ignvex/HomehubExtension/blob/main/docs/api.md)；本文只覆盖 `/api/v1/hub/*` 这条机器通道。
 
 ## 1. 通道概览
 
@@ -41,7 +41,7 @@ chmod 600 homehub.key
 把 `homehub.pub` 放到 Extension 主机的：
 
 ```text
-/etc/homehub-extension/homehub.pub
+/etc/hhe/homehub.pub
 ```
 
 并在 `config.json` 里确认：
@@ -51,7 +51,7 @@ chmod 600 homehub.key
   "auth": {
     "hub": {
       "enabled": true,
-      "public_key_path": "/etc/homehub-extension/homehub.pub",
+      "public_key_path": "/etc/hhe/homehub.pub",
       "clock_skew": "60s",
       "nonce_ttl": "2m"
     }
