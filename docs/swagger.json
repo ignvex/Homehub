@@ -3072,6 +3072,44 @@
                 }
             }
         },
+        "/rss/schedule": {
+            "get": {
+                "description": "每个源的下次抓取时间、是否到期、由谁抓取；本地抓取的源参与后台调度",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "调度总览",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.ScheduleState"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/search": {
             "get": {
                 "description": "在书签（标题/URL/分组名）与 RSS 条目（标题/正文/作者）中搜索，支持分页、按源与分组过滤",
@@ -3889,8 +3927,28 @@
                 "url"
             ],
             "properties": {
+                "fetch_by": {
+                    "description": "FetchBy 取 local / extension，省略时 local。",
+                    "type": "string"
+                },
+                "fetch_interval": {
+                    "description": "FetchInterval 省略时默认 3600 秒。",
+                    "type": "integer"
+                },
+                "fetch_now": {
+                    "description": "FetchNow 显式要求保存后抓一次（异步）。",
+                    "type": "boolean"
+                },
                 "group_id": {
                     "type": "integer"
+                },
+                "remark": {
+                    "description": "使用者自己的备注",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title 可留空：等第一次抓取补全，或之后自己改。抓取不会覆盖已填的值。",
+                    "type": "string"
                 },
                 "url": {
                     "type": "string"
@@ -4154,6 +4212,9 @@
         "handler.updateRSSFeedRequest": {
             "type": "object",
             "properties": {
+                "fetch_by": {
+                    "type": "string"
+                },
                 "fetch_interval": {
                     "type": "integer"
                 },
@@ -4162,7 +4223,11 @@
                     "type": "integer",
                     "x-nullable": true
                 },
+                "remark": {
+                    "type": "string"
+                },
                 "title": {
+                    "description": "指针即三态：省略=不改，传值=写入，空串=清空（title / remark 适用）。",
                     "type": "string"
                 }
             }
@@ -4682,6 +4747,10 @@
                 "public_key": {
                     "type": "string"
                 },
+                "public_key_pem": {
+                    "description": "PublicKeyPEM 是 PKIX PEM 全文，部署时优先用它：\n自带类型标记，不会与「DER 的 base64」混淆。",
+                    "type": "string"
+                },
                 "source": {
                     "description": "database / file / none",
                     "type": "string"
@@ -4801,6 +4870,10 @@
                     "description": "PublicKey 是宿主公钥（标准 base64），供部署时与 Extension 侧核对。\n它本来就是公开信息，不构成泄露。",
                     "type": "string"
                 },
+                "public_key_pem": {
+                    "description": "PublicKeyPEM 是同一把公钥的 PKIX PEM 全文，部署时用它。",
+                    "type": "string"
+                },
                 "reachable": {
                     "type": "boolean"
                 },
@@ -4861,6 +4934,47 @@
                 },
                 "updated": {
                     "type": "integer"
+                }
+            }
+        },
+        "service.FeedSchedule": {
+            "type": "object",
+            "properties": {
+                "due": {
+                    "description": "Due 为真表示按间隔算已经该抓了。",
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error_msg": {
+                    "type": "string"
+                },
+                "feed_id": {
+                    "type": "integer"
+                },
+                "fetch_by": {
+                    "type": "string"
+                },
+                "interval_seconds": {
+                    "type": "integer"
+                },
+                "last_fetch_at": {
+                    "type": "integer"
+                },
+                "next_fetch_at": {
+                    "description": "NextFetchAt 是预计的下次抓取时间（Unix 秒）。",
+                    "type": "integer"
+                },
+                "overdue_seconds": {
+                    "description": "OverdueSeconds 是超出计划的时间；未到期时为 0。",
+                    "type": "integer"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
                 }
             }
         },
@@ -5173,6 +5287,35 @@
                 "user_agent": {
                     "description": "自定义 User-Agent，空则默认 Chrome 150",
                     "type": "string"
+                }
+            }
+        },
+        "service.ScheduleState": {
+            "type": "object",
+            "properties": {
+                "due_count": {
+                    "description": "DueCount 是当前已到期、等待下一轮扫描的数量。",
+                    "type": "integer"
+                },
+                "enabled": {
+                    "description": "Enabled 是 config 里的总开关。",
+                    "type": "boolean"
+                },
+                "extension_count": {
+                    "type": "integer"
+                },
+                "feeds": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.FeedSchedule"
+                    }
+                },
+                "local_count": {
+                    "type": "integer"
+                },
+                "tick_seconds": {
+                    "description": "TickSeconds 是后台扫描周期：多久检查一次「有没有到期的源」。",
+                    "type": "integer"
                 }
             }
         },
