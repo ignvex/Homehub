@@ -196,6 +196,29 @@ type PikPakConfig struct {
 	AutoLock bool `json:"auto_lock"`
 }
 
+// ExtensionHubConfig 是 HomeHub 作为宿主调用 HomeHub Extension
+// `/api/v1/hub/*` 机器通道的配置。
+//
+// 它与 `rss.extension_url` / `gravatar.extension_url` 是两件不同的事：
+// 后两者是 HomeHub 主动调用的无状态端点（`/fetch`、`/avatar`），走 Bearer；
+// 这里是 Ed25519 请求签名通道，Extension 侧会持久化订阅与访问密钥。
+// 混用一个配置项会让“只代理抓取”和“接管整个阅读器”无法区分。
+//
+// 默认关闭：未配置时 RSS 完全走本地抓取路径，与 1.0 的行为一致。
+type ExtensionHubConfig struct {
+	// Enabled 是否启用对接。默认 false。
+	Enabled bool `json:"enabled"`
+	// BaseURL 是 Extension 的 API 根，必须包含版本前缀，例如
+	// `https://ext.example.com/api/v1`。端点路径会拼在它后面。
+	BaseURL string `json:"base_url"`
+	// PrivateKeyPath 是宿主 Ed25519 私钥（PKCS#8 PEM）的路径。
+	// 私钥只在本进程内读取，不写入日志、不入库、不下发到前端。
+	PrivateKeyPath string `json:"private_key_path"`
+	// TimeoutSeconds 单次请求超时（秒），默认 30。
+	// 同步抓取端点 /refresh 另有 2 分钟的固定预算，不受这里约束。
+	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
 // Config 应用顶层配置，对应 config.json 文件结构。
 type Config struct {
 	Server         ServerConfig         `json:"server"`
@@ -209,6 +232,7 @@ type Config struct {
 	RSS            RSSConfig            `json:"rss"`
 	BalanceMonitor BalanceMonitorConfig `json:"balance_monitor"`
 	Pastebin       PastebinConfig       `json:"pastebin"`
+	ExtensionHub   ExtensionHubConfig   `json:"extension_hub"`
 }
 
 // BalanceTarget 单个余额监控点配置。

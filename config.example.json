@@ -25,6 +25,15 @@
         "sslmode": "disable",
         "user": "homehub"
     },
+    "extension_hub": {
+        "_comment": "===== HomeHub Extension hub 通道（宿主→Extension 签名调用）=====",
+        "_comment_base_url": "base_url 必须带 /api/v1 前缀，端点路径会拼在它后面。",
+        "_comment_key": "私钥用 openssl genpkey -algorithm ed25519 -out hub.key 生成，对应公钥放到 Extension 的 auth.hub.public_key_path。私钥权限设 600，不要进版本库。",
+        "base_url": "https://ext.example.com/api/v1",
+        "enabled": false,
+        "private_key_path": "/etc/homehub/extension-hub.key",
+        "timeout_seconds": 30
+    },
     "gravatar": {
         "default_size": 256,
         "default_style": "identicon",

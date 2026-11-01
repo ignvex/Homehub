@@ -195,6 +195,11 @@ func applyDefaults(cfg *Config) {
 	if cfg.Pastebin.CleanupIntervalHours == 0 {
 		cfg.Pastebin.CleanupIntervalHours = 24
 	}
+
+	// Extension hub 通道默认值
+	if cfg.ExtensionHub.TimeoutSeconds == 0 {
+		cfg.ExtensionHub.TimeoutSeconds = 30
+	}
 }
 
 // applyMissingBoolDefaults 为"缺省即启用"的布尔开关补默认值。
@@ -227,6 +232,8 @@ func (cfg *Config) boolFlags() []boolFlag {
 		// 下面两项默认关闭：开启会额外消耗资源，交给用户主动选择。
 		{"balance_monitor", "enabled", &cfg.BalanceMonitor.Enabled, false},
 		{"log", "db_writer", &cfg.Log.DBWriter, false},
+		// 对接另一个实例，默认关闭。漏写这一项不应默默打开一条出站签名通道。
+		{"extension_hub", "enabled", &cfg.ExtensionHub.Enabled, false},
 	}
 }
 
@@ -417,6 +424,25 @@ func validate(cfg *Config) error {
 		u, err := url.Parse(cfg.RSS.ExtensionURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, "rss.extension_url 必须是完整的 http(s) 地址")
+		}
+	}
+
+	// Extension hub 通道：只在启用时校验，否则留空是合法的
+	if cfg.ExtensionHub.Enabled {
+		u, err := url.Parse(cfg.ExtensionHub.BaseURL)
+		switch {
+		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
+			errs = append(errs, "extension_hub.base_url 必须是完整的 http(s) 地址，例如 https://ext.example.com/api/v1")
+		case !strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/api/v1"):
+			// 少写前缀会让所有请求打到 /hub/* 之外的路径，表现为一律 404，
+			// 与“RSS 模块未启用”撞在同一个状态码上，很难查。这里提前拦下。
+			errs = append(errs, "extension_hub.base_url 必须以 /api/v1 结尾，例如 https://ext.example.com/api/v1")
+		}
+		if strings.TrimSpace(cfg.ExtensionHub.PrivateKeyPath) == "" {
+			errs = append(errs, "extension_hub.private_key_path 不能为空（启用后必须有宿主私钥）")
+		}
+		if cfg.ExtensionHub.TimeoutSeconds < 1 || cfg.ExtensionHub.TimeoutSeconds > 300 {
+			errs = append(errs, "extension_hub.timeout_seconds 必须在 1-300 之间")
 		}
 	}
 
