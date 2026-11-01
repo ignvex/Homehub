@@ -1715,6 +1715,106 @@ const docTemplate = `{
                 }
             }
         },
+        "/extension/key": {
+            "get": {
+                "description": "返回密钥来自数据库还是文件，以及公钥与指纹；永不返回私钥",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Extension 对接"
+                ],
+                "summary": "查询签名私钥来源",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.ExtensionHubKeyInfo"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "接受 PKCS#8 PEM 或 base64；入库前自签自验。多实例共用同一个数据库时只需配置一次",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Extension 对接"
+                ],
+                "summary": "保存签名私钥到数据库",
+                "parameters": [
+                    {
+                        "description": "私钥内容",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.setExtensionKeyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.ExtensionHubKeyInfo"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "私钥无法解析或自检失败",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除后若配置了 private_key_path 会回退到文件；两处都没有则无法签名",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Extension 对接"
+                ],
+                "summary": "移除数据库里的签名私钥",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/extension/keys": {
             "get": {
                 "description": "响应不含明文也不含哈希；live 由服务端计算，宿主不要自己比较过期时间",
@@ -4003,6 +4103,18 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.setExtensionKeyRequest": {
+            "type": "object",
+            "required": [
+                "private_key"
+            ],
+            "properties": {
+                "private_key": {
+                    "description": "PrivateKey 接受 PKCS#8 PEM、裸 32 字节种子的 base64、或 openssl 的原文。",
+                    "type": "string"
+                }
+            }
+        },
         "handler.updateBookmarkRequest": {
             "type": "object",
             "properties": {
@@ -4558,6 +4670,33 @@ const docTemplate = `{
                 }
             }
         },
+        "service.ExtensionHubKeyInfo": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "description": "FilePath 是回退来源的路径，仅当配置里填了才有。",
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "description": "Fingerprint 是公钥的 SHA-256 前 16 位，便于在日志里核对。",
+                    "type": "string"
+                },
+                "in_database": {
+                    "description": "InDatabase 为真表示库里有一行密钥，删掉它会把来源退回文件。",
+                    "type": "boolean"
+                },
+                "public_key": {
+                    "type": "string"
+                },
+                "source": {
+                    "description": "database / file / none",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "service.ExtensionHubPushResult": {
             "type": "object",
             "properties": {
@@ -4650,6 +4789,18 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "error_message": {
+                    "type": "string"
+                },
+                "key_fingerprint": {
+                    "description": "KeyFingerprint 是公钥的 SHA-256 前 16 位，用来在不暴露公钥全串的\n场合核对身份（例如日志、工单）。私钥永远不会出现在任何响应里。",
+                    "type": "string"
+                },
+                "key_source": {
+                    "description": "KeySource 是这把密钥的来处：database / file / none。\n多实例共用数据库时，靠它确认「用的到底是共享那份还是本机文件」。",
+                    "type": "string"
+                },
+                "key_updated_at": {
+                    "description": "KeyUpdatedAt 只在来源为数据库时有值。",
                     "type": "string"
                 },
                 "public_key": {
