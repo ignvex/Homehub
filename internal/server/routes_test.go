@@ -65,6 +65,7 @@ func TestCoreRoutesRegistered(t *testing.T) {
 		"GET /api/v1/bookmark-groups",
 		"GET /api/v1/rss/feeds",
 		"GET /api/v1/rss/entries",
+		"GET /api/v1/rss/schedule",
 		"GET /api/v1/todos",
 		"GET /api/v1/media-assets",
 		"GET /api/v1/balances",

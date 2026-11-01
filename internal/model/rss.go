@@ -12,20 +12,69 @@ import "time"
 // 表名：rss_feeds
 type RSSFeed struct {
 	BaseModel
-	Title         string    `gorm:"size:255;not null" json:"title"`            // 订阅源标题（抓取时自动更新）
-	URL           string    `gorm:"uniqueIndex;size:2048;not null" json:"url"` // 订阅源 URL（唯一）
-	SiteURL       string    `gorm:"size:2048" json:"site_url"`                 // 站点主页 URL
-	Description   string    `gorm:"type:text" json:"description,omitempty"`    // 订阅源描述
-	IconURL       string    `gorm:"size:2048" json:"icon_url,omitempty"`       // 站点图标 URL
-	FetchInterval int       `gorm:"default:3600" json:"fetch_interval"`        // 抓取间隔（秒），默认 3600
-	LastFetch     time.Time `json:"last_fetch"`                                // 最近一次抓取时间
-	ErrorMsg      string    `gorm:"size:1024" json:"error_msg,omitempty"`      // 最近一次错误信息
-	GroupID       *uint64   `gorm:"index" json:"group_id,omitempty"`           // 所属分组 ID（NULL 表示未分组）
+	Title       string `gorm:"size:255;not null" json:"title"`            // 订阅源标题（用户填的优先，否则抓取时补全）
+	URL         string `gorm:"uniqueIndex;size:2048;not null" json:"url"` // 订阅源 URL（唯一）
+	SiteURL     string `gorm:"size:2048" json:"site_url"`                 // 站点主页 URL
+	Description string `gorm:"type:text" json:"description,omitempty"`    // 订阅源描述（来自 feed 元数据）
+	// Remark 是使用者自己写的备注，与 Description 分开。
+	//
+	// Description 来自外部 feed，抓取时会被覆盖；Remark 只由人写、只由人改。
+	// 合成一个字段的结果是「每次抓取都把你写的备注冲掉」，而且没人能预期。
+	Remark        string `gorm:"size:500" json:"remark,omitempty"`
+	IconURL       string `gorm:"size:2048" json:"icon_url,omitempty"` // 站点图标 URL
+	FetchInterval int    `gorm:"default:3600" json:"fetch_interval"`  // 抓取间隔（秒），默认 3600
+	// FetchBy 决定这个源由谁抓：local（HomeHub 自己）或 extension（推给 hhe）。
+	//
+	// 这不是「把调度转发出去」——两边的条目存在各自的库里，互不相通。
+	// 选 extension 意味着阅读要去 Extension 的界面，HomeHub 这侧不会再
+	// 产生条目。所以它是**阅读器归属**的选择，不是抓取开关。
+	FetchBy   string    `gorm:"size:20;not null;default:'local';index" json:"fetch_by"`
+	LastFetch time.Time `json:"last_fetch"`                           // 最近一次抓取时间
+	ErrorMsg  string    `gorm:"size:1024" json:"error_msg,omitempty"` // 最近一次错误信息
+	GroupID   *uint64   `gorm:"index" json:"group_id,omitempty"`      // 所属分组 ID（NULL 表示未分组）
 }
 
 // TableName 指定表名。
 func (RSSFeed) TableName() string {
 	return "rss_feeds"
+}
+
+// 抓取执行者。取值进数据库与 JSON，改名等于改对外契约。
+const (
+	// FetchByLocal 由 HomeHub 自己抓取，条目落在本仓库的 rss_entries。
+	FetchByLocal = "local"
+	// FetchByExtension 推给 HomeHub Extension 抓取，条目落在对方的库。
+	// HomeHub 侧的 FetchAll 会跳过这些源，避免两边都抓、各存一份。
+	FetchByExtension = "extension"
+)
+
+// FetchByValues 返回合法取值，供校验与文档使用。
+func FetchByValues() []string {
+	return []string{FetchByLocal, FetchByExtension}
+}
+
+// IsValidFetchBy 判断取值是否合法。空串按 local 处理（兼容旧数据）。
+func IsValidFetchBy(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, valid := range FetchByValues() {
+		if v == valid {
+			return true
+		}
+	}
+	return false
+}
+
+// NormalizeFetchBy 把空串兜底成 local。
+//
+// 旧数据与新建请求都可能不带这个字段；默认必须是「自己抓」，
+// 因为把源静默交给远端会让本地阅读器突然空掉。
+func NormalizeFetchBy(v string) string {
+	if v == "" {
+		return FetchByLocal
+	}
+	return v
 }
 
 // ============================================================

@@ -106,18 +106,52 @@ func (s *RSSService) SetFetcher(f RSSFetcher) {
 // 订阅源 CRUD
 // ============================================================
 
+// CreateFeedInput 是创建订阅源的完整输入。
+//
+// 全部可选字段都用指针：nil 表示「没提供」，与「提供空串」不同。
+// 创建场景下空串与 nil 大多等价，但显式区分让 handler 不必猜测意图。
+type CreateFeedInput struct {
+	URL string
+	// Title 为空时留空，等第一次抓取补全。
+	Title *string
+	// Remark 是使用者自己的备注。
+	Remark *string
+	// FetchInterval 为 nil 时用默认 3600 秒。
+	FetchInterval *int
+	// FetchBy 为空时默认 local。
+	FetchBy *string
+	GroupID *uint64
+	// FetchNow 为真时在保存后异步抓一次。
+	//
+	// 默认 false：保存就是保存。创建时同步抓取意味着「网络不通就存不了
+	// 订阅」，而很多源在添加时临时不可达、或者要等代理就位才抓得动。
+	// 把一个纯写入操作绑上网络条件，失败原因会指向错误的方向。
+	FetchNow bool
+}
+
 // CreateFeed 创建新的 RSS 订阅源。
 //
-// 先检查 URL 是否已存在，然后通过 gofeed 解析订阅源获取元数据，
-// 最后创建 RSSFeed 记录并返回。
-func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed, error) {
+// **只做写入，不抓取。** 标题、站点地址、图标等元数据留待第一次抓取补全；
+// 用户自己填的标题优先，且不会被后续抓取覆盖（见 FetchFeed）。
+//
+// 唯一保留的同步工作是 URL 校验（SSRF 防护）：它不产生网络请求，
+// 只是拒绝明显不该存的值。存一个内网地址进库，等到抓取时才报错，
+// 排查的人会以为是网络问题。
+func (s *RSSService) CreateFeed(in CreateFeedInput) (*model.RSSFeed, error) {
+	urlStr := strings.TrimSpace(in.URL)
 	if urlStr == "" {
 		return nil, errors.New("订阅源 URL 不能为空")
 	}
 
-	// SSRF 防护：校验 URL 合法性
+	// SSRF 防护：校验 URL 合法性（只解析字符串，不发请求）
 	if err := validateFeedURL(urlStr); err != nil {
 		return nil, err
+	}
+
+	fetchBy := model.NormalizeFetchBy(derefString(in.FetchBy))
+	if !model.IsValidFetchBy(fetchBy) {
+		return nil, fmt.Errorf("fetch_by 只能是 %s 或 %s",
+			model.FetchByLocal, model.FetchByExtension)
 	}
 
 	// 检查是否已存在
@@ -127,49 +161,46 @@ func (s *RSSService) CreateFeed(urlStr string, groupID *uint64) (*model.RSSFeed,
 		return nil, ErrRSSFeedExists
 	}
 
-	// 解析订阅源获取元数据（此时尚未入库，用请求级 ctx 控制超时）
-	feed, err := s.fetcher.Fetch(context.Background(), urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("解析订阅源失败: %w", err)
+	interval := 3600
+	if in.FetchInterval != nil && *in.FetchInterval > 0 {
+		interval = *in.FetchInterval
 	}
 
-	// 构造 RSSFeed 记录。
-	//
-	// 标题、站点地址、图标都来自外部 feed，长度不受本仓库控制，必须按列
-	// 定义裁剪：超过 varchar 上限会让 PostgreSQL 拒绝整条 INSERT。
-	// URL 与条目 link 一样带 btree 唯一索引，额外受索引单键字节上限约束。
+	// URL 与条目 link 一样带 btree 唯一索引，受索引单键字节上限约束。
 	rssFeed := model.RSSFeed{
 		URL:           model.TruncateIndexed(urlStr, 2048),
-		Title:         model.TruncateRunes(feed.Title, 255),
-		SiteURL:       model.TruncateIndexed(feed.Link, 2048),
-		Description:   feed.Description,
-		FetchInterval: 3600, // 默认 1 小时
-	}
-
-	if groupID != nil {
-		rssFeed.GroupID = groupID
-	}
-
-	// 提取站点图标
-	if feed.Image != nil && feed.Image.URL != "" {
-		rssFeed.IconURL = model.TruncateIndexed(feed.Image.URL, 2048)
+		Title:         model.TruncateRunes(derefString(in.Title), 255),
+		Remark:        model.TruncateRunes(derefString(in.Remark), 500),
+		FetchInterval: interval,
+		FetchBy:       fetchBy,
+		GroupID:       in.GroupID,
 	}
 
 	if err := s.db.Create(&rssFeed).Error; err != nil {
 		return nil, fmt.Errorf("创建订阅源失败: %w", err)
 	}
 
-	// 立即执行首次抓取，填充初始条目。
-	// 用独立 ctx：请求返回后仍要继续，但需有超时避免永久挂起。
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), rssFetchBudget())
-		defer cancel()
-		if err := s.FetchFeed(ctx, rssFeed.ID); err != nil {
-			logger.Error("[rss] 首次抓取失败", "feed_id", rssFeed.ID, "error", err)
-		}
-	}()
+	// 只有显式要求时才抓。用独立 ctx：请求返回后仍要继续，
+	// 但需有超时避免永久挂起。
+	if in.FetchNow {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), rssFetchBudget())
+			defer cancel()
+			if err := s.FetchFeed(ctx, rssFeed.ID); err != nil {
+				logger.Warn("[rss] 保存后抓取失败", "feed_id", rssFeed.ID, "error", err)
+			}
+		}()
+	}
 
 	return &rssFeed, nil
+}
+
+// derefString 安全解引用；nil 返回空串。
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // GroupUpdate 表达对订阅源 group_id 的更新意图。
@@ -186,31 +217,62 @@ type GroupUpdate struct {
 	Value *uint64
 }
 
-// buildFeedUpdates 把可选的更新意图翻译成 UPDATE 的 SET 子句。
+// FeedUpdate 表达对一个订阅源的全部更新意图。
 //
-// 空值表示“不改这个字段”，所以 title 为空、interval 非正、Set=false
-// 都各自跳过；而 Set=true 且 Value=nil 是要真的写入 NULL。
-func buildFeedUpdates(title string, fetchInterval int, group GroupUpdate) map[string]interface{} {
-	updates := map[string]interface{}{}
-	if title != "" {
-		updates["title"] = model.TruncateRunes(title, 255)
-	}
-	if fetchInterval > 0 {
-		updates["fetch_interval"] = fetchInterval
-	}
-	if group.Set {
-		if group.Value == nil {
-			updates["group_id"] = nil
-		} else {
-			updates["group_id"] = *group.Value
-		}
-	}
-	return updates
+// 三态要求与前缀字段一致：nil 表示「别动」，非 nil 才写。
+// 空串对 Title/Remark 有意义（用户想清空），对 FetchBy 由校验拦住。
+type FeedUpdate struct {
+	Title         *string
+	Remark        *string
+	FetchInterval *int
+	FetchBy       *string
+	Group         GroupUpdate
 }
 
-// UpdateFeed 更新订阅源标题、抓取间隔和所属分组。
-func (s *RSSService) UpdateFeed(id uint64, title string, fetchInterval int, group GroupUpdate) error {
-	updates := buildFeedUpdates(title, fetchInterval, group)
+// buildFeedUpdates 把更新意图翻译成 UPDATE 的 SET 子句。
+//
+// 只用「零值跳过」判断会丢掉「清空」这个动作：用户把备注删空、
+// 或者想清掉自定义标题，都是合法意图。所以一律用指针判空。
+func buildFeedUpdates(u FeedUpdate) (map[string]interface{}, error) {
+	updates := map[string]interface{}{}
+
+	if u.Title != nil {
+		updates["title"] = model.TruncateRunes(*u.Title, 255)
+	}
+	if u.Remark != nil {
+		updates["remark"] = model.TruncateRunes(*u.Remark, 500)
+	}
+	if u.FetchInterval != nil {
+		if *u.FetchInterval <= 0 {
+			return nil, errors.New("抓取间隔必须大于 0 秒")
+		}
+		updates["fetch_interval"] = *u.FetchInterval
+	}
+	if u.FetchBy != nil {
+		fetchBy := model.NormalizeFetchBy(*u.FetchBy)
+		if !model.IsValidFetchBy(fetchBy) {
+			return nil, fmt.Errorf("fetch_by 只能是 %s 或 %s",
+				model.FetchByLocal, model.FetchByExtension)
+		}
+		updates["fetch_by"] = fetchBy
+	}
+	if u.Group.Set {
+		if u.Group.Value == nil {
+			updates["group_id"] = nil
+		} else {
+			updates["group_id"] = *u.Group.Value
+		}
+	}
+
+	return updates, nil
+}
+
+// UpdateFeed 更新订阅源。
+func (s *RSSService) UpdateFeed(id uint64, u FeedUpdate) error {
+	updates, err := buildFeedUpdates(u)
+	if err != nil {
+		return err
+	}
 	if len(updates) == 0 {
 		return nil
 	}
@@ -702,8 +764,7 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 		"last_fetch": now,
 		"error_msg":  "",
 	}
-	// 如果标题发生了变化，更新标题（同样按列定义裁剪）
-	if parsed.Title != "" && parsed.Title != feed.Title {
+	if shouldAdoptTitle(feed.Title, parsed.Title) {
 		updates["title"] = model.TruncateRunes(parsed.Title, 255)
 	}
 	if parsed.Description != "" {
@@ -719,6 +780,21 @@ func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
 	s.db.Model(&feed).Updates(updates)
 
 	return nil
+}
+
+// shouldAdoptTitle 判断是否该用 feed 的标题替换本地标题。
+//
+// **只在本地为空时补全，不覆盖用户填过的值。**
+//
+// 创建改成「只保存、不抓取」之后，标题由用户填或等第一次抓取补上。
+// 若沿用「不同就写」，用户手动起的名字会在抓取时被 feed 的原始标题
+// 冲掉——而他改名的原因通常正是原始标题没法看（SEO 堆关键词、
+// 带站点后缀、纯英文）。
+//
+// 抽成纯函数是为了能直接测这条规则，不必牵动整个 FetchFeed 的
+// 数据库与网络路径。
+func shouldAdoptTitle(localTitle, parsedTitle string) bool {
+	return strings.TrimSpace(parsedTitle) != "" && strings.TrimSpace(localTitle) == ""
 }
 
 // rssConcurrency 返回订阅源抓取并发数（配置热更新即时生效）。
@@ -755,6 +831,11 @@ func (s *RSSService) FetchAll(ctx context.Context) error {
 	now := time.Now()
 	due := make([]model.RSSFeed, 0, len(feeds))
 	for _, feed := range feeds {
+		// 交给 Extension 抓的源，本机不抓。
+		// 两边都抓会得到两份互不相通的条目，而使用者只会在一处阅读。
+		if model.NormalizeFetchBy(feed.FetchBy) == model.FetchByExtension {
+			continue
+		}
 		interval := feed.FetchInterval
 		if interval <= 0 {
 			interval = 3600
@@ -1396,4 +1477,124 @@ func (s *RSSService) autoLockMagnets(now time.Time) error {
 		logger.Info("[rss] 已自动锁定磁力链接", "count", res.RowsAffected)
 	}
 	return nil
+}
+
+// ============================================================
+// 调度可见性
+// ============================================================
+
+// FeedSchedule 是单个订阅源的调度状态。
+//
+// 这些数字全部由已有的 fetch_interval 与 last_fetch 推导出来，
+// 不是新状态。之所以要算并暴露出去：调度一直在跑，但界面上看不到
+// 「下次什么时候抓」「这个源是不是已经到期很久没动」——看不到就等于
+// 没有，使用者的感受就是「定时抓取几乎没功能」。
+type FeedSchedule struct {
+	FeedID    uint64 `json:"feed_id"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	FetchBy   string `json:"fetch_by"`
+	Enabled   bool   `json:"enabled"`
+	Interval  int    `json:"interval_seconds"`
+	LastFetch *int64 `json:"last_fetch_at"`
+	// NextFetchAt 是预计的下次抓取时间（Unix 秒）。
+	NextFetchAt *int64 `json:"next_fetch_at"`
+	// Due 为真表示按间隔算已经该抓了。
+	Due bool `json:"due"`
+	// OverdueSeconds 是超出计划的时间；未到期时为 0。
+	OverdueSeconds int64  `json:"overdue_seconds"`
+	ErrorMsg       string `json:"error_msg,omitempty"`
+}
+
+// ScheduleState 是整体调度视图。
+type ScheduleState struct {
+	// Enabled 是 config 里的总开关。
+	Enabled bool `json:"enabled"`
+	// TickSeconds 是后台扫描周期：多久检查一次「有没有到期的源」。
+	TickSeconds int `json:"tick_seconds"`
+	// DueCount 是当前已到期、等待下一轮扫描的数量。
+	DueCount       int            `json:"due_count"`
+	LocalCount     int            `json:"local_count"`
+	ExtensionCount int            `json:"extension_count"`
+	Feeds          []FeedSchedule `json:"feeds"`
+}
+
+// Schedule 返回调度总览。
+//
+// 「启用」的判定与 FetchAll 保持一致：交出去给 Extension 的源不参与本机
+// 调度，所以它们的 Enabled 为 false——把它们显示成「启用中」会让人
+// 以为本机在抓，实际抓的是对面。
+func (s *RSSService) Schedule() (*ScheduleState, error) {
+	var feeds []model.RSSFeed
+	if err := s.db.Order("id ASC").Find(&feeds).Error; err != nil {
+		return nil, fmt.Errorf("查询订阅源失败: %w", err)
+	}
+
+	state := &ScheduleState{Feeds: make([]FeedSchedule, 0, len(feeds))}
+
+	tick := 300
+	if cfg := config.Get(); cfg != nil {
+		state.Enabled = cfg.RSS.BackgroundFetchEnabled
+		if cfg.RSS.BackgroundFetchInterval > 0 {
+			tick = cfg.RSS.BackgroundFetchInterval
+		}
+	}
+	if tick < 5 {
+		tick = 5
+	}
+	state.TickSeconds = tick
+
+	now := time.Now()
+	for i := range feeds {
+		feed := &feeds[i]
+		fetchBy := model.NormalizeFetchBy(feed.FetchBy)
+
+		interval := feed.FetchInterval
+		if interval <= 0 {
+			interval = 3600
+		}
+
+		item := FeedSchedule{
+			FeedID:   feed.ID,
+			Title:    feed.Title,
+			URL:      feed.URL,
+			FetchBy:  fetchBy,
+			Interval: interval,
+			ErrorMsg: feed.ErrorMsg,
+			// 只有本机负责抓的源才由本机调度。
+			Enabled: state.Enabled && fetchBy == model.FetchByLocal,
+		}
+
+		if fetchBy == model.FetchByLocal {
+			state.LocalCount++
+		} else {
+			state.ExtensionCount++
+		}
+
+		if !feed.LastFetch.IsZero() {
+			at := feed.LastFetch.Unix()
+			item.LastFetch = &at
+			next := feed.LastFetch.Add(time.Duration(interval) * time.Second)
+			nextAt := next.Unix()
+			item.NextFetchAt = &nextAt
+			if now.After(next) {
+				item.Due = true
+				item.OverdueSeconds = int64(now.Sub(next).Seconds())
+				if item.Enabled {
+					state.DueCount++
+				}
+			}
+		} else if fetchBy == model.FetchByLocal {
+			// 从没抓过：一旦总开关打开就算「到期」，这与 FetchAll
+			// 的判定一致（LastFetch 为零值时 now.Sub 大于任何间隔）。
+			item.Due = true
+			if item.Enabled {
+				state.DueCount++
+			}
+		}
+
+		state.Feeds = append(state.Feeds, item)
+	}
+
+	return state, nil
 }

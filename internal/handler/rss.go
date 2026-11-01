@@ -18,9 +18,21 @@ import (
 // ============================================================
 
 // createRSSFeedRequest 添加 RSS 订阅源请求体。
+//
+// **只保存，不抓取。** 除了 fetch_now 显式为 true，创建不会触发任何
+// 网络请求——URL 不可达不该阻止你把它记下来。
 type createRSSFeedRequest struct {
-	URL     string  `json:"url" form:"url" binding:"required"`
+	URL string `json:"url" form:"url" binding:"required"`
+	// Title 可留空：等第一次抓取补全，或之后自己改。抓取不会覆盖已填的值。
+	Title  *string `json:"title" form:"title"`
+	Remark *string `json:"remark" form:"remark"` // 使用者自己的备注
+	// FetchInterval 省略时默认 3600 秒。
+	FetchInterval *int `json:"fetch_interval" form:"fetch_interval"`
+	// FetchBy 取 local / extension，省略时 local。
+	FetchBy *string `json:"fetch_by" form:"fetch_by"`
 	GroupID *uint64 `json:"group_id" form:"group_id"`
+	// FetchNow 显式要求保存后抓一次（异步）。
+	FetchNow bool `json:"fetch_now" form:"fetch_now"`
 }
 
 // optionalGroupID 区分 group_id 的三种 JSON 状态：字段缺失、显式 null、具体值。
@@ -49,8 +61,11 @@ func (o *optionalGroupID) UnmarshalJSON(data []byte) error {
 
 // updateRSSFeedRequest 更新 RSS 订阅源请求体。
 type updateRSSFeedRequest struct {
+	// 指针即三态：省略=不改，传值=写入，空串=清空（title / remark 适用）。
 	Title         *string `json:"title"`
+	Remark        *string `json:"remark"`
 	FetchInterval *int    `json:"fetch_interval"`
+	FetchBy       *string `json:"fetch_by"`
 	// group_id 传 null 表示清空分组，省略则保持原分组不变。
 	GroupID optionalGroupID `json:"group_id" swaggertype:"integer" extensions:"x-nullable"`
 }
@@ -126,7 +141,15 @@ func RSSCreateFeed(c *gin.Context) {
 		return
 	}
 
-	feed, err := svc.RSS.CreateFeed(req.URL, req.GroupID)
+	feed, err := svc.RSS.CreateFeed(service.CreateFeedInput{
+		URL:           req.URL,
+		Title:         req.Title,
+		Remark:        req.Remark,
+		FetchInterval: req.FetchInterval,
+		FetchBy:       req.FetchBy,
+		GroupID:       req.GroupID,
+		FetchNow:      req.FetchNow,
+	})
 	if err != nil {
 		FailBadRequest(c, err.Error())
 		return
@@ -160,20 +183,23 @@ func RSSUpdateFeed(c *gin.Context) {
 		return
 	}
 
-	title := ""
-	if req.Title != nil {
-		title = *req.Title
-	}
-	interval := 0
-	if req.FetchInterval != nil {
-		interval = *req.FetchInterval
-	}
-
-	if err := svc.RSS.UpdateFeed(id, title, interval, service.GroupUpdate{
-		Set:   req.GroupID.Set,
-		Value: req.GroupID.Value,
+	if err := svc.RSS.UpdateFeed(id, service.FeedUpdate{
+		Title:         req.Title,
+		Remark:        req.Remark,
+		FetchInterval: req.FetchInterval,
+		FetchBy:       req.FetchBy,
+		Group: service.GroupUpdate{
+			Set:   req.GroupID.Set,
+			Value: req.GroupID.Value,
+		},
 	}); err != nil {
-		Fail(c, http.StatusNotFound, CodeNotFound, "订阅源不存在")
+		// 校验失败（间隔非正、fetch_by 不认识）是调用方能改的输入，
+		// 与「订阅源不存在」分开报，否则用户会以为记录被删了。
+		if errors.Is(err, service.ErrRSSFeedNotFound) {
+			Fail(c, http.StatusNotFound, CodeNotFound, "订阅源不存在")
+			return
+		}
+		FailBadRequest(c, err.Error())
 		return
 	}
 	Success(c, nil)
@@ -583,4 +609,22 @@ func RSSPikPakStatus(c *gin.Context) {
 		"has_credentials": p.Username != "" && p.Password != "",
 		"has_client":      p.ClientID != "" && p.ClientSecret != "",
 	})
+}
+
+// RSSSchedule 返回订阅源的调度总览。
+//
+//	@Summary		调度总览
+//	@Description	每个源的下次抓取时间、是否到期、由谁抓取；本地抓取的源参与后台调度
+//	@Tags			RSS 订阅
+//	@Produce		json
+//	@Success		200	{object}	Response{data=service.ScheduleState}
+//	@Failure		500	{object}	Response	"服务器内部错误"
+//	@Router			/rss/schedule [get]
+func RSSSchedule(c *gin.Context) {
+	state, err := svc.RSS.Schedule()
+	if err != nil {
+		FailInternal(c, err.Error())
+		return
+	}
+	Success(c, state)
 }

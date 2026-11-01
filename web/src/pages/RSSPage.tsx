@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ConfirmDialog, Modal, Notice, PageState, Pagination } from '@/components/WorkspaceUI'
-import { rssApi, type RSSEntry, type RSSFeed, type RSSGroup } from '@/lib/rss'
+import { ConfirmDialog, Modal, Notice, PageState, Pagination, StatusBadge } from '@/components/WorkspaceUI'
+import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup, type ScheduleState } from '@/lib/rss'
 import { isUsableTimestamp, relativeTime } from '@/lib/format'
+import { formatDateTime } from '@/lib/types'
 
 const perPage = 20
 
@@ -14,11 +15,22 @@ interface DraftFeed {
   id?: number
   url: string
   title: string
+  remark: string
   fetch_interval: number
+  fetch_by: FetchBy
   group_id?: number
+  /** 保存后是否立即抓一次。只在新建时有意义。 */
+  fetch_now: boolean
 }
 
-const emptyFeedDraft: DraftFeed = { url: '', title: '', fetch_interval: 3600 }
+const emptyFeedDraft: DraftFeed = {
+  url: '',
+  title: '',
+  remark: '',
+  fetch_interval: 3600,
+  fetch_by: 'local',
+  fetch_now: false,
+}
 
 export function RSSPage() {
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
@@ -34,6 +46,8 @@ export function RSSPage() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [schedule, setSchedule] = useState<ScheduleState | null>(null)
+  const [showSchedule, setShowSchedule] = useState(false)
 
   const [feedDraft, setFeedDraft] = useState<DraftFeed | null>(null)
   const [showGroups, setShowGroups] = useState(false)
@@ -46,7 +60,12 @@ export function RSSPage() {
   async function loadFeeds() {
     setLoading(true)
     try {
-      const [feedList, groupList] = await Promise.all([rssApi.listFeeds(), rssApi.listGroups()])
+      const [feedList, groupList, scheduleState] = await Promise.all([
+        rssApi.listFeeds(),
+        rssApi.listGroups(),
+        rssApi.schedule().catch(() => null),
+      ])
+      setSchedule(scheduleState)
       setFeeds(feedList ?? [])
       setGroups(groupList ?? [])
       setError('')
@@ -54,6 +73,15 @@ export function RSSPage() {
       setError(cause instanceof Error ? cause.message : '无法读取订阅源')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadSchedule() {
+    try {
+      setSchedule(await rssApi.schedule())
+    } catch {
+      // 调度视图是附加信息，读不到不影响阅读。
+      setSchedule(null)
     }
   }
 
@@ -97,15 +125,30 @@ export function RSSPage() {
     const saved = feedDraft.id
       ? await run(
         () => rssApi.updateFeed(feedDraft.id!, {
-          title: feedDraft.title.trim() || undefined,
+          // 显式传空串表示清空：省略会被后端理解成「别动」。
+          title: feedDraft.title.trim(),
+          remark: feedDraft.remark.trim(),
           fetch_interval: feedDraft.fetch_interval,
+          fetch_by: feedDraft.fetch_by,
           // 未分组要显式发 null：省略字段会让后端理解为“保持原分组”。
           group_id: feedDraft.group_id ?? null,
         }),
         '订阅源已更新',
       )
-      : await run(() => rssApi.createFeed(feedDraft.url.trim(), feedDraft.group_id), '订阅源已添加')
-    if (saved) { setFeedDraft(null); await loadEntries() }
+      : await run(
+        () => rssApi.createFeed({
+          url: feedDraft.url.trim(),
+          ...(feedDraft.title.trim() ? { title: feedDraft.title.trim() } : {}),
+          ...(feedDraft.remark.trim() ? { remark: feedDraft.remark.trim() } : {}),
+          fetch_interval: feedDraft.fetch_interval,
+          fetch_by: feedDraft.fetch_by,
+          ...(feedDraft.group_id ? { group_id: feedDraft.group_id } : {}),
+          // 保存就是保存：只有勾了这一项才抓。
+          fetch_now: feedDraft.fetch_now,
+        }),
+        feedDraft.fetch_now ? '订阅源已添加，正在后台抓取' : '订阅源已添加',
+      )
+    if (saved) { setFeedDraft(null); await loadEntries(); await loadSchedule() }
   }
 
   async function removeFeed() {
@@ -201,9 +244,20 @@ export function RSSPage() {
         </button>
         <button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加订阅源</button>
         <button className="button button--quiet" onClick={() => setShowGroups(true)}>管理分组</button>
+        <button
+          className="button button--quiet"
+          onClick={() => { setShowSchedule(true); void loadSchedule() }}
+          title="查看每个源的下次抓取时间与到期情况"
+        >
+          调度{schedule && schedule.due_count > 0 ? ` · ${schedule.due_count} 待抓` : ''}
+        </button>
       </div>
       <span className="toolbar-summary">
         {feeds.length} 个订阅源 · {groups.length} 个分组
+        {schedule && schedule.extension_count > 0 && ` · ${schedule.extension_count} 个交给 Extension`}
+        {schedule && !schedule.enabled && (
+          <span style={{ color: 'var(--color-warning)' }}> · 后台抓取已关闭</span>
+        )}
         {errorFeeds.length > 0 && <strong className="is-error"> · {errorFeeds.length} 个异常</strong>}
       </span>
     </div>
@@ -279,7 +333,7 @@ export function RSSPage() {
             <div className="rss-main-actions">
               {activeFeed && <>
                 <button className="button button--quiet" disabled={busy} onClick={() => void run(() => rssApi.fetchFeed(activeFeed.id), `已抓取「${activeFeed.title || activeFeed.url}」`, true)}>抓取</button>
-                <button className="button button--quiet" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, fetch_interval: activeFeed.fetch_interval, group_id: activeFeed.group_id })}>编辑</button>
+                <button className="button button--quiet" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, remark: activeFeed.remark ?? '', fetch_interval: activeFeed.fetch_interval, fetch_by: activeFeed.fetch_by ?? 'local', group_id: activeFeed.group_id, fetch_now: false })}>编辑</button>
                 <button className="icon-button" aria-label="删除该订阅源" onClick={() => setPendingDeleteFeed(activeFeed)}>×</button>
               </>}
             </div>
@@ -319,11 +373,87 @@ export function RSSPage() {
         </section>
       </div>}
 
+    {/* ---------- 调度面板 ---------- */}
+    <Modal
+      open={showSchedule}
+      title="抓取调度"
+      description="后台每 tick 扫一次到期的源。这里的数字全部由抓取间隔与上次抓取推导，不是另一份状态。"
+      size="large"
+      onClose={() => setShowSchedule(false)}
+      footer={<>
+        <button className="button button--quiet" type="button" onClick={() => void loadSchedule()}>刷新</button>
+        <button className="button button--primary" type="button" onClick={() => setShowSchedule(false)}>关闭</button>
+      </>}
+    >
+      {!schedule
+        ? <PageState kind="empty" title="没有调度信息" description="订阅源列表为空，或调度接口不可用。" />
+        : <>
+          <div className="metric-row">
+            <div className="metric-label"><span>后台抓取</span><small>config.json 的 rss.background_fetch_enabled</small></div>
+            <div className="metric-value">
+              <StatusBadge tone={schedule.enabled ? 'success' : 'warning'}>{schedule.enabled ? '已启用' : '已关闭'}</StatusBadge>
+            </div>
+          </div>
+          <div className="metric-row">
+            <div className="metric-label"><span>扫描周期</span><small>多久检查一次有没有到期的源</small></div>
+            <div className="metric-value"><strong>{schedule.tick_seconds}</strong> 秒</div>
+          </div>
+          <div className="metric-row">
+            <div className="metric-label"><span>当前到期</span><small>等下一轮扫描就会被抓</small></div>
+            <div className="metric-value">
+              <StatusBadge tone={schedule.due_count > 0 ? 'warning' : 'neutral'}>{schedule.due_count} 个</StatusBadge>
+            </div>
+          </div>
+          <div className="metric-row">
+            <div className="metric-label"><span>执行者分布</span><small>本机抓取 / 交给 Extension</small></div>
+            <div className="metric-value">
+              <strong>{schedule.local_count}</strong> 本机 · <strong>{schedule.extension_count}</strong> 远端
+            </div>
+          </div>
+
+          {!schedule.enabled && schedule.local_count > 0 && <Notice
+            message="后台抓取已关闭：这些源只会在你手动点「抓取」时更新。要在 config.json 里把 rss.background_fetch_enabled 设为 true。"
+            tone="info"
+          />}
+
+          {schedule.feeds.length > 0 && <div className="table-wrap" style={{ marginTop: 16 }}>
+            <table className="data-table">
+              <thead><tr><th>订阅源</th><th>执行者</th><th>间隔</th><th>上次抓取</th><th>下次抓取</th><th>状态</th></tr></thead>
+              <tbody>
+                {schedule.feeds.map(item => <tr key={item.feed_id}>
+                  <td data-label="订阅源">
+                    <strong>{item.title || item.url}</strong>
+                    {item.error_msg && <p className="table-subtext">{item.error_msg}</p>}
+                  </td>
+                  <td data-label="执行者">
+                    <StatusBadge tone={item.fetch_by === 'extension' ? 'info' : 'neutral'}>
+                      {item.fetch_by === 'extension' ? 'Extension' : '本机'}
+                    </StatusBadge>
+                  </td>
+                  <td data-label="间隔">{formatInterval(item.interval_seconds)}</td>
+                  <td data-label="上次抓取">{item.last_fetch_at ? formatDateTime(new Date(item.last_fetch_at * 1000).toISOString()) : '从未'}</td>
+                  <td data-label="下次抓取">{item.next_fetch_at ? formatDateTime(new Date(item.next_fetch_at * 1000).toISOString()) : (item.fetch_by === 'local' ? '等待首轮' : '—')}</td>
+                  <td data-label="状态">
+                    {item.fetch_by === 'extension'
+                      ? <StatusBadge tone="neutral">不参与本机调度</StatusBadge>
+                      : !schedule.enabled
+                        ? <StatusBadge tone="warning">总开关关闭</StatusBadge>
+                        : item.due
+                          ? <StatusBadge tone="warning">已到期 {formatInterval(item.overdue_seconds)}</StatusBadge>
+                          : <StatusBadge tone="success">等待中</StatusBadge>}
+                  </td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>}
+        </>}
+    </Modal>
+
     {/* ---------- 订阅源弹窗 ---------- */}
     <Modal
       open={feedDraft !== null}
       title={feedDraft?.id ? '编辑订阅源' : '添加订阅源'}
-      description={feedDraft?.id ? '可修改展示标题、抓取间隔与所属分组；源 URL 不支持直接变更。' : '粘贴 RSS 或 Atom 链接，添加后会自动抓取一次。'}
+      description={feedDraft?.id ? '可修改备注、展示标题、抓取间隔、执行者与分组；源 URL 不支持变更。' : '只保存，不抓取。保存后再点「抓取」拉取内容，或勾选下面的「保存后立即抓取」。'}
       onClose={() => !busy && setFeedDraft(null)}
       footer={<>
         <button className="button button--quiet" type="button" onClick={() => setFeedDraft(null)} disabled={busy}>取消</button>
@@ -331,11 +461,57 @@ export function RSSPage() {
       </>}
     >
       <form id="rss-feed-form" className="form-grid" onSubmit={saveFeed}>
-        {feedDraft?.id
-          ? <label className="form-field form-field--wide">标题<input autoFocus value={feedDraft.title} onChange={event => setFeedDraft(draft => draft ? { ...draft, title: event.target.value } : draft)} maxLength={255} /></label>
-          : <label className="form-field form-field--wide">订阅源 URL<input autoFocus type="url" value={feedDraft?.url ?? ''} onChange={event => setFeedDraft(draft => draft ? { ...draft, url: event.target.value } : draft)} placeholder="https://example.com/feed.xml" required /></label>}
-        <label className="form-field">抓取间隔（秒）<input type="number" min="60" value={feedDraft?.fetch_interval ?? 3600} onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_interval: Number(event.target.value) } : draft)} required /></label>
-        <label className="form-field">分组<select value={feedDraft?.group_id ?? ''} onChange={event => setFeedDraft(draft => draft ? { ...draft, group_id: event.target.value ? Number(event.target.value) : undefined } : draft)}><option value="">未分组</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+        {!feedDraft?.id && <label className="form-field form-field--wide">订阅源 URL
+          <input autoFocus type="url" value={feedDraft?.url ?? ''} onChange={event => setFeedDraft(draft => draft ? { ...draft, url: event.target.value } : draft)} placeholder="https://example.com/feed.xml" required />
+        </label>}
+        <label className="form-field form-field--wide">备注
+          <input
+            autoFocus={Boolean(feedDraft?.id)}
+            value={feedDraft?.remark ?? ''}
+            onChange={event => setFeedDraft(draft => draft ? { ...draft, remark: event.target.value } : draft)}
+            placeholder="给自己看的说明，例如「只在周末更新」「需要代理」"
+            maxLength={500}
+          />
+        </label>
+        <label className="form-field form-field--wide">展示标题
+          <input
+            value={feedDraft?.title ?? ''}
+            onChange={event => setFeedDraft(draft => draft ? { ...draft, title: event.target.value } : draft)}
+            placeholder="留空则抓取后自动补全；填了就不会被覆盖"
+            maxLength={255}
+          />
+        </label>
+        <label className="form-field">抓取间隔（秒）
+          <input type="number" min="60" value={feedDraft?.fetch_interval ?? 3600} onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_interval: Number(event.target.value) } : draft)} required />
+        </label>
+        <label className="form-field">分组
+          <select value={feedDraft?.group_id ?? ''} onChange={event => setFeedDraft(draft => draft ? { ...draft, group_id: event.target.value ? Number(event.target.value) : undefined } : draft)}>
+            <option value="">未分组</option>
+            {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+          </select>
+        </label>
+        <label className="form-field form-field--wide">由谁抓取
+          <select
+            value={feedDraft?.fetch_by ?? 'local'}
+            onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_by: event.target.value as FetchBy } : draft)}
+          >
+            <option value="local">本机抓取（条目存在 HomeHub）</option>
+            <option value="extension">交给 Extension（条目存在对面）</option>
+          </select>
+        </label>
+        <p className="form-hint" style={{ gridColumn: '1 / -1', margin: 0, fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+          {feedDraft?.fetch_by === 'extension'
+            ? '交给 Extension 后，本机不再抓取这个源，条目也只存在对面——阅读要去 Extension 的界面，并且需要在这个源的列表里点「推送」。'
+            : '本机按间隔抓取，条目存在 HomeHub，可以在右侧阅读。'}
+        </p>
+        {!feedDraft?.id && <label className="choice-tile" style={{ gridColumn: '1 / -1' }}>
+          <input
+            type="checkbox"
+            checked={feedDraft?.fetch_now ?? false}
+            onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_now: event.target.checked } : draft)}
+          />
+          <span>保存后立即抓取一次（默认不抓）</span>
+        </label>}
       </form>
     </Modal>
 
@@ -406,16 +582,36 @@ export function RSSPage() {
 }
 
 /** 侧栏中的单个订阅源：状态灯 + 标题 + 最近抓取。 */
+/** formatInterval 把秒数写成「2 小时」「30 分钟」。 */
+function formatInterval(seconds: number): string {
+  if (!seconds || seconds <= 0) return '—'
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = minutes / 60
+  if (hours < 24) return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`
+  const days = hours / 24
+  return `${Number.isInteger(days) ? days : days.toFixed(1)} 天`
+}
+
 function FeedNavItem({ feed, active, onSelect }: { feed: RSSFeed; active: boolean; onSelect: () => void }) {
   const title = feed.title || feed.url
+  const remote = feed.fetch_by === 'extension'
+  const hint = [
+    feed.remark,
+    feed.error_msg ? `抓取失败：${feed.error_msg}` : '',
+    remote ? '由 Extension 抓取，本机不参与' : '',
+  ].filter(Boolean).join(' · ')
+
   return <button
     type="button"
     className={`rss-nav-item${active ? ' is-active' : ''}`}
     onClick={onSelect}
-    title={feed.error_msg ? `抓取失败：${feed.error_msg}` : title}
+    title={hint || title}
   >
-    <span className={`status-dot ${feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
+    <span className={`status-dot ${remote ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
     <span className="rss-nav-label">{title}</span>
-    <span className="rss-nav-count">{feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
+    {feed.remark && <span className="rss-nav-remark">{feed.remark}</span>}
+    <span className="rss-nav-count">{remote ? '远端' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
   </button>
 }

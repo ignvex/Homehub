@@ -82,6 +82,17 @@
   color: var(--color-primary-hover);
   font-weight: 650;
 }
+/* 备注行：与标题同列，但更弱一档。截断而不是换行——导航栏的
+   行高必须稳定，否则一长串备注会把整个列表推歪。 */
+.rss-nav-item .rss-nav-remark {
+  display: block;
+  font-size: var(--text-2xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: var(--leading-tight);
+}
 .rss-nav-item .rss-nav-label {
   min-width: 0;
   flex: 1;

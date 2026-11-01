@@ -102,14 +102,14 @@ func TestIntegrationFeedGroupClearAndRestore(t *testing.T) {
 		t.Fatalf("初始 group_id = %v，期望 %d", initial, group.ID)
 	}
 
-	if err := svc.UpdateFeed(feed.ID, "", 0, GroupUpdate{Set: true, Value: nil}); err != nil {
+	if err := svc.UpdateFeed(feed.ID, FeedUpdate{Group: GroupUpdate{Set: true, Value: nil}}); err != nil {
 		t.Fatalf("清空分组失败: %v", err)
 	}
 	if got := readGroup(); got != nil {
 		t.Fatalf("清空后 group_id = %d，期望 NULL", *got)
 	}
 
-	if err := svc.UpdateFeed(feed.ID, "", 0, GroupUpdate{Set: true, Value: &group.ID}); err != nil {
+	if err := svc.UpdateFeed(feed.ID, FeedUpdate{Group: GroupUpdate{Set: true, Value: &group.ID}}); err != nil {
 		t.Fatalf("重新设置分组失败: %v", err)
 	}
 	if got := readGroup(); got == nil || *got != group.ID {
@@ -134,7 +134,7 @@ func TestIntegrationFeedGroupUntouchedWhenNotSet(t *testing.T) {
 	}
 
 	svc := &RSSService{db: db}
-	if err := svc.UpdateFeed(feed.ID, "新标题", 7200, GroupUpdate{}); err != nil {
+	if err := svc.UpdateFeed(feed.ID, FeedUpdate{Title: strPtr("新标题"), FetchInterval: intPtr(7200)}); err != nil {
 		t.Fatalf("只改标题失败: %v", err)
 	}
 

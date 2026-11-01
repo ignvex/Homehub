@@ -159,6 +159,7 @@ func registerRoutes(r *gin.Engine) {
 			rssRead.GET("/groups", handler.RSSListGroups)
 			rssRead.GET("/groups/:id", handler.RSSGetGroup)
 			rssRead.GET("/pikpak", handler.RSSPikPakStatus)
+			rssRead.GET("/schedule", handler.RSSSchedule)
 		}
 
 		rssWrite := contentWrite.Group("/rss")

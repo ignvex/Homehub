@@ -1,16 +1,68 @@
 import { api } from '@/lib/api'
 import type { EntityBase, PageResult } from '@/lib/types'
 
+/** 抓取执行者：local 由 HomeHub 自己抓，extension 推给 hhe。 */
+export type FetchBy = 'local' | 'extension'
+
 export interface RSSFeed extends EntityBase {
   title: string
   url: string
   site_url: string
+  /** 来自 feed 元数据，抓取时会被覆盖。 */
   description?: string
+  /** 使用者自己写的备注，抓取不会动它。 */
+  remark?: string
   icon_url?: string
   fetch_interval: number
+  fetch_by: FetchBy
   last_fetch?: string
   error_msg?: string
   group_id?: number
+}
+
+/** 单个订阅源的调度状态，全部由 fetch_interval + last_fetch 推导。 */
+export interface FeedSchedule {
+  feed_id: number
+  title: string
+  url: string
+  fetch_by: FetchBy
+  enabled: boolean
+  interval_seconds: number
+  last_fetch_at: number | null
+  next_fetch_at: number | null
+  due: boolean
+  overdue_seconds: number
+  error_msg?: string
+}
+
+export interface ScheduleState {
+  enabled: boolean
+  tick_seconds: number
+  due_count: number
+  local_count: number
+  extension_count: number
+  feeds: FeedSchedule[]
+}
+
+/** CreateFeedBody 创建订阅源。除 fetch_now 外不发任何网络请求。 */
+export interface CreateFeedBody {
+  url: string
+  title?: string
+  remark?: string
+  fetch_interval?: number
+  fetch_by?: FetchBy
+  group_id?: number
+  /** 显式要求保存后抓一次；默认 false。 */
+  fetch_now?: boolean
+}
+
+/** UpdateFeedBody 省略字段表示不改；title/remark 传空串表示清空。 */
+export interface UpdateFeedBody {
+  title?: string
+  remark?: string
+  fetch_interval?: number
+  fetch_by?: FetchBy
+  group_id?: number | null
 }
 
 export interface RSSGroup extends EntityBase {
@@ -33,9 +85,10 @@ export interface RSSEntry extends EntityBase {
 
 export const rssApi = {
   listFeeds: () => api.get<RSSFeed[]>('/rss/feeds'),
-  createFeed: (url: string, groupId?: number) => api.post<RSSFeed>('/rss/feeds', { url, ...(groupId ? { group_id: groupId } : {}) }),
+  createFeed: (body: CreateFeedBody) => api.post<RSSFeed>('/rss/feeds', body),
   // group_id 传 null 表示显式清空分组，省略则保持原值 —— 后端按此区分。
-  updateFeed: (id: number, body: { title?: string; fetch_interval?: number; group_id?: number | null }) => api.put<void>(`/rss/feeds/${id}`, body),
+  updateFeed: (id: number, body: UpdateFeedBody) => api.put<void>(`/rss/feeds/${id}`, body),
+  schedule: () => api.get<ScheduleState>('/rss/schedule'),
   deleteFeed: (id: number) => api.delete<void>(`/rss/feeds/${id}`),
   fetchFeed: (id: number) => api.post<void>(`/rss/feeds/${id}/fetch`),
   fetchAll: () => api.post<void>('/rss/fetch-all'),
