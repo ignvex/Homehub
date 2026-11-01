@@ -28,10 +28,18 @@ type RSSFeed struct {
 	// 这不是「把调度转发出去」——两边的条目存在各自的库里，互不相通。
 	// 选 extension 意味着阅读要去 Extension 的界面，HomeHub 这侧不会再
 	// 产生条目。所以它是**阅读器归属**的选择，不是抓取开关。
-	FetchBy   string    `gorm:"size:20;not null;default:'local';index" json:"fetch_by"`
-	LastFetch time.Time `json:"last_fetch"`                           // 最近一次抓取时间
-	ErrorMsg  string    `gorm:"size:1024" json:"error_msg,omitempty"` // 最近一次错误信息
-	GroupID   *uint64   `gorm:"index" json:"group_id,omitempty"`      // 所属分组 ID（NULL 表示未分组）
+	FetchBy string `gorm:"size:20;not null;default:'local';index" json:"fetch_by"`
+	// FetchEnabled 控制这个源是否参与后台调度。
+	//
+	// 与 FetchBy 是两件事：后者决定「谁抓」，前者决定「抓不抓」。
+	// 合在一起没法表达「暂停但不改变归属」——而暂时不想看某个源、
+	// 又不想丢掉它的分组与历史时，删掉再重建是最差的选择。
+	//
+	// 默认 true：旧数据迁移后应当照常被抓，不能因为新加一列就静默停摆。
+	FetchEnabled bool      `gorm:"not null;default:true" json:"fetch_enabled"`
+	LastFetch    time.Time `json:"last_fetch"`                           // 最近一次抓取时间
+	ErrorMsg     string    `gorm:"size:1024" json:"error_msg,omitempty"` // 最近一次错误信息
+	GroupID      *uint64   `gorm:"index" json:"group_id,omitempty"`      // 所属分组 ID（NULL 表示未分组）
 }
 
 // TableName 指定表名。

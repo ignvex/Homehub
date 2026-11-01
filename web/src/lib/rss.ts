@@ -15,6 +15,8 @@ export interface RSSFeed extends EntityBase {
   icon_url?: string
   fetch_interval: number
   fetch_by: FetchBy
+  /** 单源调度开关：false 表示手动暂停，不参与后台抓取。 */
+  fetch_enabled: boolean
   last_fetch?: string
   error_msg?: string
   group_id?: number
@@ -26,6 +28,9 @@ export interface FeedSchedule {
   title: string
   url: string
   fetch_by: FetchBy
+  /** 数据库里的单源开关。 */
+  fetch_enabled: boolean
+  /** 综合判定：总开关开 + 本机抓 + 未被暂停。 */
   enabled: boolean
   interval_seconds: number
   last_fetch_at: number | null
@@ -51,6 +56,7 @@ export interface CreateFeedBody {
   remark?: string
   fetch_interval?: number
   fetch_by?: FetchBy
+  fetch_enabled?: boolean
   group_id?: number
   /** 显式要求保存后抓一次；默认 false。 */
   fetch_now?: boolean
@@ -62,6 +68,8 @@ export interface UpdateFeedBody {
   remark?: string
   fetch_interval?: number
   fetch_by?: FetchBy
+  /** 暂停 / 恢复这个源的调度。 */
+  fetch_enabled?: boolean
   group_id?: number | null
 }
 

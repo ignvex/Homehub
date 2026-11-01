@@ -48,6 +48,8 @@ export function RSSPage() {
   const [busy, setBusy] = useState(false)
   const [schedule, setSchedule] = useState<ScheduleState | null>(null)
   const [showSchedule, setShowSchedule] = useState(false)
+  // 一次只编辑一行的间隔：同时开多个输入框容易改错行。
+  const [intervalDraft, setIntervalDraft] = useState<{ feedID: number; value: string } | null>(null)
 
   const [feedDraft, setFeedDraft] = useState<DraftFeed | null>(null)
   const [showGroups, setShowGroups] = useState(false)
@@ -83,6 +85,33 @@ export function RSSPage() {
       // 调度视图是附加信息，读不到不影响阅读。
       setSchedule(null)
     }
+  }
+
+  /** patchSchedule 更新单源的调度字段，成功后刷新面板。 */
+  async function patchSchedule(feedID: number, body: { fetch_enabled?: boolean; fetch_interval?: number }, note: string) {
+    setBusy(true)
+    try {
+      await rssApi.updateFeed(feedID, body)
+      setMessage(note)
+      setError('')
+      await Promise.all([loadSchedule(), loadFeeds()])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '调整失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** saveInterval 提交间隔编辑。 */
+  async function saveInterval(feedID: number) {
+    if (!intervalDraft || intervalDraft.feedID !== feedID) return
+    const value = Number(intervalDraft.value)
+    if (!Number.isFinite(value) || value < 60) {
+      setError('抓取间隔不能小于 60 秒')
+      return
+    }
+    setIntervalDraft(null)
+    await patchSchedule(feedID, { fetch_interval: value }, `抓取间隔已改为 ${formatInterval(value)}`)
   }
 
   async function loadEntries(feed = selectedFeed, group = selectedGroup, targetPage = page) {
@@ -377,7 +406,7 @@ export function RSSPage() {
     <Modal
       open={showSchedule}
       title="抓取调度"
-      description="后台每 tick 扫一次到期的源。这里的数字全部由抓取间隔与上次抓取推导，不是另一份状态。"
+      description="直接在这里调整调度：点间隔可以改，暂停后这个源不再参与后台抓取。全局开关与扫描周期在设置页的 RSS 面板。"
       size="large"
       onClose={() => setShowSchedule(false)}
       footer={<>
@@ -412,13 +441,13 @@ export function RSSPage() {
           </div>
 
           {!schedule.enabled && schedule.local_count > 0 && <Notice
-            message="后台抓取已关闭：这些源只会在你手动点「抓取」时更新。要在 config.json 里把 rss.background_fetch_enabled 设为 true。"
+            message="后台抓取已关闭（全局）：这些源只会在你手动点「抓取」时更新。到设置页的 RSS 面板打开「启用后台抓取」。"
             tone="info"
           />}
 
           {schedule.feeds.length > 0 && <div className="table-wrap" style={{ marginTop: 16 }}>
             <table className="data-table">
-              <thead><tr><th>订阅源</th><th>执行者</th><th>间隔</th><th>上次抓取</th><th>下次抓取</th><th>状态</th></tr></thead>
+              <thead><tr><th>订阅源</th><th>执行者</th><th>间隔</th><th>上次抓取</th><th>下次抓取</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
                 {schedule.feeds.map(item => <tr key={item.feed_id}>
                   <td data-label="订阅源">
@@ -430,17 +459,72 @@ export function RSSPage() {
                       {item.fetch_by === 'extension' ? 'Extension' : '本机'}
                     </StatusBadge>
                   </td>
-                  <td data-label="间隔">{formatInterval(item.interval_seconds)}</td>
+                  <td data-label="间隔">
+                    {intervalDraft?.feedID === item.feed_id
+                      ? <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <input
+                          autoFocus
+                          type="number"
+                          min={60}
+                          step={60}
+                          value={intervalDraft.value}
+                          onChange={event => setIntervalDraft({ feedID: item.feed_id, value: event.target.value })}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter') { event.preventDefault(); void saveInterval(item.feed_id) }
+                            if (event.key === 'Escape') setIntervalDraft(null)
+                          }}
+                          aria-label="新的抓取间隔（秒）"
+                          style={{ width: 84 }}
+                        />
+                        <button type="button" className="button button--primary" disabled={busy} onClick={() => void saveInterval(item.feed_id)}>存</button>
+                        <button type="button" className="button button--quiet" onClick={() => setIntervalDraft(null)}>取消</button>
+                      </div>
+                      : <button
+                        type="button"
+                        className="button button--quiet"
+                        title="点击修改抓取间隔"
+                        onClick={() => setIntervalDraft({ feedID: item.feed_id, value: String(item.interval_seconds) })}
+                      >
+                        {formatInterval(item.interval_seconds)}
+                      </button>}
+                  </td>
                   <td data-label="上次抓取">{item.last_fetch_at ? formatDateTime(new Date(item.last_fetch_at * 1000).toISOString()) : '从未'}</td>
                   <td data-label="下次抓取">{item.next_fetch_at ? formatDateTime(new Date(item.next_fetch_at * 1000).toISOString()) : (item.fetch_by === 'local' ? '等待首轮' : '—')}</td>
                   <td data-label="状态">
                     {item.fetch_by === 'extension'
                       ? <StatusBadge tone="neutral">不参与本机调度</StatusBadge>
-                      : !schedule.enabled
-                        ? <StatusBadge tone="warning">总开关关闭</StatusBadge>
-                        : item.due
-                          ? <StatusBadge tone="warning">已到期 {formatInterval(item.overdue_seconds)}</StatusBadge>
-                          : <StatusBadge tone="success">等待中</StatusBadge>}
+                      : !item.fetch_enabled
+                        ? <StatusBadge tone="neutral">已暂停</StatusBadge>
+                        : !schedule.enabled
+                          ? <StatusBadge tone="warning">总开关关闭</StatusBadge>
+                          : item.due
+                            ? <StatusBadge tone="warning">已到期 {formatInterval(item.overdue_seconds)}</StatusBadge>
+                            : <StatusBadge tone="success">等待中</StatusBadge>}
+                  </td>
+                  <td data-label="操作">
+                    <div className="table-actions">
+                      <button
+                        type="button"
+                        className="button button--quiet"
+                        disabled={busy || !item.fetch_enabled || item.fetch_by === 'extension'}
+                        title={item.fetch_by === 'extension' ? '这个源由 Extension 抓取，请到对面触发' : item.fetch_enabled ? '立即抓一次' : '先恢复调度'}
+                        onClick={() => void run(() => rssApi.fetchFeed(item.feed_id), `已抓取「${item.title || item.url}」`, true)}
+                      >
+                        抓取
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--quiet"
+                        disabled={busy}
+                        onClick={() => void patchSchedule(
+                          item.feed_id,
+                          { fetch_enabled: !item.fetch_enabled },
+                          item.fetch_enabled ? `已暂停「${item.title || item.url}」` : `已恢复「${item.title || item.url}」`,
+                        )}
+                      >
+                        {item.fetch_enabled ? '暂停' : '恢复'}
+                      </button>
+                    </div>
                   </td>
                 </tr>)}
               </tbody>
@@ -597,10 +681,12 @@ function formatInterval(seconds: number): string {
 function FeedNavItem({ feed, active, onSelect }: { feed: RSSFeed; active: boolean; onSelect: () => void }) {
   const title = feed.title || feed.url
   const remote = feed.fetch_by === 'extension'
+  const paused = feed.fetch_enabled === false
   const hint = [
     feed.remark,
     feed.error_msg ? `抓取失败：${feed.error_msg}` : '',
     remote ? '由 Extension 抓取，本机不参与' : '',
+    paused ? '调度已暂停' : '',
   ].filter(Boolean).join(' · ')
 
   return <button
@@ -609,9 +695,9 @@ function FeedNavItem({ feed, active, onSelect }: { feed: RSSFeed; active: boolea
     onClick={onSelect}
     title={hint || title}
   >
-    <span className={`status-dot ${remote ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
+    <span className={`status-dot ${remote || paused ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
     <span className="rss-nav-label">{title}</span>
     {feed.remark && <span className="rss-nav-remark">{feed.remark}</span>}
-    <span className="rss-nav-count">{remote ? '远端' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
+    <span className="rss-nav-count">{remote ? '远端' : paused ? '已暂停' : feed.last_fetch ? relativeTime(feed.last_fetch) : '未抓取'}</span>
   </button>
 }

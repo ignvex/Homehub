@@ -33,6 +33,8 @@ type createRSSFeedRequest struct {
 	GroupID *uint64 `json:"group_id" form:"group_id"`
 	// FetchNow 显式要求保存后抓一次（异步）。
 	FetchNow bool `json:"fetch_now" form:"fetch_now"`
+	// FetchEnabled 为 false 时保存但不参与调度。省略即为 true。
+	FetchEnabled *bool `json:"fetch_enabled" form:"fetch_enabled"`
 }
 
 // optionalGroupID 区分 group_id 的三种 JSON 状态：字段缺失、显式 null、具体值。
@@ -66,6 +68,8 @@ type updateRSSFeedRequest struct {
 	Remark        *string `json:"remark"`
 	FetchInterval *int    `json:"fetch_interval"`
 	FetchBy       *string `json:"fetch_by"`
+	// FetchEnabled 暂停/恢复这个源的调度。省略表示不改。
+	FetchEnabled *bool `json:"fetch_enabled"`
 	// group_id 传 null 表示清空分组，省略则保持原分组不变。
 	GroupID optionalGroupID `json:"group_id" swaggertype:"integer" extensions:"x-nullable"`
 }
@@ -149,6 +153,7 @@ func RSSCreateFeed(c *gin.Context) {
 		FetchBy:       req.FetchBy,
 		GroupID:       req.GroupID,
 		FetchNow:      req.FetchNow,
+		FetchEnabled:  req.FetchEnabled,
 	})
 	if err != nil {
 		FailBadRequest(c, err.Error())
@@ -188,6 +193,7 @@ func RSSUpdateFeed(c *gin.Context) {
 		Remark:        req.Remark,
 		FetchInterval: req.FetchInterval,
 		FetchBy:       req.FetchBy,
+		FetchEnabled:  req.FetchEnabled,
 		Group: service.GroupUpdate{
 			Set:   req.GroupID.Set,
 			Value: req.GroupID.Value,

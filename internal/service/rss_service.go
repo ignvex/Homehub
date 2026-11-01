@@ -121,6 +121,8 @@ type CreateFeedInput struct {
 	// FetchBy 为空时默认 local。
 	FetchBy *string
 	GroupID *uint64
+	// FetchEnabled 为 nil 时新建默认启用。
+	FetchEnabled *bool
 	// FetchNow 为真时在保存后异步抓一次。
 	//
 	// 默认 false：保存就是保存。创建时同步抓取意味着「网络不通就存不了
@@ -167,17 +169,36 @@ func (s *RSSService) CreateFeed(in CreateFeedInput) (*model.RSSFeed, error) {
 	}
 
 	// URL 与条目 link 一样带 btree 唯一索引，受索引单键字节上限约束。
+	// 默认启用：新建的源不参与调度会让人以为没保存成功。
+	//
+	// 单独留一个变量记意图：GORM 在 Create 之后会把带 default 标签的
+	// 零值字段回填成数据库默认值，届时 rssFeed.FetchEnabled 已经变成
+	// true，再读它就判断不出用户原本要的是什么。
+	wantEnabled := in.FetchEnabled == nil || *in.FetchEnabled
+
 	rssFeed := model.RSSFeed{
 		URL:           model.TruncateIndexed(urlStr, 2048),
 		Title:         model.TruncateRunes(derefString(in.Title), 255),
 		Remark:        model.TruncateRunes(derefString(in.Remark), 500),
 		FetchInterval: interval,
 		FetchBy:       fetchBy,
+		FetchEnabled:  wantEnabled,
 		GroupID:       in.GroupID,
 	}
 
 	if err := s.db.Create(&rssFeed).Error; err != nil {
 		return nil, fmt.Errorf("创建订阅源失败: %w", err)
+	}
+
+	// GORM 对带 `default:true` 的字段：值为零值时**从 INSERT 里剔除**，
+	// 让数据库用默认值，于是「创建时就暂停」会被静默改成启用。
+	// 实测确认过（Select("*") 与 BeforeCreate+SetColumn 都拦不住），
+	// 所以这里补一次显式 UPDATE——只在罕见路径多一次写。
+	if !wantEnabled {
+		if err := s.db.Model(&rssFeed).Update("fetch_enabled", false).Error; err != nil {
+			return nil, fmt.Errorf("创建订阅源失败: %w", err)
+		}
+		rssFeed.FetchEnabled = false
 	}
 
 	// 只有显式要求时才抓。用独立 ctx：请求返回后仍要继续，
@@ -226,7 +247,9 @@ type FeedUpdate struct {
 	Remark        *string
 	FetchInterval *int
 	FetchBy       *string
-	Group         GroupUpdate
+	// FetchEnabled 控制是否参与后台调度。
+	FetchEnabled *bool
+	Group        GroupUpdate
 }
 
 // buildFeedUpdates 把更新意图翻译成 UPDATE 的 SET 子句。
@@ -255,6 +278,9 @@ func buildFeedUpdates(u FeedUpdate) (map[string]interface{}, error) {
 				model.FetchByLocal, model.FetchByExtension)
 		}
 		updates["fetch_by"] = fetchBy
+	}
+	if u.FetchEnabled != nil {
+		updates["fetch_enabled"] = *u.FetchEnabled
 	}
 	if u.Group.Set {
 		if u.Group.Value == nil {
@@ -834,6 +860,12 @@ func (s *RSSService) FetchAll(ctx context.Context) error {
 		// 交给 Extension 抓的源，本机不抓。
 		// 两边都抓会得到两份互不相通的条目，而使用者只会在一处阅读。
 		if model.NormalizeFetchBy(feed.FetchBy) == model.FetchByExtension {
+			continue
+		}
+		// 被暂停的源不抓。暂停的判断放在这里而不是查询里，是为了让
+		// Schedule 能显示「这个源是启用中但还没到期」与「被手动暂停」
+		// 的区别——两者在界面上是完全不同的状态。
+		if !feed.FetchEnabled {
 			continue
 		}
 		interval := feed.FetchInterval
@@ -1490,10 +1522,14 @@ func (s *RSSService) autoLockMagnets(now time.Time) error {
 // 「下次什么时候抓」「这个源是不是已经到期很久没动」——看不到就等于
 // 没有，使用者的感受就是「定时抓取几乎没功能」。
 type FeedSchedule struct {
-	FeedID    uint64 `json:"feed_id"`
-	Title     string `json:"title"`
-	URL       string `json:"url"`
-	FetchBy   string `json:"fetch_by"`
+	FeedID  uint64 `json:"feed_id"`
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	FetchBy string `json:"fetch_by"`
+	// FetchEnabled 是数据库里的单源开关（手动暂停时为 false）。
+	FetchEnabled bool `json:"fetch_enabled"`
+	// Enabled 是综合判定：全局开关打开、由本机抓、且单源未被暂停。
+	// 界面上要同时看到这两个，才能分清「我停的」与「系统没开」。
 	Enabled   bool   `json:"enabled"`
 	Interval  int    `json:"interval_seconds"`
 	LastFetch *int64 `json:"last_fetch_at"`
@@ -1555,14 +1591,15 @@ func (s *RSSService) Schedule() (*ScheduleState, error) {
 		}
 
 		item := FeedSchedule{
-			FeedID:   feed.ID,
-			Title:    feed.Title,
-			URL:      feed.URL,
-			FetchBy:  fetchBy,
-			Interval: interval,
-			ErrorMsg: feed.ErrorMsg,
-			// 只有本机负责抓的源才由本机调度。
-			Enabled: state.Enabled && fetchBy == model.FetchByLocal,
+			FeedID:       feed.ID,
+			Title:        feed.Title,
+			URL:          feed.URL,
+			FetchBy:      fetchBy,
+			FetchEnabled: feed.FetchEnabled,
+			Interval:     interval,
+			ErrorMsg:     feed.ErrorMsg,
+			// 三个条件全部成立才会被本机后台抓：总开关开、由本机抓、单源未暂停。
+			Enabled: state.Enabled && fetchBy == model.FetchByLocal && feed.FetchEnabled,
 		}
 
 		if fetchBy == model.FetchByLocal {
