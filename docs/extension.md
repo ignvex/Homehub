@@ -1,7 +1,27 @@
 # HomeHub Extension 接入
 
+> **⚠️ 本文描述的 `/fetch` 与 `/avatar` 端点，在当前 HomeHub Extension
+> 版本上并不存在。**
+>
+> 2026-11 实测 `https://www.ignvex.cc`：`/fetch` 与 `/avatar/{hash}` 都返回
+> `200 text/html` 的 SPA 首页（630 字节），真实存在的公开端点是
+> `/healthz` 与 `/readyz`（JSON）。按照本文配置 `rss.extension_url` 或
+> `gravatar.extension_url`，结果必然是抓不到东西。
+>
+> 现在的 Extension 是**自己抓取**的（见其 `docs/rss.md` 第 0 节：订阅由
+> 网页端或宿主推送进入，由 Extension 本地抓取与本地化），所以「代抓」
+> 这个模型已经不适用了。真正可用的是签名通道，见
+> [hub-integration.md](hub-integration.md) 与 [extension-hub.md](extension-hub.md)。
+>
+> 本文保留下来是作为**契约参考**：如果将来要实现一个只做 `/fetch` +
+> `/avatar` 的轻量代理，下面这套协议仍然适用。但别拿它去配当前的 Extension。
+>
+> 已做的防御：HomeHub 在两条路径上都不会静默接受 HTML——RSS 报「返回的是
+> HTML 而不是 feed」，Gravatar 报「头像端点返回了 HTML 页面」，不再把
+> 排查方向引到 XML 或图片格式上。
+
 `homehub-extension` 是独立部署的外部资源代理服务。本文定义它与 HomeHub 的
-通信契约，目前包含两类能力：
+通信契约，曾经包含两类能力：
 
 - **RSS 抓取**（`/fetch`）：HomeHub 把订阅源抓取交给它
 - **Gravatar 头像代理**（`/avatar/{hash}`）：HomeHub 把头像下载交给它

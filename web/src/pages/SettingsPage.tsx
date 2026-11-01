@@ -521,6 +521,10 @@ export function SettingsPage() {
                 onChange={event => setSecrets(current => ({ ...current, rss_extension_token: event.target.value }))} />
             </Field>
           </div>
+          <Notice
+            message="当前 HomeHub Extension 版本不提供 /fetch 端点：填了这里的地址会拿到一个 HTML 页面并报「返回 HTML 而不是 feed」。留空则由本机抓取（需要代理时在下面配代理链）。要让 Extension 抓取，请用本页最后的「订阅镜像」通道，并在订阅源上把「由谁抓取」设为 Extension。"
+            tone="info"
+          />
         </Section>
 
         <Section
