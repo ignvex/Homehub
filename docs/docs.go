@@ -2505,6 +2505,59 @@ const docTemplate = `{
                 }
             }
         },
+        "/rss/entries/{id}/content": {
+            "get": {
+                "description": "按需返回清洗后的正文 HTML。列表接口只给纯文本摘要，展开条目时才调此端点。",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "获取条目正文",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "正文",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "无效的条目 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "条目不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/rss/entries/{id}/magnet/lock": {
             "put": {
                 "produces": [
@@ -2659,6 +2712,58 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "无效的 URL",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/feeds/batch": {
+            "put": {
+                "description": "一次事务内把同一组变更应用到多个订阅源，语义与单条更新一致；不存在的 ID 被忽略",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "批量更新订阅源",
+                "parameters": [
+                    {
+                        "description": "批量更新请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.batchUpdateRSSFeedsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "实际更新的条数",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "未选中订阅源或参数无效",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -3865,6 +3970,42 @@ const docTemplate = `{
                 }
             }
         },
+        "handler.batchUpdateRSSFeedsRequest": {
+            "type": "object",
+            "required": [
+                "ids"
+            ],
+            "properties": {
+                "fetch_by": {
+                    "type": "string"
+                },
+                "fetch_enabled": {
+                    "description": "FetchEnabled 暂停/恢复这个源的调度。省略表示不改。",
+                    "type": "boolean"
+                },
+                "fetch_interval": {
+                    "type": "integer"
+                },
+                "group_id": {
+                    "description": "group_id 传 null 表示清空分组，省略则保持原分组不变。",
+                    "type": "integer",
+                    "x-nullable": true
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "remark": {
+                    "type": "string"
+                },
+                "title": {
+                    "description": "指针即三态：省略=不改，传值=写入，空串=清空（title / remark 适用）。",
+                    "type": "string"
+                }
+            }
+        },
         "handler.changePasswordRequest": {
             "type": "object",
             "required": [
@@ -5017,7 +5158,7 @@ const docTemplate = `{
                 "author": {
                     "type": "string"
                 },
-                "content": {
+                "excerpt": {
                     "type": "string"
                 },
                 "feed_ids": {
@@ -5028,6 +5169,9 @@ const docTemplate = `{
                 },
                 "fetched_at": {
                     "type": "string"
+                },
+                "has_content": {
+                    "type": "boolean"
                 },
                 "id": {
                     "type": "integer"
