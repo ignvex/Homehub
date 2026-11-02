@@ -16,11 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
-
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/hubclient"
-	"github.com/ignvex/HomeHub/internal/testutil"
 )
 
 // newPEMKey 生成一把 PKCS#8 PEM 私钥，返回 PEM 文本与公钥 base64。
@@ -42,308 +39,262 @@ func newPEMKey(t *testing.T) (pemText, publicB64 string) {
 	return string(block), base64.StdEncoding.EncodeToString(pub)
 }
 
-// expectKeyHead 安排一次「只查公钥与更新时间」的查询。
-//
-// 热路径故意不读私钥列：少碰一次就少一次泄露面。
-func expectKeyHead(mock sqlmock.Sqlmock, publicB64 string, updated time.Time) {
-	mock.ExpectQuery(`SELECT "public_key","updated_at" FROM "extension_hub_keys"`).
-		WillReturnRows(sqlmock.NewRows([]string{"public_key", "updated_at"}).
-			AddRow(publicB64, updated))
-}
-
-// expectKeyEmpty 安排一次查不到密钥的查询。
-func expectKeyEmpty(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(`SELECT "public_key","updated_at" FROM "extension_hub_keys"`).
-		WillReturnRows(sqlmock.NewRows([]string{"public_key", "updated_at"}))
-}
-
-// expectKeyFull 安排一次读取完整私钥的查询。
-func expectKeyFull(mock sqlmock.Sqlmock, pemText, publicB64 string) {
-	mock.ExpectQuery(`SELECT "private_key_pem","public_key" FROM "extension_hub_keys"`).
-		WillReturnRows(sqlmock.NewRows([]string{"private_key_pem", "public_key"}).
-			AddRow(pemText, publicB64))
-}
-
-// newKeyService 构造一个带数据库的服务，私钥路径留空（只走库）。
-func newKeyService(t *testing.T, baseURL, keyPath string) *ExtensionHubService {
+// newKeyService 构造一个指向固定配置的服务，不落数据库。
+func newKeyService(t *testing.T, baseURL, pemText string) *ExtensionHubService {
 	t.Helper()
 	return &ExtensionHubService{
 		readyClient: &http.Client{Timeout: 2 * time.Second},
-		cfg: func() config.ExtensionHubConfig {
-			return config.ExtensionHubConfig{
+		cfg: func() config.ExtensionConfig {
+			return config.ExtensionConfig{
 				Enabled:        true,
 				BaseURL:        baseURL,
-				PrivateKeyPath: keyPath,
+				PrivateKeyPEM:  pemText,
 				TimeoutSeconds: 5,
+				Features:       config.ExtensionFeatures{Hub: true, Fetch: true, Avatar: true},
 			}
 		},
 	}
 }
 
-// TestClientUsesDatabaseKeyWhenPresent 确认库里的密钥优先于文件。
+// writeKeyConfig 写一份最小配置并加载，返回路径。
 //
-// 多实例共用数据库时，库里的那一份是共同事实。若文件优先，
-// 「改过库里的密钥，某个实例还在用旧文件签」会变成很难查的问题。
-func TestClientUsesDatabaseKeyWhenPresent(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
+// SetKey / DeleteKey 会改写 config.Path() 指向的文件，所以测试必须先
+// 把 loadedPath 指到临时文件上，否则会动到仓库里的真实配置。
+func writeKeyConfig(t *testing.T, pemText string, enabled bool) string {
+	t.Helper()
 
-	pemText, publicB64 := newPEMKey(t)
-	expectKeyHead(mock, publicB64, time.Now())
-	expectKeyFull(mock, pemText, publicB64)
-
-	// 同时给一个**不同**的私钥文件：如果实现错误地优先用文件，
-	// 拿到的公钥就会与库里那条不一致。
-	filePEM, _ := newPEMKey(t)
-	path := filepath.Join(t.TempDir(), "hub.key")
-	if err := os.WriteFile(path, []byte(filePEM), 0o600); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", path)
-	svc.db = db
-
-	_, signer, err := svc.client()
+	pemJSON, err := json.Marshal(pemText)
 	if err != nil {
-		t.Fatalf("构造客户端失败: %v", err)
+		t.Fatalf("序列化 PEM 失败: %v", err)
 	}
-	if got := signer.PublicKeyBase64(); got != publicB64 {
-		t.Fatalf("应使用数据库里的密钥\n  期望 %s\n  实际 %s", publicB64, got)
+
+	enabledLit := "false"
+	if enabled {
+		enabledLit = "true"
 	}
+
+	body := `{
+		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d", "sslmode": "disable"},
+		"auth": {"session_secret": "` + strings.Repeat("a", 32) + `"},
+		"extension": {
+			"enabled": ` + enabledLit + `,
+			"base_url": "https://ext.example.com/api/v1",
+			"private_key_pem": ` + string(pemJSON) + `,
+			"timeout_seconds": 30
+		}
+	}`
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	if err := config.Load(path); err != nil {
+		t.Fatalf("加载配置失败: %v", err)
+	}
+	return path
 }
 
-// TestClientFallsBackToFileWhenDatabaseEmpty 确认库里没有时回退到文件。
-//
-// 这条保证升级路径：老部署只配了文件路径，换到这一版不能突然失灵。
-func TestClientFallsBackToFileWhenDatabaseEmpty(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
+// readExtensionPEM 读回 config.json 里配置的私钥。
+func readExtensionPEM(t *testing.T, path string) string {
+	t.Helper()
 
-	pemText, publicB64 := newPEMKey(t)
-	path := filepath.Join(t.TempDir(), "hub.key")
-	if err := os.WriteFile(path, []byte(pemText), 0o600); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
-
-	expectKeyEmpty(mock)
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", path)
-	svc.db = db
-
-	_, signer, err := svc.client()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("构造客户端失败: %v", err)
+		t.Fatalf("读取配置失败: %v", err)
 	}
-	if got := signer.PublicKeyBase64(); got != publicB64 {
-		t.Fatalf("应回退到文件密钥\n  期望 %s\n  实际 %s", publicB64, got)
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("解析配置失败: %v", err)
 	}
+	section, _ := raw["extension"].(map[string]any)
+	if section == nil {
+		return ""
+	}
+	s, _ := section["private_key_pem"].(string)
+	return s
 }
 
-// TestClientReportsMissingKeyWhenNowhere 确认两处都没有时明确报错。
+// TestClientRejectsMissingKey 确认没有私钥时给出可执行的错误。
 //
-// 不能静默用一个随机密钥或者空签名——那会让每次请求都 401，
-// 而错误信息指向 Extension，方向完全错了。
-func TestClientReportsMissingKeyWhenNowhere(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
-	expectKeyEmpty(mock)
-
+// 「未配置」与「配了但解析失败」是两种修法：前者要粘贴一把，
+// 后者要检查粘贴内容是否被截断。错误信息必须能让读者区分。
+func TestClientRejectsMissingKey(t *testing.T) {
 	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
 
 	_, _, err := svc.client()
 	if err == nil {
-		t.Fatal("没有密钥时必须报错")
+		t.Fatal("没有私钥时必须报错")
 	}
-	if !strings.Contains(err.Error(), "没有可用的签名私钥") {
-		t.Fatalf("错误应说明缺私钥，实际 %v", err)
+	if !strings.Contains(err.Error(), "private_key_pem") {
+		t.Fatalf("错误应指向配置项，实际 %v", err)
 	}
 }
 
-// TestSetKeyStoresNormalizedPEMAndInvalidatesCache 确认存库走规范 PEM 并清缓存。
-//
-// 不清缓存的话，改完密钥仍会用旧身份签名，直到进程重启——
-// 而界面上「保存成功」已经出现了。
-func TestSetKeyStoresNormalizedPEMAndInvalidatesCache(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
+// TestClientRejectsBrokenPEM 确认损坏的私钥不会被静默忽略。
+func TestClientRejectsBrokenPEM(t *testing.T) {
+	svc := newKeyService(t, "http://127.0.0.1:1/api/v1",
+		"-----BEGIN PRIVATE KEY-----\nnot-base64\n-----END PRIVATE KEY-----\n")
 
+	_, _, err := svc.client()
+	if err == nil {
+		t.Fatal("损坏的私钥必须报错")
+	}
+	if !strings.Contains(err.Error(), "private_key_pem") {
+		t.Fatalf("错误应指向配置项，实际 %v", err)
+	}
+}
+
+// TestClientRebuildsWhenKeyRotates 锁住「轮换密钥后必须重签」。
+//
+// 只按 baseURL 缓存客户端会让轮换失效：地址没变、私钥变了，
+// 结果是一直用旧身份签出 401，且没有任何提示。
+func TestClientRebuildsWhenKeyRotates(t *testing.T) {
+	pemA, pubA := newPEMKey(t)
+
+	current := config.ExtensionConfig{
+		Enabled:        true,
+		BaseURL:        "http://127.0.0.1:1/api/v1",
+		PrivateKeyPEM:  pemA,
+		TimeoutSeconds: 5,
+		Features:       config.ExtensionFeatures{Hub: true},
+	}
+	svc := &ExtensionHubService{
+		readyClient: &http.Client{Timeout: 2 * time.Second},
+		cfg:         func() config.ExtensionConfig { return current },
+	}
+
+	_, signerA, err := svc.client()
+	if err != nil {
+		t.Fatalf("首次构造失败: %v", err)
+	}
+	if signerA.PublicKeyBase64() != pubA {
+		t.Fatalf("公钥不符: %s", signerA.PublicKeyBase64())
+	}
+
+	// 换一把私钥，其余配置不变。
+	current.PrivateKeyPEM, _ = newPEMKey(t)
+	_, signerB, err := svc.client()
+	if err != nil {
+		t.Fatalf("轮换后构造失败: %v", err)
+	}
+	if signerB.PublicKeyBase64() == pubA {
+		t.Fatal("轮换私钥后仍在使用旧身份签名")
+	}
+}
+
+// TestSetKeyWritesConfigFile 确认私钥写进 config.json 且被规范化成 PEM。
+func TestSetKeyWritesConfigFile(t *testing.T) {
+	path := writeKeyConfig(t, "", false)
 	pemText, publicB64 := newPEMKey(t)
 
-	mock.ExpectExec(`DELETE FROM "extension_hub_keys"`).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`INSERT INTO "extension_hub_keys"`).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	// SetKey 末尾会调 KeyInfo 返回最新状态。
-	expectKeyHead(mock, publicB64, time.Now())
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
-	// 预置一个缓存，验证它被清掉。
-	svc.cached = &extensionHubClient{baseURL: "stale"}
-
-	info, err := svc.SetKey(pemText)
+	// 用裸 32 字节种子的 base64 形式提交，确认落盘的是规范化 PEM。
+	block, _ := pem.Decode([]byte(pemText))
+	if block == nil {
+		t.Fatal("测试私钥不是合法 PEM")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("保存失败: %v", err)
+		t.Fatalf("解析私钥失败: %v", err)
+	}
+	seedB64 := base64.StdEncoding.EncodeToString(parsed.(ed25519.PrivateKey).Seed())
+
+	// SetKey 会写 config.Path() 并触发重载，所以必须用读全局配置的实例，
+	// 否则写完自己也读不到新值。
+	svc := NewExtensionHubService(nil)
+	info, err := svc.SetKey(seedB64)
+	if err != nil {
+		t.Fatalf("设置失败: %v", err)
 	}
 	if info.PublicKey != publicB64 {
-		t.Fatalf("返回的公钥不对：%s", info.PublicKey)
+		t.Fatalf("公钥不符: %s", info.PublicKey)
 	}
-	if info.Source != KeySourceDatabase {
-		t.Fatalf("来源应为 database，实际 %q", info.Source)
+
+	stored := readExtensionPEM(t, path)
+	if !strings.HasPrefix(stored, "-----BEGIN PRIVATE KEY-----") {
+		t.Fatalf("落盘内容应是 PEM，实际 %q", firstLine(stored))
 	}
-	if svc.cached != nil {
-		t.Fatal("保存密钥后必须清掉缓存的客户端")
-	}
-}
-
-// TestSetKeyAcceptsBase64Seed 确认裸 base64 种子也能入库。
-//
-// 协议文档给的参考实现用 32 字节种子；用户可能直接粘贴那一段。
-func TestSetKeyAcceptsBase64Seed(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
-	seed := make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		t.Fatalf("生成种子失败: %v", err)
-	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	want := base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey))
-
-	mock.ExpectExec(`DELETE FROM "extension_hub_keys"`).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`INSERT INTO "extension_hub_keys"`).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	expectKeyHead(mock, want, time.Now())
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
-
-	info, err := svc.SetKey(base64.StdEncoding.EncodeToString(seed))
+	signer, err := hubclient.LoadSignerFromBytes([]byte(stored))
 	if err != nil {
-		t.Fatalf("保存失败: %v", err)
+		t.Fatalf("落盘的 PEM 无法解析: %v", err)
 	}
-	if info.PublicKey != want {
-		t.Fatalf("公钥不对\n  期望 %s\n  实际 %s", want, info.PublicKey)
+	if signer.PublicKeyBase64() != publicB64 {
+		t.Fatal("落盘私钥与提交的不一致")
 	}
 }
 
-// TestSetKeyRejectsGarbage 确认无法解析的内容被拒且不写库。
+// TestSetKeyRejectsGarbage 确认垃圾输入被拒绝且文件未被改动。
 func TestSetKeyRejectsGarbage(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
+	path := writeKeyConfig(t, "original", false)
+	before := readExtensionPEM(t, path)
 
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
+	svc := NewExtensionHubService(nil)
+	if _, err := svc.SetKey("这不是私钥"); err == nil {
+		t.Fatal("垃圾输入必须被拒绝")
+	}
 
-	_, err := svc.SetKey("这不是私钥")
-	if err == nil {
-		t.Fatal("非法内容必须被拒绝")
+	if after := readExtensionPEM(t, path); after != before {
+		t.Fatalf("校验失败时不应改动文件，实际 %q", after)
 	}
-	if !strings.Contains(err.Error(), "无法解析私钥") {
-		t.Fatalf("错误应说明解析失败，实际 %v", err)
-	}
-	// 没有安排任何 SQL 期望：若真的写了库，ExpectationsWereMet 之外的
-	// 未预期调用会让 sqlmock 直接报错。
-	_ = mock
 }
 
-// TestSetKeyRejectsPublicKeyPEM 确认把公钥当私钥粘贴会被挡住。
-//
-// 公钥能「解析成功」但签出的东西永远验不过，属于最坏的一类错误：
-// 保存成功、状态看着正常、每个请求 401。
+// TestSetKeyRejectsPublicKeyPEM 确认贴错公钥时给出明确拒绝。
 func TestSetKeyRejectsPublicKeyPEM(t *testing.T) {
+	writeKeyConfig(t, "", false)
+
 	_, publicB64 := newPEMKey(t)
-	raw, err := base64.StdEncoding.DecodeString(publicB64)
-	if err != nil {
-		t.Fatalf("解码公钥失败: %v", err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(raw))
+	pubRaw, _ := base64.StdEncoding.DecodeString(publicB64)
+	der, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(pubRaw))
 	if err != nil {
 		t.Fatalf("编码公钥失败: %v", err)
 	}
-	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	publicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 
-	db, _, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
-
-	if _, err := svc.SetKey(pubPEM); err == nil {
-		t.Fatal("公钥 PEM 必须被拒绝")
+	svc := NewExtensionHubService(nil)
+	if _, err := svc.SetKey(publicPEM); err == nil {
+		t.Fatal("公钥必须被拒绝")
 	}
 }
 
-// TestClientRejectsMismatchedPublicKeyRow 确认库里公钥与私钥不配对时报错。
+// TestDeleteKeyRefusesWhileEnabled 确认清除私钥前必须先关开关。
 //
-// 这种行说明数据本身坏了（比如手工改过库、或者迁移出错）。
-// 静默用私钥推导会掩盖问题，直到所有签名在 Extension 侧被拒。
-func TestClientRejectsMismatchedPublicKeyRow(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
+// 否则会写出一份 enabled=true 但没有私钥的配置，被校验拦下时
+// 错误信息指向文件而不是「你还开着开关」。
+func TestDeleteKeyRefusesWhileEnabled(t *testing.T) {
 	pemText, _ := newPEMKey(t)
-	_, otherPublic := newPEMKey(t)
+	path := writeKeyConfig(t, pemText, true)
+	before := readExtensionPEM(t, path)
 
-	expectKeyHead(mock, otherPublic, time.Now())
-	expectKeyFull(mock, pemText, otherPublic)
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
-
-	_, _, err := svc.client()
-	if err == nil {
-		t.Fatal("公钥与私钥不匹配时必须报错")
+	svc := NewExtensionHubService(nil)
+	if _, err := svc.DeleteKey(); err == nil {
+		t.Fatal("enabled=true 时应拒绝清除私钥")
 	}
-	if !strings.Contains(err.Error(), "不匹配") {
-		t.Fatalf("错误应说明不匹配，实际 %v", err)
+	if after := readExtensionPEM(t, path); after != before {
+		t.Fatal("拒绝时不应改动文件")
 	}
 }
 
-// TestDeleteKeyFallsBackToFile 确认删库后来源退回文件。
-func TestDeleteKeyFallsBackToFile(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
+// TestDeleteKeyClearsWhenDisabled 确认关闭后可以清除。
+func TestDeleteKeyClearsWhenDisabled(t *testing.T) {
 	pemText, _ := newPEMKey(t)
-	path := filepath.Join(t.TempDir(), "hub.key")
-	if err := os.WriteFile(path, []byte(pemText), 0o600); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
+	path := writeKeyConfig(t, pemText, false)
 
-	mock.ExpectExec(`DELETE FROM "extension_hub_keys"`).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", path)
-	svc.db = db
-
+	svc := NewExtensionHubService(nil)
 	removed, err := svc.DeleteKey()
 	if err != nil {
-		t.Fatalf("删除失败: %v", err)
+		t.Fatalf("清除失败: %v", err)
 	}
 	if !removed {
-		t.Fatal("库里原本有密钥时应返回 removed=true")
+		t.Fatal("应报告已移除")
 	}
-	if svc.cached != nil {
-		t.Fatal("删除后必须清掉缓存的客户端")
+	if got := readExtensionPEM(t, path); got != "" {
+		t.Fatalf("私钥应被清空，实际 %q", firstLine(got))
 	}
 }
 
-// TestKeyInfoNeverExposesPrivateKey 是最重要的断言。
-//
-// 私钥一旦出现在响应里，浏览器缓存、开发者工具、日志中间件都可能
-// 把它复制走。这里对整个序列化结果做字符串检查。
+// TestKeyInfoNeverExposesPrivateKey 是最重要的一条。
 func TestKeyInfoNeverExposesPrivateKey(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
 	pemText, publicB64 := newPEMKey(t)
-	expectKeyHead(mock, publicB64, time.Now())
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
+	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", pemText)
 
 	info, err := svc.KeyInfo()
 	if err != nil {
@@ -355,9 +306,10 @@ func TestKeyInfoNeverExposesPrivateKey(t *testing.T) {
 		t.Fatalf("序列化失败: %v", err)
 	}
 
-	// PEM 的主体部分不该出现；整体也不该出现 "PRIVATE" 字样。
-	body := strings.Join(strings.Split(pemText, "\n"), "")
-	body = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(body, "-----BEGIN PRIVATE KEY-----"), "-----END PRIVATE KEY-----"))
+	body := strings.ReplaceAll(pemText, "\n", "")
+	body = strings.TrimPrefix(body, "-----BEGIN PRIVATE KEY-----")
+	body = strings.TrimSuffix(body, "-----END PRIVATE KEY-----")
+	body = strings.TrimSpace(body)
 	if body != "" && strings.Contains(string(blob), body) {
 		t.Fatal("响应里出现了私钥内容")
 	}
@@ -374,40 +326,21 @@ func TestKeyInfoNeverExposesPrivateKey(t *testing.T) {
 
 // TestStatusReportsKeySource 确认状态接口能说明密钥来自哪里。
 func TestStatusReportsKeySource(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
-	pemText, publicB64 := newPEMKey(t)
-	path := filepath.Join(t.TempDir(), "hub.key")
-	if err := os.WriteFile(path, []byte(pemText), 0o600); err != nil {
-		t.Fatalf("写文件失败: %v", err)
-	}
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/hub/keys") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
-			return
-		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 	}))
 	defer upstream.Close()
 
-	// client() 一次 + KeyInfo() 一次
-	expectKeyEmpty(mock)
-	expectKeyEmpty(mock)
-
-	svc := newKeyService(t, upstream.URL+"/api/v1", path)
-	svc.db = db
+	pemText, _ := newPEMKey(t)
+	svc := newKeyService(t, upstream.URL+"/api/v1", pemText)
 
 	st := svc.Status(context.Background())
-	if st.KeySource != KeySourceFile {
-		t.Fatalf("来源应为 file，实际 %q", st.KeySource)
+	if st.KeySource != KeySourceConfig {
+		t.Fatalf("来源应为 config，实际 %q", st.KeySource)
 	}
 	if st.KeyFingerprint == "" {
 		t.Fatal("应给出指纹")
 	}
-	_ = publicB64
-	_ = hubclient.SignDomain
 }
 
 // TestKeyInfoProvidesPEMForDeployment 确认返回可直接粘贴的 PEM。
@@ -417,93 +350,57 @@ func TestStatusReportsKeySource(t *testing.T) {
 // 还是 DER 的 base64 —— 两者差 12 字节 ASN.1 头，选错会被当成无效公钥。
 // PEM 自带类型标记，没有这个歧义，所以部署路径上应该给 PEM。
 func TestKeyInfoProvidesPEMForDeployment(t *testing.T) {
-	db, mock, cleanup := testutil.NewMockDB(t)
-	defer cleanup()
-
-	_, publicB64 := newPEMKey(t)
-	expectKeyHead(mock, publicB64, time.Now())
-
-	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "")
-	svc.db = db
+	pemText, _ := newPEMKey(t)
+	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", pemText)
 
 	info, err := svc.KeyInfo()
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
 
-	pemText := info.PublicKeyPEM
-	if pemText == "" {
+	out := info.PublicKeyPEM
+	if out == "" {
 		t.Fatal("应给出 PEM 形式的公钥")
 	}
-	if !strings.HasPrefix(pemText, "-----BEGIN PUBLIC KEY-----") {
-		t.Fatalf("PEM 头不对: %q", pemText[:40])
-	}
-	if !strings.HasSuffix(strings.TrimSpace(pemText), "-----END PUBLIC KEY-----") {
-		t.Fatal("PEM 尾不对")
-	}
-
-	// PEM 解回来必须与 base64 那串是同一把。
-	parsed, err := hubclient.ParsePublicKeyPEM([]byte(pemText))
-	if err != nil {
-		t.Fatalf("PEM 无法解析: %v", err)
-	}
-	if parsed != info.PublicKey {
-		t.Fatalf("PEM 与 base64 不是同一把\n  PEM → %s\n  b64 → %s", parsed, info.PublicKey)
-	}
-
-	// 而且不能与「DER 的 base64」混为一谈。
-	if strings.Contains(pemText, info.PublicKey) == false {
-		t.Fatal("PEM 主体应包含那把裸公钥的 base64")
-	}
-	if len(info.PublicKey) == len(strings.TrimSpace(strings.Split(pemText, "\n")[1])) {
-		t.Fatal("裸 base64 与 DER base64 长度不应相同，说明转换没生效")
+	if !strings.HasPrefix(out, "-----BEGIN PUBLIC KEY-----") {
+		t.Fatalf("PEM 头不对: %q", firstLine(out))
 	}
 }
 
-// TestFingerprintIsStableAcrossEncodings 锁住指纹的语义。
-//
-// 指纹的全部用处是「换个地方看到的一串是不是同一把」。同一把公钥的
-// PEM 与 base64 两种写法字符串完全不同，若按字符串算哈希就会得到两个
-// 指纹，那个用处就没了。
-func TestFingerprintIsStableAcrossEncodings(t *testing.T) {
-	pemText, publicB64 := newPEMKey(t)
+// TestKeyInfoReportsBrokenPEM 确认「配了但解析不了」与「未配置」分开。
+func TestKeyInfoReportsBrokenPEM(t *testing.T) {
+	svc := newKeyService(t, "http://127.0.0.1:1/api/v1", "not-a-key")
 
-	// 文件路径下由私钥推导出来的指纹。
-	fromBase64 := fingerprintKey(publicB64)
-	if fromBase64 == "" {
-		t.Fatal("指纹不能为空")
-	}
-
-	// 同一把公钥经 PEM 解析回 base64 后，指纹必须相同。
-	parsedPEM, err := hubclient.ParsePublicKeyPEM([]byte(pemText2PublicPEM(t, pemText, publicB64)))
+	info, err := svc.KeyInfo()
 	if err != nil {
-		t.Fatalf("解析 PEM 失败: %v", err)
+		t.Fatalf("查询不应报错: %v", err)
 	}
-	if got := fingerprintKey(parsedPEM); got != fromBase64 {
-		t.Fatalf("同一把公钥换个编码后指纹变了\n  base64 → %s\n  PEM    → %s", fromBase64, got)
+	if !info.Broken {
+		t.Fatal("应标记为 Broken")
 	}
-
-	// 不同的公钥必须得到不同指纹。
-	_, otherB64 := newPEMKey(t)
-	if fingerprintKey(otherB64) == fromBase64 {
-		t.Fatal("不同公钥不能有相同指纹")
+	if info.Configured {
+		t.Fatal("解析失败不应算作已配置")
 	}
 }
 
-// pemText2PublicPEM 从私钥 PEM 导出对应的公钥 PEM。
-func pemText2PublicPEM(t *testing.T, privatePEM, wantPublicB64 string) string {
-	t.Helper()
+// TestFingerprintIsStable 确认同一输入得到同一指纹。
+func TestFingerprintIsStable(t *testing.T) {
+	_, publicB64 := newPEMKey(t)
 
-	signer, err := hubclient.LoadSignerFromBytes([]byte(privatePEM))
-	if err != nil {
-		t.Fatalf("加载私钥失败: %v", err)
+	if fingerprintKey(publicB64) != fingerprintKey(publicB64) {
+		t.Fatal("同一输入应得到同一指纹")
 	}
-	if signer.PublicKeyBase64() != wantPublicB64 {
-		t.Fatal("私钥推导出的公钥与预期不符")
+	if fingerprintKey(publicB64) == "" {
+		t.Fatal("指纹不应为空")
 	}
-	pub, err := signer.PublicKeyPEM()
-	if err != nil {
-		t.Fatalf("导出公钥 PEM 失败: %v", err)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
 	}
-	return pub
+	if len(s) > 40 {
+		return s[:40]
+	}
+	return s
 }

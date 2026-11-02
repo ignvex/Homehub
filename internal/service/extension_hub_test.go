@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -12,8 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,7 +24,11 @@ import (
 // newTestSignerFile 生成一把临时 Ed25519 私钥并以 PKCS#8 PEM 落盘。
 //
 // 返回公钥是为了让测试能真的验签，而不是只看请求头非空。
-func newTestSignerFile(t *testing.T) (path string, pub ed25519.PublicKey) {
+// newTestSigner 生成一把 PKCS#8 PEM 私钥，返回 PEM 文本与公钥。
+//
+// 私钥不再落文件：重构后唯一来源是 config.json，测试直接传 PEM，
+// 顺带省掉每个用例一个临时文件。
+func newTestSigner(t *testing.T) (pemText string, pub ed25519.PublicKey) {
 	t.Helper()
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -38,28 +39,23 @@ func newTestSignerFile(t *testing.T) (path string, pub ed25519.PublicKey) {
 	if err != nil {
 		t.Fatalf("编码私钥失败: %v", err)
 	}
-
-	path = filepath.Join(t.TempDir(), "hub.key")
-	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := os.WriteFile(path, block, 0o600); err != nil {
-		t.Fatalf("写入私钥失败: %v", err)
-	}
-	return path, pub
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), pub
 }
 
 // newTestHubService 构造一个指向 srv 的服务实例。
 //
 // db 留空：这里只测不碰数据库的路径（状态探测、远端删除）。
-func newTestHubService(t *testing.T, srvURL, keyPath string) *ExtensionHubService {
+func newTestHubService(t *testing.T, srvURL, pemText string) *ExtensionHubService {
 	t.Helper()
 	return &ExtensionHubService{
 		readyClient: &http.Client{Timeout: 2 * time.Second},
-		cfg: func() config.ExtensionHubConfig {
-			return config.ExtensionHubConfig{
+		cfg: func() config.ExtensionConfig {
+			return config.ExtensionConfig{
 				Enabled:        true,
 				BaseURL:        srvURL,
-				PrivateKeyPath: keyPath,
+				PrivateKeyPEM:  pemText,
 				TimeoutSeconds: 5,
+				Features:       config.ExtensionFeatures{Hub: true, Fetch: true, Avatar: true},
 			}
 		},
 	}
@@ -196,8 +192,8 @@ func TestStatusReportsRSSModuleDisabled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	st := newTestHubService(t, srv.URL, keyPath).Status(context.Background())
+	pemText, _ := newTestSigner(t)
+	st := newTestHubService(t, srv.URL, pemText).Status(context.Background())
 
 	if !st.Enabled || !st.Configured {
 		t.Fatalf("启用且配置齐全时应为 true，实际 enabled=%v configured=%v", st.Enabled, st.Configured)
@@ -228,8 +224,8 @@ func TestStatusTreatsMissingKeysEndpointAsWrongBaseURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	st := newTestHubService(t, srv.URL, keyPath).Status(context.Background())
+	pemText, _ := newTestSigner(t)
+	st := newTestHubService(t, srv.URL, pemText).Status(context.Background())
 
 	if st.Authenticated {
 		t.Fatal("keys 端点 404 不能判成签名通过")
@@ -252,8 +248,8 @@ func TestStatusReportsUnauthenticatedOn401(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	st := newTestHubService(t, srv.URL, keyPath).Status(context.Background())
+	pemText, _ := newTestSigner(t)
+	st := newTestHubService(t, srv.URL, pemText).Status(context.Background())
 
 	if !st.Reachable {
 		t.Fatal("401 说明 HTTP 通了，只是签名没过")
@@ -276,8 +272,8 @@ func TestStatusReportsNetworkFailure(t *testing.T) {
 	url := srv.URL
 	srv.Close() // 立刻关闭，制造连接拒绝
 
-	keyPath, _ := newTestSignerFile(t)
-	st := newTestHubService(t, url, keyPath).Status(context.Background())
+	pemText, _ := newTestSigner(t)
+	st := newTestHubService(t, url, pemText).Status(context.Background())
 
 	if !st.Enabled || !st.Configured {
 		t.Fatal("配置层面仍然齐全")
@@ -295,8 +291,8 @@ func TestStatusReportsDisabledWithoutTouchingNetwork(t *testing.T) {
 	// 若真的发了，error_code 会是 network 而不是 disabled。
 	svc := &ExtensionHubService{
 		readyClient: &http.Client{Timeout: time.Second},
-		cfg: func() config.ExtensionHubConfig {
-			return config.ExtensionHubConfig{Enabled: false, BaseURL: "http://127.0.0.1:1/api/v1"}
+		cfg: func() config.ExtensionConfig {
+			return config.ExtensionConfig{Enabled: false, BaseURL: "http://127.0.0.1:1/api/v1"}
 		},
 	}
 
@@ -312,7 +308,7 @@ func TestStatusReportsDisabledWithoutTouchingNetwork(t *testing.T) {
 func TestStatusVerifiesSignatureAgainstConfiguredKey(t *testing.T) {
 	// 这是整条链路的真正证明：不仅要求三个签名头存在，还要用配置的
 	// 公钥验得过。只检查“头非空”会放过签名算法或待签消息写错的情况。
-	keyPath, pub := newTestSignerFile(t)
+	pemText, pub := newTestSigner(t)
 
 	// 服务端用配置的同一把公钥验签：验不过就 401，Status 会报
 	// unauthenticated，测试随之失败。这比“检查头非空”强得多——
@@ -341,7 +337,7 @@ func TestStatusVerifiesSignatureAgainstConfiguredKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	st := newTestHubService(t, srv.URL, keyPath).Status(context.Background())
+	st := newTestHubService(t, srv.URL, pemText).Status(context.Background())
 	if !st.Authenticated {
 		t.Fatalf("签名头应当通过校验，实际 error_code=%q message=%q", st.ErrorCode, st.ErrorMessage)
 	}
@@ -352,7 +348,7 @@ func TestStatusVerifiesSignatureAgainstConfiguredKey(t *testing.T) {
 
 func TestStatusSignatureIsRejectedWhenKeyMismatches(t *testing.T) {
 	// 反证：换一把公钥验签必须失败，否则上一条测试证明不了任何东西。
-	keyPath, _ := newTestSignerFile(t)
+	pemText, _ := newTestSigner(t)
 	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("生成对照密钥失败: %v", err)
@@ -371,7 +367,7 @@ func TestStatusSignatureIsRejectedWhenKeyMismatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	st := newTestHubService(t, srv.URL, keyPath).Status(context.Background())
+	st := newTestHubService(t, srv.URL, pemText).Status(context.Background())
 	if st.Authenticated {
 		t.Fatal("密钥不匹配时必须判定签名失败")
 	}
@@ -392,8 +388,8 @@ func TestDeleteRemoteSubscriptionTreatsMissingAsDeleted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	already, err := newTestHubService(t, srv.URL, keyPath).DeleteRemoteSubscription(context.Background(), 7)
+	pemText, _ := newTestSigner(t)
+	already, err := newTestHubService(t, srv.URL, pemText).DeleteRemoteSubscription(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("不该返回错误: %v", err)
 	}
@@ -410,8 +406,8 @@ func TestDeleteRemoteSubscriptionReportsModuleDisabled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	already, err := newTestHubService(t, srv.URL, keyPath).DeleteRemoteSubscription(context.Background(), 7)
+	pemText, _ := newTestSigner(t)
+	already, err := newTestHubService(t, srv.URL, pemText).DeleteRemoteSubscription(context.Background(), 7)
 	if err == nil {
 		t.Fatal("模块关闭时必须上报错误")
 	}
@@ -449,8 +445,8 @@ func TestClassifyHubErrorKeepsRequestIDVisible(t *testing.T) {
 func TestClientReusesOneClientAcrossCalls(t *testing.T) {
 	// 每次调用都重建客户端会让连接池失效，且每次都要重读私钥文件。
 	// 配置没变时必须复用同一个实例。
-	keyPath, _ := newTestSignerFile(t)
-	svc := newTestHubService(t, "http://127.0.0.1:1/api/v1", keyPath)
+	pemText, _ := newTestSigner(t)
+	svc := newTestHubService(t, "http://127.0.0.1:1/api/v1", pemText)
 
 	first, _, err := svc.client()
 	if err != nil {
@@ -467,12 +463,12 @@ func TestClientReusesOneClientAcrossCalls(t *testing.T) {
 
 func TestClientRebuildsWhenBaseURLChanges(t *testing.T) {
 	// 热更新改了地址之后必须换实例，否则请求会继续打到旧地址。
-	keyPath, _ := newTestSignerFile(t)
+	pemText, _ := newTestSigner(t)
 	baseURL := "http://127.0.0.1:1/api/v1"
 	svc := &ExtensionHubService{
 		readyClient: &http.Client{Timeout: time.Second},
-		cfg: func() config.ExtensionHubConfig {
-			return config.ExtensionHubConfig{Enabled: true, BaseURL: baseURL, PrivateKeyPath: keyPath, TimeoutSeconds: 5}
+		cfg: func() config.ExtensionConfig {
+			return config.ExtensionConfig{Enabled: true, BaseURL: baseURL, PrivateKeyPEM: pemText, TimeoutSeconds: 5, Features: config.ExtensionFeatures{Hub: true}}
 		},
 	}
 
@@ -492,17 +488,17 @@ func TestClientRebuildsWhenBaseURLChanges(t *testing.T) {
 }
 
 func TestStatusReportsEnabledButUnconfiguredWhenKeyIsMissing(t *testing.T) {
-	// enabled=true 但私钥文件不存在时，enabled 必须仍为 true。
+	// enabled=true 但私钥没配时，enabled 必须仍为 true。
 	// 若这里报 false，界面会显示「对接未启用」，用户会去翻开关，
-	// 而真正要修的是键文件路径——错误提示比没有提示更糟。
+	// 而真正要修的是 private_keypemText——错误提示比没有提示更糟。
 	svc := &ExtensionHubService{
 		readyClient: &http.Client{Timeout: time.Second},
-		cfg: func() config.ExtensionHubConfig {
-			return config.ExtensionHubConfig{
+		cfg: func() config.ExtensionConfig {
+			return config.ExtensionConfig{
 				Enabled:        true,
 				BaseURL:        "http://127.0.0.1:1/api/v1",
-				PrivateKeyPath: filepath.Join(t.TempDir(), "missing.key"),
 				TimeoutSeconds: 5,
+				Features:       config.ExtensionFeatures{Hub: true},
 			}
 		},
 	}
@@ -517,8 +513,8 @@ func TestStatusReportsEnabledButUnconfiguredWhenKeyIsMissing(t *testing.T) {
 	if st.ErrorCode != "config" {
 		t.Fatalf("error_code 应为 config，实际 %q", st.ErrorCode)
 	}
-	if !strings.Contains(st.ErrorMessage, "missing.key") {
-		t.Fatalf("错误信息应指出是哪个文件，实际 %q", st.ErrorMessage)
+	if !strings.Contains(st.ErrorMessage, "private_key_pem") {
+		t.Fatalf("错误信息应指出是哪个配置项，实际 %q", st.ErrorMessage)
 	}
 }
 
@@ -541,54 +537,13 @@ func TestDeleteRemoteSubscriptionDoesNotClaimSuccessWhenProbeFails(t *testing.T)
 	}))
 	defer srv.Close()
 
-	keyPath, _ := newTestSignerFile(t)
-	already, err := newTestHubService(t, srv.URL, keyPath).DeleteRemoteSubscription(context.Background(), 7)
+	pemText, _ := newTestSigner(t)
+	already, err := newTestHubService(t, srv.URL, pemText).DeleteRemoteSubscription(context.Background(), 7)
 
 	if err == nil {
 		t.Fatal("探测失败时必须上报错误，不能声称已删除")
 	}
 	if already {
 		t.Fatal("探测失败时不能返回 already_deleted=true")
-	}
-}
-
-// TestClientRereadsKeyWhenFileIsRotatedInPlace 确认同名覆盖私钥会生效。
-//
-// 轮换最常见的做法是 openssl genpkey -out 覆盖同名路径。只比较路径的
-// 缓存会一直用旧身份签出 401，且不会有任何提示指向「该重读私钥」。
-func TestClientRereadsKeyWhenFileIsRotatedInPlace(t *testing.T) {
-	keyPath, firstPub := newTestSignerFile(t)
-	svc := newTestHubService(t, "http://127.0.0.1:1/api/v1", keyPath)
-
-	_, signer, err := svc.client()
-	if err != nil {
-		t.Fatalf("首次构造失败: %v", err)
-	}
-	if signer.PublicKeyBase64() != base64.StdEncoding.EncodeToString(firstPub) {
-		t.Fatal("首次加载的公钥不对")
-	}
-
-	// 原地覆盖：路径不变，内容与 mtime 变化。
-	// 用全 0x02 的种子生成一把确定不同的私钥。
-	der, err := x509.MarshalPKCS8PrivateKey(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{2}, ed25519.SeedSize)))
-	if err != nil {
-		t.Fatalf("编码私钥失败: %v", err)
-	}
-	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := os.WriteFile(keyPath, block, 0o600); err != nil {
-		t.Fatalf("覆盖私钥失败: %v", err)
-	}
-	// 显式推进 mtime：部分文件系统的时间精度会吞掉同一秒内的两次写入。
-	future := time.Now().Add(2 * time.Second)
-	if err := os.Chtimes(keyPath, future, future); err != nil {
-		t.Fatalf("调整 mtime 失败: %v", err)
-	}
-
-	_, rotated, err := svc.client()
-	if err != nil {
-		t.Fatalf("轮换后取用失败: %v", err)
-	}
-	if rotated.PublicKeyBase64() == base64.StdEncoding.EncodeToString(firstPub) {
-		t.Fatal("同名覆盖私钥后必须重读，不能继续用旧身份")
 	}
 }

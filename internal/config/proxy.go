@@ -102,3 +102,31 @@ func TransportFor(names []string) (*http.Transport, error) {
 
 	return direct, nil
 }
+
+// DefaultTransport 返回全局默认代理对应的 transport。
+//
+// 所有出网模块（RSS 抓取、图片缓存、Gravatar、favicon）都走这一个函数，
+// 不再各自读自己的 proxy_names。这样新增一个出网模块时不会因为漏配
+// 而静默直连——那类失败表现为超时，排查时很难想到是配置缺失。
+//
+// proxy.default 为空时返回直连 transport。
+func DefaultTransport() (*http.Transport, error) {
+	var names []string
+	if cfg := Get(); cfg != nil {
+		names = cfg.Proxy.Default
+	}
+	return TransportFor(names)
+}
+
+// ExtensionTransport 返回与 Extension 连接的 transport。
+//
+// 刻意**不**继承全局默认：Extension 通常在内网或同机部署，绕一层
+// 外部代理反而更慢，而且很多代理不转发内网地址。需要时由
+// extension.proxy_names 显式指定，留空即直连。
+func ExtensionTransport() (*http.Transport, error) {
+	var names []string
+	if cfg := Get(); cfg != nil {
+		names = cfg.Extension.ProxyNames
+	}
+	return TransportFor(names)
+}

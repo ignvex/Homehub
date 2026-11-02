@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/ignvex/HomeHub/internal/config"
 )
@@ -23,13 +24,12 @@ type SafeConfig struct {
 	Auth     SafeAuthConfig        `json:"auth"`
 	Log      config.LogConfig      `json:"log"`
 	WebUI    config.WebUIConfig    `json:"webui"`
-	Proxy    []SafeProxyEntry      `json:"proxy"`
-	Gravatar SafeGravatarConfig    `json:"gravatar"`
+	Proxy    SafeProxyConfig       `json:"proxy"`
+	Gravatar config.GravatarConfig `json:"gravatar"`
 	Bookmark config.BookmarkConfig `json:"bookmark"`
-	RSS      SafeRSSConfig         `json:"rss"`
-	// ExtensionHub 含私钥**路径**而不是内容。路径本身不是秘密，
-	// 而设置页需要它才能显示当前指向哪个文件。
-	ExtensionHub config.ExtensionHubConfig `json:"extension_hub"`
+	RSS      config.RSSConfig      `json:"rss"`
+	// Extension 含连接参数，但**绝不含私钥内容**。
+	Extension SafeExtensionConfig `json:"extension"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。
@@ -46,19 +46,37 @@ type SafeAuthConfig struct {
 	Username string `json:"username"`
 }
 
-// SafeGravatarConfig 是脱敏后的头像配置。
+// SafeExtensionConfig 是脱敏后的 Extension 连接配置。
 //
-// 嵌入了原结构体，所以 JSON 形状不变；额外多一个 extension_token_set，
-// 让设置页能显示「已配置」而不需要拿到 token 本身。
-type SafeGravatarConfig struct {
-	config.GravatarConfig
-	ExtensionTokenSet bool `json:"extension_token_set"`
+// 私钥永不通过 API 返回：它是宿主的身份，泄露等于任何人都能以宿主
+// 名义驱动 Extension。这里只回一位 PrivateKeySet，让设置页能显示
+// 「已配置 / 未配置」。
+type SafeExtensionConfig struct {
+	Enabled        bool     `json:"enabled"`
+	BaseURL        string   `json:"base_url"`
+	ProxyNames     []string `json:"proxy_names"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	PrivateKeySet  bool     `json:"private_key_set"`
 }
 
-// SafeRSSConfig 是脱敏后的 RSS 配置，理由同 SafeGravatarConfig。
-type SafeRSSConfig struct {
-	config.RSSConfig
-	ExtensionTokenSet bool `json:"extension_token_set"`
+// SafeProxyConfig 是脱敏后的全局代理配置。
+//
+// 代理 URL 常含账号密码（http://user:pass@host:port），一律不下发；
+// 名字与启停状态足以让设置页渲染列表。
+type SafeProxyConfig struct {
+	Entries []SafeProxyEntry `json:"entries"`
+	Default []string         `json:"default"`
+}
+
+// ExtensionUpdate 是 Web 端可修改的 Extension 连接字段。
+//
+// 不含私钥：私钥通过单独的 setKey 端点设置，避免它出现在任何
+// 「读配置 → 改一处 → 提交整个对象」的表单流程里。
+type ExtensionUpdate struct {
+	Enabled        *bool    `json:"enabled,omitempty"`
+	BaseURL        *string  `json:"base_url,omitempty"`
+	ProxyNames     *[]string `json:"proxy_names,omitempty"`
+	TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 }
 
 // SafeProxyEntry 脱敏后的代理配置，不暴露完整的代理 URL。
@@ -107,37 +125,21 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		},
 		Log:      cfg.Log,
 		WebUI:    cfg.WebUI,
-		Proxy:    maskProxyList(cfg.Proxy),
-		Gravatar: maskGravatar(cfg.Gravatar),
+		Proxy: SafeProxyConfig{
+			Entries: maskProxyList(cfg.Proxy.Entries),
+			Default: cfg.Proxy.Default,
+		},
+		Gravatar: cfg.Gravatar,
 		Bookmark: cfg.Bookmark,
-		RSS:      maskRSS(cfg.RSS),
-		ExtensionHub: config.ExtensionHubConfig{
-			Enabled:        cfg.ExtensionHub.Enabled,
-			BaseURL:        cfg.ExtensionHub.BaseURL,
-			PrivateKeyPath: cfg.ExtensionHub.PrivateKeyPath,
-			TimeoutSeconds: cfg.ExtensionHub.TimeoutSeconds,
+		RSS:      cfg.RSS,
+		Extension: SafeExtensionConfig{
+			Enabled:        cfg.Extension.Enabled,
+			BaseURL:        cfg.Extension.BaseURL,
+			ProxyNames:     cfg.Extension.ProxyNames,
+			TimeoutSeconds: cfg.Extension.TimeoutSeconds,
+			PrivateKeySet:  strings.TrimSpace(cfg.Extension.PrivateKeyPEM) != "",
 		},
 	}
-}
-
-// maskGravatar 清空 extension_token，只保留「有没有配」这一位信息。
-//
-// 之前这里直接返回完整的 GravatarConfig —— token 会随 GET /config
-// 明文下发到浏览器，然后停留在开发者工具、前端内存和任何抓取里。
-// 现在只返回空串，前端据「留空表示不改」的约定保留原值。
-func maskGravatar(in config.GravatarConfig) SafeGravatarConfig {
-	hasToken := in.ExtensionToken != ""
-	out := in
-	out.ExtensionToken = ""
-	return SafeGravatarConfig{GravatarConfig: out, ExtensionTokenSet: hasToken}
-}
-
-// maskRSS 清空 extension_token，理由同 maskGravatar。
-func maskRSS(in config.RSSConfig) SafeRSSConfig {
-	hasToken := in.ExtensionToken != ""
-	out := in
-	out.ExtensionToken = ""
-	return SafeRSSConfig{RSSConfig: out, ExtensionTokenSet: hasToken}
 }
 
 // UpdateConfigRequest Web 端更新配置的请求体。
@@ -149,12 +151,12 @@ type UpdateConfigRequest struct {
 	Auth     *AuthUpdate            `json:"auth,omitempty"`
 	Log      *LogUpdate             `json:"log,omitempty"`
 	WebUI    *config.WebUIConfig    `json:"webui,omitempty"`
-	Proxy    *[]config.ProxyEntry   `json:"proxy,omitempty"`
+	Proxy    *config.ProxyConfig    `json:"proxy,omitempty"`
 	Gravatar *config.GravatarConfig `json:"gravatar,omitempty"`
 	Bookmark *config.BookmarkConfig `json:"bookmark,omitempty"`
 	RSS      *config.RSSConfig      `json:"rss,omitempty"`
-	// ExtensionHub 只接受路径与开关；私钥内容永远不会经过这里。
-	ExtensionHub *config.ExtensionHubConfig `json:"extension_hub,omitempty"`
+	// Extension 只接受连接参数；私钥走单独的 setKey 端点，不进这个结构体。
+	Extension *ExtensionUpdate `json:"extension,omitempty"`
 }
 
 // ServerUpdate 服务器配置更新字段。
@@ -255,32 +257,60 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 			raw["webui"] = structToMap(*req.WebUI)
 		}
 		if req.Proxy != nil {
-			raw["proxy"] = mergeProxies(raw["proxy"], *req.Proxy)
+			raw["proxy"] = mergeProxyConfig(raw["proxy"], *req.Proxy)
 		}
 		if req.Gravatar != nil {
-			replaceSection(raw, "gravatar", req.Gravatar, "extension_token")
+			replaceSection(raw, "gravatar", req.Gravatar)
 		}
 		if req.Bookmark != nil {
 			replaceSection(raw, "bookmark", req.Bookmark)
 		}
 		if req.RSS != nil {
-			replaceSection(raw, "rss", req.RSS, "extension_token")
+			replaceSection(raw, "rss", req.RSS)
 		}
-		if req.ExtensionHub != nil {
-			replaceSection(raw, "extension_hub", req.ExtensionHub)
+		if req.Extension != nil {
+			mergeExtension(raw, *req.Extension)
 		}
 		return nil
 	})
 }
 
-// mergeProxies 按名字合并代理条目。
+// mergeProxyConfig 按名字合并代理条目，并处理默认链。
 //
 // SafeConfig 出于安全不返回代理地址（http_url/https_url），所以设置页
 // 回传的条目里这两项必然为空。整体替换会让每次保存设置都清掉代理凭据，
 // 代理随即失效——而界面上看起来只是「又保存了一次」。
-// 名字匹配不上的算新增条目，用请求里的值（前端目前只能通过 JSON 编辑
-// 新增代理，这样至少不会把已有条目弄坏）。
-func mergeProxies(existing any, incoming []config.ProxyEntry) any {
+// 名字匹配不上的算新增条目，用请求里的值。
+//
+// Default 为 nil 时保留旧值：请求体里省略该字段表达的是「不改」，
+// 与空数组「明确清空」是两件事。
+func mergeProxyConfig(existing any, incoming config.ProxyConfig) any {
+	var oldDefault any
+	if m, ok := existing.(map[string]any); ok {
+		if v, exists := m["default"]; exists {
+			oldDefault = v
+		}
+	}
+
+	merged := mergeProxies(nil, incoming.Entries)
+	if existing != nil {
+		if m, ok := existing.(map[string]any); ok {
+			merged = mergeProxies(m["entries"], incoming.Entries)
+		}
+	}
+
+	out := map[string]any{"entries": merged}
+	switch {
+	case incoming.Default != nil:
+		out["default"] = incoming.Default
+	case oldDefault != nil:
+		out["default"] = oldDefault
+	}
+	return out
+}
+
+// mergeProxies 按名字合并代理条目。existing 为原始 JSON 里的 entries 数组。
+func mergeProxies(existing any, incoming []config.ProxyEntry) []any {
 	oldByName := make(map[string]map[string]any, len(incoming))
 	if list, ok := existing.([]any); ok {
 		for _, item := range list {
@@ -309,6 +339,31 @@ func mergeProxies(existing any, incoming []config.ProxyEntry) any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// mergeExtension 合并 Extension 连接字段，逐字段覆盖。
+//
+// 不能用 replaceSection 整体替换：那样会丢掉 private_key_pem —— 它不在
+// ExtensionUpdate 里，但必须原样保留，否则「改一下超时」就会把宿主的
+// 签名身份清空。
+func mergeExtension(raw map[string]any, update ExtensionUpdate) {
+	section, ok := raw["extension"].(map[string]any)
+	if !ok {
+		section = map[string]any{}
+		raw["extension"] = section
+	}
+	if update.Enabled != nil {
+		section["enabled"] = *update.Enabled
+	}
+	if update.BaseURL != nil {
+		section["base_url"] = *update.BaseURL
+	}
+	if update.ProxyNames != nil {
+		section["proxy_names"] = *update.ProxyNames
+	}
+	if update.TimeoutSeconds != nil {
+		section["timeout_seconds"] = *update.TimeoutSeconds
+	}
 }
 
 // replaceSection 用新值替换 raw[key]，但保留两类旧内容：

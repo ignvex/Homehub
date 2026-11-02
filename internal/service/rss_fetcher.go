@@ -61,7 +61,7 @@ func rssClientFingerprint(cfg *config.Config) string {
 	if ua == "" {
 		ua = rssUserAgent
 	}
-	return fmt.Sprintf("%s|%v", ua, cfg.RSS.ProxyNames)
+	return fmt.Sprintf("%s|%v", ua, cfg.Proxy.Default)
 }
 
 // rssHTTPClient 返回抓取订阅源用的客户端。
@@ -151,13 +151,8 @@ func (httpFeedFetcher) Fetch(ctx context.Context, urlStr string) (*gofeed.Feed, 
 // 配置为空时直连。allowPrivate=false 时在连接层校验解析后的 IP，
 // 并逐跳校验重定向目标。
 func buildRSSHTTPClientWith(cfg *config.Config, allowPrivate bool) *req.Client {
-	// 代理构建统一走 config.TransportFor：它按请求 scheme 选择
-	// http_url / https_url，并支持 socks5。
-	var proxyNames []string
-	if cfg != nil {
-		proxyNames = cfg.RSS.ProxyNames
-	}
-	transport, err := config.TransportFor(proxyNames)
+	// 出网模块统一用全局默认代理，不再各自声明 proxy_names。
+	transport, err := config.DefaultTransport()
 	if err != nil {
 		// 代理配置非法时退回直连，不让抓取整体不可用。
 		logger.Warn("[rss] 代理配置不可用，改为直连", "error", err)

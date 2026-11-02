@@ -12,11 +12,6 @@
         "refresh_interval_seconds": 60,
         "targets": []
     },
-    "bookmark": {
-        "proxy_names": [
-            "router"
-        ]
-    },
     "database": {
         "dbname": "homehub",
         "host": "127.0.0.1",
@@ -25,27 +20,14 @@
         "sslmode": "disable",
         "user": "homehub"
     },
-    "extension_hub": {
-        "_comment": "===== HomeHub Extension hub 通道（宿主→Extension 签名调用）=====",
-        "_comment_base_url": "base_url 必须带 /api/v1 前缀，端点路径会拼在它后面。",
-        "_comment_key": "私钥用 openssl genpkey -algorithm ed25519 -out hub.key 生成，对应公钥放到 Extension 的 auth.hub.public_key_path。私钥权限设 600，不要进版本库。",
-        "base_url": "https://ext.example.com/api/v1",
-        "enabled": false,
-        "private_key_path": "/etc/homehub/extension-hub.key",
-        "timeout_seconds": 30
-    },
     "gravatar": {
         "default_size": 256,
         "default_style": "identicon",
         "enabled": true,
-        "extension_token": "",
-        "extension_url": "",
         "max_bytes": 2097152,
-        "proxy_names": [
-            "router"
-        ],
         "rating": "g",
-        "timeout_seconds": 10
+        "timeout_seconds": 10,
+        "_comment": "extension.enabled 为真时头像经 Extension 代理；否则直连 Gravatar，走 proxy.default。"
     },
     "log": {
         "db_writer": true,
@@ -59,28 +41,33 @@
         "enabled": true,
         "max_content_length": 1048576
     },
-    "proxy": [
-        {
-            "enabled": false,
-            "http_url": "http://127.0.0.1:7890",
-            "https_url": "http://127.0.0.1:7890",
-            "name": "dev",
-            "type": "http"
-        },
-        {
-            "enabled": false,
-            "http_url": "http://127.0.0.1:7890",
-            "https_url": "http://127.0.0.1:7890",
-            "name": "router",
-            "type": "http"
-        }
-    ],
+    "proxy": {
+        "_comment": "===== 全局代理 =====",
+        "_comment_entries": "命名代理池。http 类型可用 http_url/https_url 按 scheme 分流；socks5 类型把 host:port 填在 http_url。",
+        "_comment_default": "所有出网模块（RSS 抓取、图片缓存、Gravatar、favicon）的默认代理链，按顺序取第一条可用。留空 = 全局直连。Extension 连接不用这个，见 extension.proxy_names。",
+        "default": [
+            "router"
+        ],
+        "entries": [
+            {
+                "enabled": false,
+                "http_url": "http://127.0.0.1:7890",
+                "https_url": "http://127.0.0.1:7890",
+                "name": "dev",
+                "type": "http"
+            },
+            {
+                "enabled": false,
+                "http_url": "http://127.0.0.1:7890",
+                "https_url": "http://127.0.0.1:7890",
+                "name": "router",
+                "type": "http"
+            }
+        ]
+    },
     "rss": {
         "background_fetch_enabled": true,
         "background_fetch_interval": 300,
-        "proxy_names": [
-            "router"
-        ],
         "retention_count": 5000,
         "user_agent": "",
         "fetch_concurrency": 4,
@@ -92,8 +79,6 @@
         "image_retention_days": 30,
         "image_cleanup_interval_hours": 24,
         "image_allow_private_hosts": false,
-        "extension_url": "",
-        "extension_token": "",
         "pikpak": {
             "_comment": "PikPak 离线下载辅助。enabled=false 时相关 API 返回 503；锁定功能不依赖它。client_id/client_secret 由 PikPak 分配，留空则提交会失败并提示。",
             "enabled": false,
@@ -130,5 +115,23 @@
             },
             "layout": "center"
         }
+    },
+    "bookmark": {},
+    "extension": {
+        "_comment": "===== HomeHub Extension 连接（唯一一处）=====",
+        "_comment_base_url": "base_url 必须带 /api/v1 前缀。/hub/*、/fetch、/avatar 都走这个地址。",
+        "_comment_key": "私钥用 openssl genpkey -algorithm ed25519 -out hub.key 生成。整份 PEM 粘进 private_key_pem（换行写成 \\n），对应公钥放到 Extension 的 auth.hub.public_key。config.json 权限应设为 600。",
+        "_comment_features": "按能力分别开关。默认全关：升级后行为与升级前一致，不会因为新增配置段就把流量改道。",
+        "_comment_proxy": "proxy_names 留空 = 直连（默认）。Extension 通常在内网或同机，绕代理反而更慢。",
+        "base_url": "https://ext.example.com/api/v1",
+        "enabled": false,
+        "features": {
+            "hub": false,
+            "fetch": false,
+            "avatar": false
+        },
+        "private_key_pem": "",
+        "proxy_names": [],
+        "timeout_seconds": 30
     }
 }

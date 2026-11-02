@@ -118,14 +118,10 @@ func validateFaviconDomain(host string) error {
 	return nil
 }
 
-// buildFaviconHTTPClient 根据书签代理配置构建 HTTP 客户端。
+// buildFaviconHTTPClient 根据全局默认代理构建 HTTP 客户端。
 func buildFaviconHTTPClient() *req.Client {
-	// 代理构建统一走 config.TransportFor（按 scheme 选择 http/https 地址）
-	var proxyNames []string
-	if cfg := config.Get(); cfg != nil {
-		proxyNames = cfg.Bookmark.ProxyNames
-	}
-	transport, err := config.TransportFor(proxyNames)
+	// 出网模块统一用全局默认代理，不再各自声明 proxy_names。
+	transport, err := config.DefaultTransport()
 	if err != nil {
 		logger.Warn("[favicon] 代理配置不可用，改为直连", "error", err)
 		transport, _ = config.TransportFor(nil)

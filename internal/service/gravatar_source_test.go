@@ -46,11 +46,12 @@ func TestDirectAvatarSourceTrimsTrailingSlash(t *testing.T) {
 func TestExtensionAvatarSourceSendsContract(t *testing.T) {
 	img := testPNGSignature()
 
-	var gotPath, gotQuery, gotAuth, gotAccept string
+	var gotPath, gotQuery, gotAuth, gotAccept, gotSig string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		gotAuth = r.Header.Get("Authorization")
+		gotSig = r.Header.Get("X-HH-Signature")
 		gotAccept = r.Header.Get("Accept")
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("ETag", `"abc"`)
@@ -59,11 +60,7 @@ func TestExtensionAvatarSourceSendsContract(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := newAvatarSource(&config.Config{Gravatar: config.GravatarConfig{
-		ExtensionURL:   srv.URL,
-		ExtensionToken: "secret-token",
-		TimeoutSeconds: 2,
-	}})
+	src := newExtAvatarSource(t, srv.URL)
 
 	payload, notModified, err := src.Fetch(context.Background(), avatarRequest{
 		Hash:   "deadbeef",
@@ -77,16 +74,20 @@ func TestExtensionAvatarSourceSendsContract(t *testing.T) {
 	if notModified {
 		t.Error("200 响应不应标记 notModified")
 	}
-	if gotPath != "/avatar/deadbeef" {
-		t.Errorf("path = %q，期望 /avatar/deadbeef", gotPath)
+	if gotPath != "/api/v1/avatar/deadbeef" {
+		t.Errorf("path = %q，期望 /api/v1/avatar/deadbeef", gotPath)
 	}
 	if !strings.Contains(gotQuery, "d=identicon") ||
 		!strings.Contains(gotQuery, "r=g") ||
 		!strings.Contains(gotQuery, "s=224") {
 		t.Errorf("query = %q，缺少 s/d/r 参数", gotQuery)
 	}
-	if gotAuth != "Bearer secret-token" {
-		t.Errorf("Authorization = %q", gotAuth)
+	// 认证已从 Bearer 统一成签名：不再有 Authorization，改由签名头承载。
+	if gotAuth != "" {
+		t.Errorf("不应再发送 Authorization，实际 %q", gotAuth)
+	}
+	if gotSig == "" {
+		t.Error("缺少签名头")
 	}
 	if !strings.Contains(gotAccept, "image/png") {
 		t.Errorf("Accept = %q", gotAccept)
@@ -109,10 +110,7 @@ func TestExtensionAvatarSourceSendsConditions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := newAvatarSource(&config.Config{Gravatar: config.GravatarConfig{
-		ExtensionURL:   srv.URL,
-		TimeoutSeconds: 2,
-	}})
+	src := newExtAvatarSource(t, srv.URL)
 
 	_, notModified, err := src.Fetch(context.Background(), avatarRequest{Hash: "abc", Size: 64, Style: "mp", Rating: "g"},
 		&avatarConditions{ETag: `"v1"`, LastModified: "Wed, 21 Oct 2015 07:28:00 GMT"})
@@ -140,11 +138,7 @@ func TestExtensionAvatarSourceDoesNotFollowRedirect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := newAvatarSource(&config.Config{Gravatar: config.GravatarConfig{
-		ExtensionURL:   srv.URL,
-		ExtensionToken: "secret",
-		TimeoutSeconds: 2,
-	}})
+	src := newExtAvatarSource(t, srv.URL)
 
 	_, _, err := src.Fetch(context.Background(), avatarRequest{Hash: "abc", Size: 64, Style: "mp", Rating: "g"}, nil)
 	if !errors.Is(err, ErrAvatarUpstream) {
@@ -162,10 +156,7 @@ func TestExtensionAvatarSourceMissing(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := newAvatarSource(&config.Config{Gravatar: config.GravatarConfig{
-		ExtensionURL:   srv.URL,
-		TimeoutSeconds: 2,
-	}})
+	src := newExtAvatarSource(t, srv.URL)
 
 	_, _, err := src.Fetch(context.Background(), avatarRequest{Hash: "abc", Size: 64, Style: "mp", Rating: "g"}, nil)
 	if !errors.Is(err, ErrAvatarNotFound) {
@@ -175,9 +166,17 @@ func TestExtensionAvatarSourceMissing(t *testing.T) {
 
 // TestAvatarSourceKeyHidesEndpoint 确认 extension 的 Key 不泄漏内网地址或凭据。
 func TestAvatarSourceKeyHidesEndpoint(t *testing.T) {
-	src := newAvatarSource(&config.Config{Gravatar: config.GravatarConfig{
-		ExtensionURL: "http://10.0.0.5:8090",
-	}})
+	pemText, _ := newPEMKey(t)
+	src := newAvatarSource(&config.Config{
+		Extension: config.ExtensionConfig{
+			Enabled:        true,
+			BaseURL:        "http://10.0.0.5:8090/api/v1",
+			PrivateKeyPEM:  pemText,
+			TimeoutSeconds: 2,
+			Features:       config.ExtensionFeatures{Avatar: true},
+		},
+		Gravatar: config.GravatarConfig{TimeoutSeconds: 2},
+	})
 	key := src.Key()
 	if !strings.HasPrefix(key, "ext:") {
 		t.Fatalf("Key = %q，期望 ext: 前缀", key)
@@ -392,4 +391,23 @@ func TestDirectAvatarSourceNoHintWhenProxyConfigured(t *testing.T) {
 	if strings.Contains(err.Error(), "gravatar.proxy_names") {
 		t.Errorf("已配代理时不应提示去配代理，实际: %v", err)
 	}
+}
+
+// newExtAvatarSource 构造一个指向 srv 的 Extension 头像源。
+//
+// 走真实的 newAvatarSource，确保「配置 → 上游实现」这段选择逻辑
+// 也在测试覆盖内，而不是绕过它直接构造结构体。
+func newExtAvatarSource(t *testing.T, srvURL string) avatarSource {
+	t.Helper()
+	pemText, _ := newPEMKey(t)
+	return newAvatarSource(&config.Config{
+		Extension: config.ExtensionConfig{
+			Enabled:        true,
+			BaseURL:        srvURL + "/api/v1",
+			PrivateKeyPEM:  pemText,
+			TimeoutSeconds: 2,
+			Features:       config.ExtensionFeatures{Hub: true, Fetch: true, Avatar: true},
+		},
+		Gravatar: config.GravatarConfig{TimeoutSeconds: 2},
+	})
 }

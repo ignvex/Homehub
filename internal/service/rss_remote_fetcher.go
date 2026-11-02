@@ -34,12 +34,13 @@ import (
 //
 // 失败约定：非 2xx 视为抓取失败，错误信息会写入 rss_feeds.error_msg。
 
-// remoteFetcher 通过外部 extension 服务抓取订阅源。
+// remoteFetcher 通过 HomeHub Extension 抓取订阅源。
 //
 // 使用场景：HomeHub 所在网络访问某些源很慢或经常被限流，
-// 而 extension 部署在网络条件更好的位置（或已集中缓存了结果）。
+// 而 Extension 部署在网络条件更好的位置。条目仍然解析回 HomeHub，
+// 存在本地数据库——Extension 只负责“把字节取回来”。
 type remoteFetcher struct {
-	client *http.Client
+	timeout time.Duration
 }
 
 // NewRemoteFetcher 创建向 extension 发请求的 RSSFetcher。
@@ -47,15 +48,7 @@ func NewRemoteFetcher(timeout time.Duration) RSSFetcher {
 	if timeout <= 0 {
 		timeout = rssHTTPTimeout
 	}
-	return &remoteFetcher{
-		client: &http.Client{
-			Timeout: timeout,
-			// 不跟随重定向：extension 地址由运维配置，跳转不应发生
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}
+	return &remoteFetcher{timeout: timeout}
 }
 
 // remoteResponse 是 extension 可能返回的 JSON 包装。
@@ -66,27 +59,26 @@ type remoteResponse struct {
 // Fetch 向 extension 请求并解析订阅源。
 func (f *remoteFetcher) Fetch(ctx context.Context, feedURL string) (*gofeed.Feed, error) {
 	cfg := config.Get()
-	if cfg == nil || cfg.RSS.ExtensionURL == "" {
-		return nil, fmt.Errorf("extension 地址未配置")
-	}
 
 	// 复用投递 URL 校验：extension 收到的是同一批地址，校验口径必须一致
 	if err := validateFeedURL(feedURL); err != nil {
 		return nil, fmt.Errorf("订阅源 URL 校验失败: %w", err)
 	}
 
-	endpoint := strings.TrimRight(cfg.RSS.ExtensionURL, "/") + "/fetch?url=" + url.QueryEscape(feedURL)
+	if cfg == nil || !cfg.Extension.Features.Fetch {
+		return nil, fmt.Errorf("extension.features.fetch 未启用")
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	client, err := buildExtensionClient(cfg, f.timeout)
 	if err != nil {
-		return nil, fmt.Errorf("构造 extension 请求失败: %w", err)
-	}
-	req.Header.Set("Accept", "application/xml, application/rss+xml, application/atom+xml, application/json")
-	if cfg.RSS.ExtensionToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.RSS.ExtensionToken)
+		return nil, fmt.Errorf("extension 连接不可用: %w", err)
 	}
 
-	resp, err := f.client.Do(req)
+	q := url.Values{}
+	q.Set("url", feedURL)
+
+	resp, err := client.DoRaw(ctx, http.MethodGet, "/fetch", q.Encode(),
+		"application/xml, application/rss+xml, application/atom+xml, application/json", nil)
 	if err != nil {
 		return nil, fmt.Errorf("extension 请求失败: %w", err)
 	}
@@ -103,13 +95,14 @@ func (f *remoteFetcher) Fetch(ctx context.Context, feedURL string) (*gofeed.Feed
 		return nil, fmt.Errorf("读取 extension 响应失败: %w", err)
 	}
 
-	// 先拦住 HTML。这是部署配错时最常见的形式：extension_url 指向一个
+	// 先拦住 HTML。这是部署配错时最常见的形式：地址指向一个
 	// 没有 /fetch 的服务（比如一个普通的 SPA 站点），对方用 200 返回
 	// 首页 HTML，而「XML 解析失败」这种错误会把排查方向引到 XML 本身。
 	if looksLikeHTML(body, resp.Header.Get("Content-Type")) {
 		return nil, fmt.Errorf(
 			"extension 返回的是 HTML 而不是 feed：%s 上可能没有 /fetch 端点。"+
-				"检查 rss.extension_url 是否指向实现了 extension 契约的服务", endpoint)
+				"检查 extension.base_url 是否指向实现了 extension 契约的服务",
+			cfg.Extension.BaseURL)
 	}
 
 	return parseExtensionBody(body, resp.Header.Get("Content-Type"))
@@ -178,10 +171,12 @@ func newAutoFetcher() *autoFetcher { return &autoFetcher{} }
 
 // fetcherKey 是影响实现选择的配置指纹。
 func fetcherKey(cfg *config.Config) string {
-	if cfg == nil || cfg.RSS.ExtensionURL == "" {
+	if cfg == nil || !cfg.Extension.Enabled || !cfg.Extension.Features.Fetch || cfg.Extension.BaseURL == "" {
 		return "local"
 	}
-	return fmt.Sprintf("remote|%s|%s|%d", cfg.RSS.ExtensionURL, cfg.RSS.ExtensionToken, cfg.RSS.FetchTimeoutSeconds)
+	// 私钥也要进指纹：轮换后必须重建客户端，否则会继续用旧身份签名。
+	return fmt.Sprintf("remote|%s|%s|%d",
+		cfg.Extension.BaseURL, cfg.Extension.PrivateKeyPEM, cfg.RSS.FetchTimeoutSeconds)
 }
 
 // pick 返回与当前配置匹配的实现，必要时重建。
@@ -199,7 +194,7 @@ func (a *autoFetcher) pick() RSSFetcher {
 	if key == "local" {
 		a.current = NewHTTPFeedFetcher()
 	} else {
-		logger.Info("[rss] 抓取交由 extension 处理", "url", cfg.RSS.ExtensionURL)
+		logger.Info("[rss] 抓取交由 extension 处理", "url", cfg.Extension.BaseURL)
 		timeout := rssHTTPTimeout
 		if cfg.RSS.FetchTimeoutSeconds > 0 {
 			timeout = time.Duration(cfg.RSS.FetchTimeoutSeconds) * time.Second

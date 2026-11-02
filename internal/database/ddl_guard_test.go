@@ -56,7 +56,6 @@ var homeHubTables = map[string]struct{}{
 	"todos":              {},
 	"pastes":             {},
 	"balance_targets":    {},
-	"extension_hub_keys": {},
 }
 
 // ownedTable 判断表名是否属于本仓库（忽略 schema 限定符）。
@@ -230,7 +229,6 @@ func TestAllModelsHaveRegisteredTable(t *testing.T) {
 		{"Todo", model.Todo{}.TableName()},
 		{"Paste", model.Paste{}.TableName()},
 		{"BalanceTarget", model.BalanceTarget{}.TableName()},
-		{"ExtensionHubKey", model.ExtensionHubKey{}.TableName()},
 	}
 
 	for _, m := range models {

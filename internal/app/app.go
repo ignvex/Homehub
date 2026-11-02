@@ -110,7 +110,6 @@ func Run(opts Options) error {
 		&model.RSSImageRef{},
 		&model.Todo{},
 		&model.BalanceTarget{},
-		&model.ExtensionHubKey{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}

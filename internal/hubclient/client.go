@@ -160,6 +160,76 @@ func (c *Client) do(ctx context.Context, method, path, rawQuery string, body []b
 	return resp.StatusCode, newAPIError(resp, payload)
 }
 
+// DoRaw 发送一条签名请求并返回未经解析的响应。
+//
+// 供 `/fetch`、`/avatar` 这类返回 XML 或二进制的端点使用：do() 会在
+// 2xx 时尝试 JSON 解码，对这两条通路没有意义。调用方负责关闭 Body。
+//
+// 非 2xx 不会自动转成 error，由调用方按自己的错误语义处理（头像要把
+// 404 与 304 分开对待）。ctx 的超时由调用方控制。
+func (c *Client) DoRaw(ctx context.Context, method, path, rawQuery, accept string, extra http.Header) (*http.Response, error) {
+	u := *c.base
+	u.Path = strings.TrimSuffix(u.Path, "/") + path
+	u.RawPath = ""
+	u.RawQuery = rawQuery
+
+	ts := Now().Unix()
+	nonce, err := NewNonce()
+	if err != nil {
+		return nil, err
+	}
+	signature := c.signer.Sign(method, u.EscapedPath(), u.RawQuery, nil, ts, nonce)
+
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	req, err := http.NewRequestWithContext(reqCtx, method, u.String(), nil)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("hubclient: 构造请求失败: %w", err)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	// 条件请求头（If-None-Match / If-Modified-Since）由调用方决定，
+	// 这里只负责透传，不对内容作任何解释。
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+	req.Header.Set(headerTimestamp, strconv.FormatInt(ts, 10))
+	req.Header.Set(headerNonce, nonce)
+	req.Header.Set(headerSignature, signature)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("hubclient: 请求失败: %w", err)
+	}
+	// 取消要绑在 Body 关闭上：调用方读完才结束，否则会在传输中途关连接。
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelOnClose 在关闭响应体时释放关联的 context。
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
 // newAPIError 从响应构造结构化错误。响应体不是预期格式时退化为状态码映射。
 func newAPIError(resp *http.Response, payload []byte) *APIError {
 	apiErr := &APIError{

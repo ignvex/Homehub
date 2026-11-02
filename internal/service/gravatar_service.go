@@ -288,7 +288,7 @@ func (s *GravatarService) sourceFor(cfg *config.Config) avatarSource {
 	}
 	s.srcKey = key
 	logger.Info("[gravatar] 上游已就绪",
-		"extension", cfg.Gravatar.ExtensionURL != "",
+		"via_extension", cfg.Extension.Enabled && cfg.Extension.Features.Avatar,
 		"timeout_seconds", cfg.Gravatar.TimeoutSeconds)
 	return s.source
 }
@@ -298,11 +298,14 @@ func avatarSourceKey(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s|%s|%d|%s",
-		cfg.Gravatar.ExtensionURL,
-		cfg.Gravatar.ExtensionToken,
+	// 指纹要覆盖所有会改变上游行为与网络路径的配置：换 Extension
+	// 开关、换地址、换私钥、换全局代理，都应让缓存的 source 失效。
+	return fmt.Sprintf("%t|%s|%s|%d|%s",
+		cfg.Extension.Enabled,
+		cfg.Extension.BaseURL,
+		cfg.Extension.PrivateKeyPEM,
 		cfg.Gravatar.TimeoutSeconds,
-		strings.Join(cfg.Gravatar.ProxyNames, ","),
+		strings.Join(cfg.Proxy.Default, ","),
 	)
 }
 

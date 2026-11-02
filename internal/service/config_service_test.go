@@ -39,6 +39,10 @@ func loadSettingsConfig(t *testing.T, body string) string {
 	return path
 }
 
+// testPEM 是一把固定的 Ed25519 PKCS#8 私钥，测试里充当「已配置的密钥」。
+// 每次生成会拖慢测试且让断言不稳定，所以写死一份。
+const testPEM = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ+DYVGC9YOnqHwWCUKGZ4bYyTCsVNzXHqZ3gkc0Xw8N\n-----END PRIVATE KEY-----\n"
+
 const settingsBaseConfig = `{
 	"_comment": "顶层说明，保存设置时不应丢失",
 	"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d", "sslmode": "disable"},
@@ -50,75 +54,69 @@ const settingsBaseConfig = `{
 		"default_style": "identicon",
 		"default_size": 256,
 		"rating": "g",
-		"extension_url": "http://ext:8090",
-		"extension_token": "super-secret-gravatar-token",
 		"timeout_seconds": 10,
 		"max_bytes": 2097152
 	},
 	"rss": {
+		"_comment": "RSS 说明",
 		"background_fetch_enabled": true,
-		"retention_count": 5000,
-		"extension_url": "http://ext:8090",
-		"extension_token": "super-secret-rss-token"
+		"retention_count": 5000
 	},
-	"proxy": [
-		{"name": "router", "type": "http", "http_url": "http://127.0.0.1:7890", "https_url": "http://127.0.0.1:7890", "enabled": true}
-	],
-	"extension_hub": {"enabled": false, "base_url": "", "private_key_path": "", "timeout_seconds": 30}
+	"proxy": {
+		"_comment": "代理说明",
+		"entries": [
+			{"name": "router", "type": "http", "http_url": "http://127.0.0.1:7890", "https_url": "http://127.0.0.1:7890", "enabled": true}
+		],
+		"default": ["router"]
+	},
+	"extension": {
+		"_comment": "扩展说明",
+		"enabled": false,
+		"base_url": "",
+		"private_key_pem": "super-secret-private-key",
+		"timeout_seconds": 30
+	}
 }`
 
-// TestSafeConfigNeverReturnsExtensionTokens 是最重要的一条。
+// TestSafeConfigNeverReturnsPrivateKey 是最重要的一条。
 //
-// 之前 GetSafe 直接返回完整的 GravatarConfig / RSSConfig，token 会随
-// GET /config 明文下发到浏览器——开发者工具、前端内存、任何抓包都能拿到。
-func TestSafeConfigNeverReturnsExtensionTokens(t *testing.T) {
+// 私钥是宿主的身份。一旦随 GET /config 下发到浏览器，它就同时存在于
+// 开发者工具、前端内存和任何抓包里。这条断言防的就是这类回归。
+func TestSafeConfigNeverReturnsPrivateKey(t *testing.T) {
 	loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
 
 	safe := NewConfigService().GetSafe()
 
-	if safe.Gravatar.ExtensionToken != "" {
-		t.Fatalf("gravatar token 不应返回，实际 %q", safe.Gravatar.ExtensionToken)
-	}
-	if safe.RSS.ExtensionToken != "" {
-		t.Fatalf("rss token 不应返回，实际 %q", safe.RSS.ExtensionToken)
-	}
-	// 但「有没有配」这个信息要保留，否则界面无法提示。
-	if !safe.Gravatar.ExtensionTokenSet {
-		t.Fatal("gravatar extension_token_set 应为 true")
-	}
-	if !safe.RSS.ExtensionTokenSet {
-		t.Fatal("rss extension_token_set 应为 true")
+	// 结构体里根本没有这个字段，这里是编译期就能保证的；
+	// 真正防的是「哪天有人为了方便加个 json 字段」。
+	if !safe.Extension.PrivateKeySet {
+		t.Fatal("extension.private_key_set 应为 true（配置里确实有一把）")
 	}
 
-	// 整体序列化后再查一遍：万一哪天有人给结构体加了 json tag，
-	// 这里能拦住。
 	blob, err := json.Marshal(safe)
 	if err != nil {
 		t.Fatalf("序列化失败: %v", err)
 	}
-	for _, secret := range []string{"super-secret-gravatar-token", "super-secret-rss-token"} {
-		if strings.Contains(string(blob), secret) {
-			t.Fatalf("安全视图里出现了明文 token %q", secret)
-		}
+	if strings.Contains(string(blob), "super-secret-private-key") {
+		t.Fatalf("安全视图里出现了私钥内容: %s", blob)
 	}
 }
 
-func TestUpdateKeepsExtensionTokenWhenSubmittedEmpty(t *testing.T) {
-	// 设置页拿到的是脱敏后的配置（token 为空串）。若后端把它当作用户意图
-	// 直接写入，每保存一次设置都会把 token 抹掉，头像与抓取随即开始失败。
+// TestUpdateKeepsPrivateKeyWhenUpdatingOtherFields 锁住「改超时不该丢身份」。
+//
+// extension 段同时装着连接参数与私钥，而 Web 表单只知道前者。
+// 整段替换会把 private_key_pem 抹掉，表现为保存一次设置后所有签名请求
+// 变成 401，而界面上只显示「已保存」。
+func TestUpdateKeepsPrivateKeyWhenUpdatingOtherFields(t *testing.T) {
 	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
 
+	enabled := true
+	timeout := 45
 	err := NewConfigService().Update(UpdateConfigRequest{
-		Gravatar: &config.GravatarConfig{
-			Enabled:      true,
-			DefaultStyle: "mp",
-			DefaultSize:  256,
-			Rating:       "g",
-			ExtensionURL: "http://ext:8090",
-			// 前端回传空串
-			ExtensionToken: "",
-			TimeoutSeconds: 10,
-			MaxBytes:       2097152,
+		Extension: &ExtensionUpdate{
+			Enabled:        &enabled,
+			BaseURL:        strPtr("https://ext.example.com/api/v1"),
+			TimeoutSeconds: &timeout,
 		},
 	})
 	if err != nil {
@@ -126,14 +124,19 @@ func TestUpdateKeepsExtensionTokenWhenSubmittedEmpty(t *testing.T) {
 	}
 
 	raw := readConfigJSON(t, path)
-	gravatar := raw["gravatar"].(map[string]any)
-	if got := gravatar["extension_token"]; got != "super-secret-gravatar-token" {
-		t.Fatalf("空 token 提交后应保留原值，实际 %v", got)
+	ext := raw["extension"].(map[string]any)
+	if got := ext["private_key_pem"]; got != "super-secret-private-key" {
+		t.Fatalf("私钥应被保留，实际 %v", got)
 	}
-	if got := gravatar["default_style"]; got != "mp" {
-		t.Fatalf("该改的字段没改：default_style = %v", got)
+	if got := ext["timeout_seconds"]; got != float64(45) {
+		t.Fatalf("该改的字段没改：timeout_seconds = %v", got)
+	}
+	if got := ext["enabled"]; got != true {
+		t.Fatalf("enabled 应为 true，实际 %v", got)
 	}
 }
+
+func strPtr(s string) *string { return &s }
 
 func TestUpdatePreservesUnknownKeysInSection(t *testing.T) {
 	// 设置页只认识结构体里的字段。整段替换会把 _comment 与用户自己加的
@@ -162,14 +165,17 @@ func TestUpdateMergesProxyCredentialsByName(t *testing.T) {
 	// 整体替换会让每次保存设置都清掉代理凭据，代理静默失效。
 	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
 
-	proxies := []config.ProxyEntry{{Name: "router", Type: "http", Enabled: false}}
+	proxies := config.ProxyConfig{
+		Entries: []config.ProxyEntry{{Name: "router", Type: "http", Enabled: false}},
+	}
 	err := NewConfigService().Update(UpdateConfigRequest{Proxy: &proxies})
 	if err != nil {
 		t.Fatalf("更新失败: %v", err)
 	}
 
 	raw := readConfigJSON(t, path)
-	list := raw["proxy"].([]any)
+	section := raw["proxy"].(map[string]any)
+	list := section["entries"].([]any)
 	if len(list) != 1 {
 		t.Fatalf("代理条数应保持 1，实际 %d", len(list))
 	}
@@ -180,17 +186,23 @@ func TestUpdateMergesProxyCredentialsByName(t *testing.T) {
 	if got := entry["enabled"]; got != false {
 		t.Fatalf("enabled 应被更新为 false，实际 %v", got)
 	}
+	// 请求里没带 default，应保留原链而不是被清空。
+	def, ok := section["default"].([]any)
+	if !ok || len(def) != 1 || def[0] != "router" {
+		t.Fatalf("default 代理链应被保留，实际 %v", section["default"])
+	}
 }
 
-func TestUpdateWritesExtensionHubSection(t *testing.T) {
+func TestUpdateWritesExtensionSection(t *testing.T) {
 	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
 
+	enabled := true
+	timeout := 30
 	err := NewConfigService().Update(UpdateConfigRequest{
-		ExtensionHub: &config.ExtensionHubConfig{
-			Enabled:        true,
-			BaseURL:        "https://ext.example.com/api/v1",
-			PrivateKeyPath: "/etc/homehub/hub.key",
-			TimeoutSeconds: 30,
+		Extension: &ExtensionUpdate{
+			Enabled:        &enabled,
+			BaseURL:        strPtr("https://ext.example.com/api/v1"),
+			TimeoutSeconds: &timeout,
 		},
 	})
 	if err != nil {
@@ -198,12 +210,12 @@ func TestUpdateWritesExtensionHubSection(t *testing.T) {
 	}
 
 	raw := readConfigJSON(t, path)
-	hub := raw["extension_hub"].(map[string]any)
-	if hub["enabled"] != true {
-		t.Fatalf("enabled 应为 true，实际 %v", hub["enabled"])
+	ext := raw["extension"].(map[string]any)
+	if ext["enabled"] != true {
+		t.Fatalf("enabled 应为 true，实际 %v", ext["enabled"])
 	}
-	if hub["base_url"] != "https://ext.example.com/api/v1" {
-		t.Fatalf("base_url 未写入，实际 %v", hub["base_url"])
+	if ext["base_url"] != "https://ext.example.com/api/v1" {
+		t.Fatalf("base_url 未写入，实际 %v", ext["base_url"])
 	}
 }
 
@@ -233,8 +245,6 @@ func TestUpdateTouchesOnlyTheGivenSection(t *testing.T) {
 	}
 }
 
-func strPtr(s string) *string { return &s }
-
 // TestUpdateRejectsInvalidConfigWithoutTouchingTheFile 锁住「校验在写盘之前」。
 //
 // 顺序反过来的后果很严重：用户填错一个字段（比如 base_url 少了 http://），
@@ -247,13 +257,14 @@ func TestUpdateRejectsInvalidConfigWithoutTouchingTheFile(t *testing.T) {
 		t.Fatalf("读取原始配置失败: %v", err)
 	}
 
-	bad := &config.ExtensionHubConfig{
-		Enabled:        true,
-		BaseURL:        "ext.example.com/api/v1", // 少了 scheme
-		PrivateKeyPath: "/etc/homehub/hub.key",
-		TimeoutSeconds: 30,
+	enabled := true
+	timeout := 30
+	bad := &ExtensionUpdate{
+		Enabled:        &enabled,
+		BaseURL:        strPtr("ext.example.com/api/v1"), // 少了 scheme
+		TimeoutSeconds: &timeout,
 	}
-	updateErr := NewConfigService().Update(UpdateConfigRequest{ExtensionHub: bad})
+	updateErr := NewConfigService().Update(UpdateConfigRequest{Extension: bad})
 	if updateErr == nil {
 		t.Fatal("非法 base_url 必须被拒绝")
 	}
@@ -279,12 +290,13 @@ func TestUpdateRejectsInvalidConfigWithoutTouchingTheFile(t *testing.T) {
 func TestUpdateRejectsBaseURLWithoutVersionPrefix(t *testing.T) {
 	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
 
+	enabled := true
+	timeout := 30
 	err := NewConfigService().Update(UpdateConfigRequest{
-		ExtensionHub: &config.ExtensionHubConfig{
-			Enabled:        true,
-			BaseURL:        "https://ext.example.com",
-			PrivateKeyPath: "/etc/homehub/hub.key",
-			TimeoutSeconds: 30,
+		Extension: &ExtensionUpdate{
+			Enabled:        &enabled,
+			BaseURL:        strPtr("https://ext.example.com"),
+			TimeoutSeconds: &timeout,
 		},
 	})
 	if err == nil {

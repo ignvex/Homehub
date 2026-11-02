@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -52,16 +51,18 @@ var ErrExtensionHubStorage = errors.New("本地数据库操作失败")
 // 客户端按配置懒构造。配置热更新后 base_url、私钥路径或超时任一变化，
 // 下一次调用重建客户端。
 //
-// 私钥来源有两处，**数据库优先、文件兜底**：多个实例共用同一个库时，
-// 库里的那一份是共同事实；文件只在本机生效，把它当首选会让
-// 「改过库里的密钥，某个实例却还在用旧文件签」变成难查的问题。
-// 两份都没有时报错，不猜。
+// 私钥只有一处来源：config.json 的 extension.private_key_pem。
+//
+// 旧版把私钥放数据库（多实例共享）或单独文件（兜底），代价是「到底在
+// 用哪一份」变成需要运行期查询的问题，还要额外维护一张表与一套迁移。
+// config.json 本身已是最高敏感度的文件（0600、gitignore、备份必有），
+// 再拆一处并不更安全，只是更绕。
 type ExtensionHubService struct {
 	db *gorm.DB
 
-	// cfg 返回当前生效的对接配置。默认读全局配置，测试可替换为固定值。
+	// cfg 返回当前生效的连接配置。默认读全局配置，测试可替换为固定值。
 	// 每次调用都重新读：配置热重载后无需重启，也不需要通知回调。
-	cfg func() config.ExtensionHubConfig
+	cfg func() config.ExtensionConfig
 
 	// readyClient 用于 /readyz 探测。它不走签名通道，所以不复用 hubclient。
 	// 超时给得短：这只是一条附加信息，不该拖慢状态接口。
@@ -73,185 +74,114 @@ type ExtensionHubService struct {
 
 // extensionHubClient 缓存一次构造结果及其配置快照。
 type extensionHubClient struct {
-	baseURL     string
-	keyPath     string
-	timeoutSecs int
-	// keySource / keyVersion 共同标识「用的是哪一份密钥」。
+	baseURL string
+	// keyFingerprint 是私钥 PEM 的短哈希，用作判重依据。
 	//
-	// source 区分数据库与文件；version 是判重依据——文件用 mtime+size，
-	// 数据库行用 updated_at。只比路径不够：轮换最常见的做法是覆盖同名
-	// 文件或原地改一行，路径与内容都对不上时就会一直用旧身份签出 401，
-	// 且没有任何报错提示该重读。
-	keySource  string
-	keyVersion string
+	// 只比 baseURL 不够：轮换密钥最常见的方式就是原地改配置里的 PEM，
+	// 地址没变。不比内容就会一直用旧身份签出 401，且没有任何提示。
+	keyFingerprint string
+	timeoutSecs    int
 
 	client *hubclient.Client
 	signer *hubclient.Signer
 }
 
-// 密钥来源标记，进日志与状态接口，便于排查「到底在用哪一份」。
-const (
-	KeySourceDatabase = "database"
-	KeySourceFile     = "file"
-)
+// KeySourceConfig 是唯一可能的密钥来源，进日志与状态接口。
+const KeySourceConfig = "config"
 
 // NewExtensionHubService 创建对接服务。
 func NewExtensionHubService(db *gorm.DB) *ExtensionHubService {
 	return &ExtensionHubService{
 		db:          db,
 		readyClient: &http.Client{Timeout: 5 * time.Second},
-		cfg: func() config.ExtensionHubConfig {
+		cfg: func() config.ExtensionConfig {
 			if c := config.Get(); c != nil {
-				return c.ExtensionHub
+				return c.Extension
 			}
-			return config.ExtensionHubConfig{}
+			return config.ExtensionConfig{}
 		},
 	}
-}
-
-// keyMaterial 是一份可用的私钥及其来源标记。
-type keyMaterial struct {
-	raw     []byte
-	public  string
-	source  string
-	version string
-}
-
-// keyVersionOf 把时间戳压成可比较的版本串。
-func keyVersionOf(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-// loadKeyMaterial 按「数据库优先、文件兜底」取私钥。
-//
-// 热路径上只查 public_key 与 updated_at（一条主键/排序查询），
-// 不把私钥列拽进内存；只有版本真的变了才取完整行。少碰一次私钥
-// 就少一次泄露面。
-func (s *ExtensionHubService) loadKeyMaterial(hub config.ExtensionHubConfig) (*keyMaterial, error) {
-	var dbErr error
-
-	if s.db != nil {
-		// Select 限定列：热路径不把私钥拽进内存，少碰一次就少一次泄露面。
-		var head model.ExtensionHubKey
-		err := s.db.Select("public_key", "updated_at").
-			Order("id DESC").Limit(1).Find(&head).Error
-		if err != nil {
-			dbErr = err
-		} else if head.PublicKey != "" {
-			var full model.ExtensionHubKey
-			if err := s.db.Select("private_key_pem", "public_key").
-				Order("id DESC").Limit(1).Find(&full).Error; err != nil {
-				return nil, fmt.Errorf("%w: 读取签名私钥失败: %v", ErrExtensionHubStorage, err)
-			}
-			if strings.TrimSpace(full.PrivateKeyPEM) == "" {
-				return nil, fmt.Errorf("%w: 数据库里的私钥行为空", ErrExtensionHubStorage)
-			}
-			return &keyMaterial{
-				raw:     []byte(full.PrivateKeyPEM),
-				public:  full.PublicKey,
-				source:  KeySourceDatabase,
-				version: keyVersionOf(head.UpdatedAt),
-			}, nil
-		}
-	}
-
-	// 数据库没有（或不可用）时回退到文件。
-	path := strings.TrimSpace(hub.PrivateKeyPath)
-	if path == "" {
-		if dbErr != nil {
-			return nil, fmt.Errorf("%w: 数据库不可用且未配置私钥路径: %v", ErrExtensionHubStorage, dbErr)
-		}
-		return nil, fmt.Errorf("没有可用的签名私钥：数据库里没有，private_key_path 也未配置")
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if dbErr != nil {
-			return nil, fmt.Errorf("%w: 数据库不可用，且读取私钥文件 %s 失败: %v", ErrExtensionHubStorage, path, err)
-		}
-		return nil, fmt.Errorf("读取私钥文件 %s 失败: %w", path, err)
-	}
-
-	info, statErr := os.Stat(path)
-	version := "unknown"
-	if statErr == nil {
-		version = fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
-	}
-
-	return &keyMaterial{raw: raw, public: "", source: KeySourceFile, version: version}, nil
 }
 
 // client 返回当前配置对应的客户端与签名器。
 //
 // 每次调用都重新读一次配置：热重载之后不需要重启服务，也不需要
-// 通知回调。代价是一次 atomic 读取、一次配置比较和一次很轻的密钥版本查询。
+// 通知回调。代价是一次 atomic 读取与一次很轻的字符串比较。
 func (s *ExtensionHubService) client() (*hubclient.Client, *hubclient.Signer, error) {
-	hub := s.cfg()
-	if !hub.Enabled {
+	ext := s.cfg()
+	if !ext.Enabled || !ext.Features.Hub {
 		return nil, nil, ErrExtensionHubDisabled
 	}
-	if strings.TrimSpace(hub.BaseURL) == "" {
+	if strings.TrimSpace(ext.BaseURL) == "" {
 		// 不包 ErrExtensionHubDisabled：配置项写漏了与用户根本没启用是
-		// 两件事，前端要分别提示“去填配置”与“去打开开关”。
-		return nil, nil, fmt.Errorf("base_url 必须填写")
+		// 两件事，前端要分别提示"去填配置"与"去打开开关"。
+		return nil, nil, fmt.Errorf("extension.base_url 必须填写")
+	}
+
+	pemText := strings.TrimSpace(ext.PrivateKeyPEM)
+	if pemText == "" {
+		return nil, nil, fmt.Errorf("没有可用的签名私钥：extension.private_key_pem 未配置")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	mat, err := s.loadKeyMaterial(hub)
-	if err != nil {
-		// 不缓存失败：把密钥补进数据库 / 文件放到位后，下一次调用即可生效。
-		return nil, nil, err
-	}
-
+	fingerprint := fingerprintKey(pemText)
 	if c := s.cached; c != nil &&
-		c.baseURL == hub.BaseURL &&
-		c.keyPath == hub.PrivateKeyPath &&
-		c.timeoutSecs == hub.TimeoutSeconds &&
-		c.keySource == mat.source &&
-		c.keyVersion == mat.version {
+		c.baseURL == ext.BaseURL &&
+		c.timeoutSecs == ext.TimeoutSeconds &&
+		c.keyFingerprint == fingerprint {
 		return c.client, c.signer, nil
 	}
 
-	signer, err := hubclient.LoadSignerFromBytes(mat.raw)
+	signer, err := hubclient.LoadSignerFromBytes([]byte(pemText))
 	if err != nil {
-		if mat.source == KeySourceDatabase {
-			return nil, nil, fmt.Errorf("%w: 数据库里的私钥无法解析: %v", ErrExtensionHubStorage, err)
-		}
-		return nil, nil, fmt.Errorf("解析私钥失败: %w", err)
+		return nil, nil, fmt.Errorf("解析 extension.private_key_pem 失败: %w", err)
 	}
 
-	// 数据库里冗余存了公钥，验一下它与私钥确实配对。不对就报错而不是
-	// 静默用私钥推导：那说明这行数据本身已经坏了，继续用会掩盖问题。
-	if mat.source == KeySourceDatabase && mat.public != "" {
-		if got := signer.PublicKeyBase64(); got != mat.public {
-			return nil, nil, fmt.Errorf(
-				"%w: 数据库里的公钥与私钥不匹配（记录 %s，私钥推导 %s），请重新上传私钥",
-				ErrExtensionHubStorage, mat.public, got)
-		}
+	// 自签自验：能解析不等于能用。
+	//
+	// LoadSignerFromBytes 对「裸字节」只校验长度，因此任意 64 字节文本
+	// 都会被当成合法私钥。粘贴时漏了一段 base64、或者把别的内容混进来，
+	// 长度恰好是 64 就会静默通过，直到每个请求都 401 才发现。
+	// 一次签名+验签是微秒级开销，只在重建客户端时发生。
+	probe := []byte("homehub-client-selfcheck")
+	if !ed25519.Verify(signer.PublicKey(), probe, signer.SignRaw(probe)) {
+		return nil, nil, fmt.Errorf("extension.private_key_pem 自检失败，内容可能已损坏")
 	}
 
-	client, err := hubclient.New(hub.BaseURL, signer)
+	client, err := hubclient.New(ext.BaseURL, signer)
 	if err != nil {
 		return nil, nil, err
 	}
-	if hub.TimeoutSeconds > 0 {
-		client.Timeout = time.Duration(hub.TimeoutSeconds) * time.Second
+	if ext.TimeoutSeconds > 0 {
+		client.Timeout = time.Duration(ext.TimeoutSeconds) * time.Second
 	}
 
-	s.cached = &extensionHubClient{
-		baseURL:     hub.BaseURL,
-		keyPath:     hub.PrivateKeyPath,
-		timeoutSecs: hub.TimeoutSeconds,
-		keySource:   mat.source,
-		keyVersion:  mat.version,
-		client:      client,
-		signer:      signer,
+	// Extension 默认直连：通常是内网或同机部署，绕代理反而更慢，
+	// 而且很多代理不转发内网地址。需要时由 extension.proxy_names 指定。
+	transport, terr := config.ExtensionTransport()
+	if terr != nil {
+		logger.Warn("[extension] 代理配置不可用，改为直连", "error", terr)
+		transport, _ = config.TransportFor(nil)
 	}
-	logger.Info("Extension hub 通道已就绪",
-		"base_url", hub.BaseURL,
-		"key_source", mat.source,
+	client.SetHTTPClient(&http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+
+	s.cached = &extensionHubClient{
+		baseURL:        ext.BaseURL,
+		keyFingerprint: fingerprint,
+		timeoutSecs:    ext.TimeoutSeconds,
+		client:         client,
+		signer:         signer,
+	}
+	logger.Info("Extension 通道已就绪",
+		"base_url", ext.BaseURL,
+		"key_source", KeySourceConfig,
 		"public_key", signer.PublicKeyBase64(),
 	)
 	return client, signer, nil
@@ -289,15 +219,11 @@ type ExtensionHubStatus struct {
 	PublicKey string `json:"public_key,omitempty"`
 	// PublicKeyPEM 是同一把公钥的 PKIX PEM 全文，部署时用它。
 	PublicKeyPEM string `json:"public_key_pem,omitempty"`
-	// KeySource 是这把密钥的来处：database / file / none。
-	// 多实例共用数据库时，靠它确认「用的到底是共享那份还是本机文件」。
+	// KeySource 是这把密钥的来处：config / none。
 	KeySource string `json:"key_source,omitempty"`
 	// KeyFingerprint 是公钥的 SHA-256 前 16 位，用来在不暴露公钥全串的
 	// 场合核对身份（例如日志、工单）。私钥永远不会出现在任何响应里。
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
-	// KeyUpdatedAt 只在来源为数据库时有值。
-	KeyUpdatedAt *time.Time `json:"key_updated_at,omitempty"`
-
 	Reachable     bool `json:"reachable"`
 	Authenticated bool `json:"authenticated"`
 	RSSAvailable  bool `json:"rss_available"`
@@ -328,7 +254,7 @@ func (s *ExtensionHubService) Status(ctx context.Context) ExtensionHubStatus {
 	hub := s.cfg()
 	st.Enabled = hub.Enabled
 	st.BaseURL = hub.BaseURL
-	if !hub.Enabled {
+	if !hub.Enabled || !hub.Features.Hub {
 		st.ErrorCode = "disabled"
 		st.ErrorMessage = ErrExtensionHubDisabled.Error()
 		return st
@@ -351,7 +277,6 @@ func (s *ExtensionHubService) Status(ctx context.Context) ExtensionHubStatus {
 	// 查失败时留空，不把它算成故障——状态的主结论已经拿到了。
 	if info, err := s.KeyInfo(); err == nil {
 		st.KeySource = info.Source
-		st.KeyUpdatedAt = info.UpdatedAt
 	}
 
 	// 第一步用 /hub/keys 验证签名，而不是 /hub/subscriptions。
@@ -705,18 +630,19 @@ func (s *ExtensionHubService) DeleteRemoteSubscription(ctx context.Context, id u
 
 // ExtensionHubKeyInfo 是密钥的对外视图。**不含私钥**。
 type ExtensionHubKeyInfo struct {
-	Source string `json:"source"` // database / file / none
-	// InDatabase 为真表示库里有一行密钥，删掉它会把来源退回文件。
-	InDatabase bool   `json:"in_database"`
+	// Source 只有两个取值：config（已配置）与 none（未配置）。
+	Source string `json:"source"`
+	// Configured 是 Source 的布尔形式，前端直接用这个。
+	Configured bool   `json:"configured"`
 	PublicKey  string `json:"public_key,omitempty"`
 	// PublicKeyPEM 是 PKIX PEM 全文，部署时优先用它：
 	// 自带类型标记，不会与「DER 的 base64」混淆。
 	PublicKeyPEM string `json:"public_key_pem,omitempty"`
 	// Fingerprint 是公钥的 SHA-256 前 16 位，便于在日志里核对。
-	Fingerprint string     `json:"fingerprint,omitempty"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
-	// FilePath 是回退来源的路径，仅当配置里填了才有。
-	FilePath string `json:"file_path,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// Broken 为真表示配置里的 PEM 存在但解析不了。
+	// 与「未配置」分开：两者的修法不同（一个要重新粘贴，一个要先配）。
+	Broken bool `json:"broken,omitempty"`
 }
 
 // fingerprintKey 取**裸公钥字节** SHA-256 的前 16 位（8 字节 hex）。
@@ -757,60 +683,44 @@ func publicKeyPEMFromBase64(b64 string) string {
 	return string(block)
 }
 
-// KeyInfo 描述当前生效的密钥来源，不含私钥。
+// KeyInfo 描述当前生效的密钥，**不含私钥**。
 //
-// 三种情况都要能区分清楚，否则用户不知道该改哪里：
-//   - database：库里有一把，正在用
-//   - file：库里没有，回退到了 private_key_path
-//   - none：两处都没有，签不了名
+// 三种情况要能区分清楚，否则用户不知道该改哪里：
+//   - 已配置且能解析：正常，回公钥与指纹
+//   - 未配置：extension.private_key_pem 为空
+//   - 配了但解析不了：粘贴时截断了，或者混进了别的内容
 func (s *ExtensionHubService) KeyInfo() (*ExtensionHubKeyInfo, error) {
-	hub := s.cfg()
-	info := &ExtensionHubKeyInfo{Source: "none", FilePath: strings.TrimSpace(hub.PrivateKeyPath)}
-
-	if s.db != nil {
-		var head model.ExtensionHubKey
-		err := s.db.Select("public_key", "updated_at").
-			Order("id DESC").Limit(1).Find(&head).Error
-		if err != nil {
-			return nil, fmt.Errorf("%w: 查询签名私钥失败: %v", ErrExtensionHubStorage, err)
-		}
-		if head.PublicKey != "" {
-			at := head.UpdatedAt
-			info.Source = KeySourceDatabase
-			info.InDatabase = true
-			info.PublicKey = head.PublicKey
-			info.PublicKeyPEM = publicKeyPEMFromBase64(head.PublicKey)
-			info.Fingerprint = fingerprintKey(head.PublicKey)
-			info.UpdatedAt = &at
-			return info, nil
-		}
+	pemText := strings.TrimSpace(s.cfg().PrivateKeyPEM)
+	if pemText == "" {
+		return &ExtensionHubKeyInfo{Source: "none"}, nil
 	}
 
-	// 库里没有，看文件。这里只 stat，不读内容——展示来源不需要私钥。
-	if path := info.FilePath; path != "" {
-		if raw, err := os.ReadFile(path); err == nil {
-			if signer, perr := hubclient.LoadSignerFromBytes(raw); perr == nil {
-				info.Source = KeySourceFile
-				info.PublicKey = signer.PublicKeyBase64()
-				info.PublicKeyPEM, _ = signer.PublicKeyPEM()
-				info.Fingerprint = fingerprintKey(info.PublicKey)
-			}
-		}
+	signer, err := hubclient.LoadSignerFromBytes([]byte(pemText))
+	if err != nil {
+		// 解析失败不返回错误：状态接口要能回答「现在配了一把坏的私钥」，
+		// 直接报错会让前端连这个事实都拿不到。
+		return &ExtensionHubKeyInfo{Source: KeySourceConfig, Broken: true}, nil
 	}
-	return info, nil
+
+	pub := signer.PublicKeyBase64()
+	pemOut, _ := signer.PublicKeyPEM()
+	return &ExtensionHubKeyInfo{
+		Source:       KeySourceConfig,
+		Configured:   true,
+		PublicKey:    pub,
+		PublicKeyPEM: pemOut,
+		Fingerprint:  fingerprintKey(pub),
+	}, nil
 }
 
-// SetKey 把私钥存进数据库，成为所有实例的共享来源。
+// SetKey 把私钥写进 config.json 的 extension.private_key_pem。
 //
 // 接受与 LoadSigner 相同的三种形态（PKCS#8 PEM / 裸种子 / base64 文本），
-// 但入库一律规范成 PEM：库里存一份统一格式，回读时不用再猜。
+// 但落盘一律规范成 PEM：文件里存一份统一格式，回读时不用再猜。
 //
 // 校验比「能解析」严格一档：解析出来之后立刻自签一次并验签，
 // 确认这把私钥真的可用。只解析不验证会放过「长度对但内容坏」的输入。
 func (s *ExtensionHubService) SetKey(raw string) (*ExtensionHubKeyInfo, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("%w: 数据库不可用，无法保存私钥", ErrExtensionHubStorage)
-	}
 	if strings.TrimSpace(raw) == "" {
 		return nil, fmt.Errorf("%w: 私钥内容不能为空", ErrExtensionHubInvalidInput)
 	}
@@ -831,48 +741,57 @@ func (s *ExtensionHubService) SetKey(raw string) (*ExtensionHubKeyInfo, error) {
 		return nil, fmt.Errorf("%w: 规范化私钥失败: %v", ErrExtensionHubInvalidInput, err)
 	}
 
-	// 只保留一行：多行会让「哪把在生效」需要额外规则。
-	// 轮换就是覆盖，旧密钥不留——私钥留在库里没有任何好处。
-	row := model.ExtensionHubKey{
-		PrivateKeyPEM: pemText,
-		PublicKey:     signer.PublicKeyBase64(),
-	}
-	// 硬删除：留软删除行等于把旧私钥继续留在库里，而它对任何人都没有用处。
-	if err := s.db.Unscoped().Where("1 = 1").Delete(&model.ExtensionHubKey{}).Error; err != nil {
-		return nil, fmt.Errorf("%w: 清理旧私钥失败: %v", ErrExtensionHubStorage, err)
-	}
-	if err := s.db.Create(&row).Error; err != nil {
-		return nil, fmt.Errorf("%w: 保存私钥失败: %v", ErrExtensionHubStorage, err)
+	if err := writeExtensionField("private_key_pem", pemText); err != nil {
+		return nil, fmt.Errorf("%w: 写入配置失败: %v", ErrExtensionHubStorage, err)
 	}
 
 	s.invalidateCache()
-
-	logger.Info("已把签名私钥存入数据库",
-		"public_key", row.PublicKey, "fingerprint", fingerprintKey(row.PublicKey))
+	logger.Info("已把签名私钥写入 config.json",
+		"public_key", signer.PublicKeyBase64(),
+		"fingerprint", fingerprintKey(signer.PublicKeyBase64()))
 	return s.KeyInfo()
 }
 
-// DeleteKey 移除数据库里的私钥，来源退回 private_key_path。
+// DeleteKey 清空 config.json 里的私钥。
 //
-// 返回 false 表示库里本来就没有。这里不阻止「删掉之后无密钥可用」——
-// 那是用户的部署选择，拒绝反而更难办。
+// 返回 false 表示本来就没配。这里不阻止「删掉之后无密钥可用」——
+// 那是用户的部署选择，拒绝反而更难办；但 enabled 仍为 true 时会
+// 被配置校验拦下，需要先关掉开关，错误信息会说明这一点。
 func (s *ExtensionHubService) DeleteKey() (bool, error) {
-	if s.db == nil {
-		return false, fmt.Errorf("%w: 数据库不可用", ErrExtensionHubStorage)
+	if strings.TrimSpace(s.cfg().PrivateKeyPEM) == "" {
+		return false, nil
 	}
 
-	result := s.db.Unscoped().Where("1 = 1").Delete(&model.ExtensionHubKey{})
-	if result.Error != nil {
-		return false, fmt.Errorf("%w: 删除私钥失败: %v", ErrExtensionHubStorage, result.Error)
+	if err := writeExtensionField("private_key_pem", nil); err != nil {
+		return false, fmt.Errorf("%w: %v", ErrExtensionHubInvalidInput, err)
 	}
 
 	s.invalidateCache()
-
-	if result.RowsAffected == 0 {
-		return false, nil
-	}
-	logger.Info("已从数据库移除签名私钥，回退到 private_key_path")
+	logger.Info("已从 config.json 移除签名私钥")
 	return true, nil
+}
+
+// writeExtensionField 改写 config.json 的 extension 段中的单个字段。
+//
+// value 为 nil 表示删除该键。用局部更新而不是整体覆盖：extension 段
+// 里还有其他字段，整体写回会让「只改密钥」变成一次全量替换。
+func writeExtensionField(key string, value any) error {
+	return config.AtomicJSONUpdate(config.Path(), func(raw map[string]any) error {
+		section, ok := raw["extension"].(map[string]any)
+		if !ok {
+			section = map[string]any{}
+			raw["extension"] = section
+		}
+		if value == nil {
+			delete(section, key)
+			if enabled, _ := section["enabled"].(bool); enabled {
+				return fmt.Errorf("extension.enabled 仍为 true，请先关闭后再清除私钥")
+			}
+			return nil
+		}
+		section[key] = value
+		return nil
+	})
 }
 
 // ============================================================
@@ -989,4 +908,60 @@ func formatHubInterval(seconds int) string {
 	default:
 		return fmt.Sprintf("%dm", minutes)
 	}
+}
+
+// ============================================================
+// 共用的出站客户端构造
+// ============================================================
+
+// errExtensionNotConfigured 表示没有可用的 Extension 连接配置。
+//
+// 与「配置了但坏了」分开：前者应当静默回落到本地实现（用户可能
+// 根本没打算用 Extension），后者应当报错，避免把人引向错误的方向。
+var errExtensionNotConfigured = errors.New("extension 未启用或未配置")
+
+// buildExtensionClient 从配置构造一个带签名的 Extension 客户端。
+//
+// 供 RSS 代抓与头像代理使用：它们和 /hub/* 是同一个对端、同一把密钥，
+// 认证方式必须一致。旧版这两条通路各用一套 Bearer token，结果是同一个
+// 部署里存在两套凭据，换一次 token 要改三个地方。
+func buildExtensionClient(cfg *config.Config, timeout time.Duration) (*hubclient.Client, error) {
+	if cfg == nil || !cfg.Extension.Enabled || strings.TrimSpace(cfg.Extension.BaseURL) == "" {
+		return nil, errExtensionNotConfigured
+	}
+
+	pemText := strings.TrimSpace(cfg.Extension.PrivateKeyPEM)
+	if pemText == "" {
+		return nil, fmt.Errorf("extension.private_key_pem 未配置")
+	}
+
+	signer, err := hubclient.LoadSignerFromBytes([]byte(pemText))
+	if err != nil {
+		return nil, fmt.Errorf("解析 extension.private_key_pem 失败: %w", err)
+	}
+
+	client, err := hubclient.New(cfg.Extension.BaseURL, signer)
+	if err != nil {
+		return nil, err
+	}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+
+	// Extension 默认直连，需要时代理由 extension.proxy_names 指定。
+	transport, terr := config.ExtensionTransport()
+	if terr != nil {
+		logger.Warn("[extension] 代理配置不可用，改为直连", "error", terr)
+		transport, _ = config.TransportFor(nil)
+	}
+	// 不跟随重定向：地址由运维配置，跳转只可能是配置错误或劫持，
+	// 静默跟随会把签名头带给第三方。
+	client.SetHTTPClient(&http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+
+	return client, nil
 }

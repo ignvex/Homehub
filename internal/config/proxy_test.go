@@ -51,13 +51,15 @@ func TestTransportForHTTP(t *testing.T) {
 	t.Cleanup(func() { globalConfig.Store(bak) })
 
 	cfg := &Config{
-		Proxy: []ProxyEntry{{
-			Name:     "p",
-			Type:     "http",
-			HTTPURL:  "http://127.0.0.1:1111",
-			HTTPSURL: "http://127.0.0.1:2222",
-			Enabled:  true,
-		}},
+		Proxy: ProxyConfig{
+			Entries: []ProxyEntry{{
+				Name:     "p",
+				Type:     "http",
+				HTTPURL:  "http://127.0.0.1:1111",
+				HTTPSURL: "http://127.0.0.1:2222",
+				Enabled:  true,
+			}},
+		},
 	}
 	globalConfig.Store(cfg)
 
@@ -94,11 +96,11 @@ func TestTransportForSkipsDisabledAndEmpty(t *testing.T) {
 	t.Cleanup(func() { globalConfig.Store(bak) })
 
 	cfg := &Config{
-		Proxy: []ProxyEntry{
+		Proxy: ProxyConfig{Entries: []ProxyEntry{
 			{Name: "off", Type: "http", HTTPURL: "http://127.0.0.1:1", Enabled: false},
 			{Name: "empty", Type: "http", Enabled: true},
 			{Name: "ok", Type: "http", HTTPURL: "http://127.0.0.1:7890", Enabled: true},
-		},
+		}},
 	}
 	globalConfig.Store(cfg)
 
@@ -123,12 +125,12 @@ func TestTransportForSocks5(t *testing.T) {
 	t.Cleanup(func() { globalConfig.Store(bak) })
 
 	cfg := &Config{
-		Proxy: []ProxyEntry{{
+		Proxy: ProxyConfig{Entries: []ProxyEntry{{
 			Name:    "s",
 			Type:    "socks5",
 			HTTPURL: "127.0.0.1:1080", // socks5 存 host:port
 			Enabled: true,
-		}},
+		}}},
 	}
 	globalConfig.Store(cfg)
 
@@ -150,12 +152,12 @@ func TestTransportForInvalidSocks5(t *testing.T) {
 	t.Cleanup(func() { globalConfig.Store(bak) })
 
 	cfg := &Config{
-		Proxy: []ProxyEntry{{
+		Proxy: ProxyConfig{Entries: []ProxyEntry{{
 			Name:    "bad",
 			Type:    "socks5",
 			HTTPURL: "http://not-a-host", // 带 scheme，proxy.SOCKS5 会拒绝
 			Enabled: true,
-		}},
+		}}},
 	}
 	globalConfig.Store(cfg)
 

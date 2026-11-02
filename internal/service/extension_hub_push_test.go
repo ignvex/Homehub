@@ -83,10 +83,10 @@ func TestPushFeedSendsMappedFieldsFromDatabase(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	keyPath, _ := newTestSignerFile(t)
+	pemText, _ := newTestSigner(t)
 	expectFeedByID(mock, 7, "Example Blog", "https://example.com/feed.xml", 1800)
 
-	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
+	svc := newTestHubService(t, upstream.URL+"/api/v1", pemText)
 	svc.db = db
 
 	result, err := svc.PushFeed(context.Background(), 7, nil, true)
@@ -126,10 +126,10 @@ func TestPushFeedPassesExplicitEnabledToRestoreFeed(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	keyPath, _ := newTestSignerFile(t)
+	pemText, _ := newTestSigner(t)
 	expectFeedByID(mock, 3, "Feed", "https://example.com/feed.xml", 3600)
 
-	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
+	svc := newTestHubService(t, upstream.URL+"/api/v1", pemText)
 	svc.db = db
 
 	enabled := true
@@ -150,12 +150,12 @@ func TestPushFeedReportsMissingLocalFeed(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	keyPath, _ := newTestSignerFile(t)
+	pemText, _ := newTestSigner(t)
 	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
 		WithArgs(uint64(99), 1).
 		WillReturnRows(sqlmock.NewRows(rssFeedColumns()))
 
-	svc := newTestHubService(t, "http://127.0.0.1:1/api/v1", keyPath)
+	svc := newTestHubService(t, "http://127.0.0.1:1/api/v1", pemText)
 	svc.db = db
 
 	_, err := svc.PushFeed(context.Background(), 99, nil, true)
@@ -206,8 +206,8 @@ func TestSyncAllPushesOnlyExtensionFeeds(t *testing.T) {
 			AddRow(2, time.Now(), time.Now(), nil, "B", "https://b.example/feed", "", "", "", "",
 				1800, "extension", true, time.Time{}, "", nil))
 
-	keyPath, _ := newTestSignerFile(t)
-	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := newTestSigner(t)
+	svc := newTestHubService(t, upstream.URL+"/api/v1", pemText)
 	svc.db = db
 
 	result, err := svc.SyncAll(context.Background())
@@ -253,8 +253,8 @@ func TestSyncAllWithOnlyLocalFeedsSendsNothing(t *testing.T) {
 			AddRow(1, time.Now(), time.Now(), nil, "A", "https://a.example/feed", "", "", "", "",
 				3600, "local", true, time.Time{}, "", nil))
 
-	keyPath, _ := newTestSignerFile(t)
-	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := newTestSigner(t)
+	svc := newTestHubService(t, upstream.URL+"/api/v1", pemText)
 	svc.db = db
 
 	result, err := svc.SyncAll(context.Background())

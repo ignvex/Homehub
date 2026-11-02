@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +23,9 @@ import (
 )
 
 // writeTestSigner 生成一把临时 Ed25519 私钥，返回路径与公钥。
+// writeTestSigner 生成一把 PKCS#8 PEM 私钥，返回 PEM 文本与公钥。
+//
+// 私钥不再落文件：唯一来源是 config.json 的 extension.private_key_pem。
 func writeTestSigner(t *testing.T) (string, ed25519.PublicKey) {
 	t.Helper()
 
@@ -33,25 +37,21 @@ func writeTestSigner(t *testing.T) (string, ed25519.PublicKey) {
 	if err != nil {
 		t.Fatalf("编码私钥失败: %v", err)
 	}
-
-	path := filepath.Join(t.TempDir(), "hub.key")
 	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := os.WriteFile(path, block, 0o600); err != nil {
-		t.Fatalf("写入私钥失败: %v", err)
-	}
-	return path, pub
+	return string(block), pub
 }
 
-// loadExtensionHubConfig 写入并加载一份带 extension_hub 段的最小配置。
-func loadExtensionHubConfig(t *testing.T, enabled bool, baseURL, keyPath string) {
+// loadExtensionHubConfig 写入并加载一份带 extension 段的最小配置。
+func loadExtensionHubConfig(t *testing.T, enabled bool, baseURL, pemText string) {
 	t.Helper()
 
 	body := fmt.Sprintf(`{
 		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
 		"auth": {"session_secret": "%s"},
 		"log": {"level": "error", "format": "json"},
-		"extension_hub": {"enabled": %t, "base_url": %q, "private_key_path": %q, "timeout_seconds": 5}
-	}`, strings.Repeat("a", 32), enabled, baseURL, keyPath)
+		"extension": {"enabled": %t, "base_url": %q, "private_key_pem": %s, "timeout_seconds": 5,
+		              "features": {"hub": true}}
+	}`, strings.Repeat("a", 32), enabled, baseURL, strconv.Quote(pemText))
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -76,8 +76,8 @@ func TestExtensionHubUpstream401Becomes502(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	keyPath, _ := writeTestSigner(t)
-	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := writeTestSigner(t)
+	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", pemText)
 
 	// db 留空：401 在访问本地订阅表之前就返回，不会走到查询。
 	svc = &service.Services{ExtensionHub: service.NewExtensionHubService(nil)}
@@ -113,8 +113,8 @@ func TestExtensionHubUpstream404Becomes502(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	keyPath, _ := writeTestSigner(t)
-	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := writeTestSigner(t)
+	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", pemText)
 	svc = &service.Services{ExtensionHub: service.NewExtensionHubService(nil)}
 
 	r := gin.New()
@@ -159,8 +159,8 @@ func TestExtensionHubStatusExposesPublicKeyForVerification(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	keyPath, pub := writeTestSigner(t)
-	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", keyPath)
+	pemText, pub := writeTestSigner(t)
+	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", pemText)
 	svc = &service.Services{ExtensionHub: service.NewExtensionHubService(nil)}
 
 	r := gin.New()
@@ -213,8 +213,8 @@ func TestExtensionHubIssueKeyRejectsBlankName(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	keyPath, _ := writeTestSigner(t)
-	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := writeTestSigner(t)
+	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", pemText)
 	svc = &service.Services{ExtensionHub: service.NewExtensionHubService(nil)}
 
 	r := gin.New()
@@ -244,8 +244,8 @@ func TestExtensionHubStorageFailureIsNotReportedAsUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	keyPath, _ := writeTestSigner(t)
-	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", keyPath)
+	pemText, _ := writeTestSigner(t)
+	loadExtensionHubConfig(t, true, upstream.URL+"/api/v1", pemText)
 
 	// 用一个已关闭的 DB 连接制造查询失败。
 	db, _, cleanup := testutil.NewMockDB(t)

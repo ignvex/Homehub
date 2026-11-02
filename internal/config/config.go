@@ -73,7 +73,7 @@ type LogConfig struct {
 
 // ProxyEntry 代理服务器配置条目。
 //
-// 可配置多个命名代理，供 Gravatar / Bookmark / RSS 等需要外网访问的服务引用。
+// 可配置多个命名代理，供需要外网访问的服务引用。
 // Type 支持 "http"（默认）和 "socks5"；Enabled 控制该条代理是否生效。
 type ProxyEntry struct {
 	Name     string `json:"name"`      // 代理名称（唯一标识）
@@ -83,30 +83,25 @@ type ProxyEntry struct {
 	Enabled  bool   `json:"enabled"`   // 是否启用该代理
 }
 
-// ProxyServiceConfig 各服务引用代理的通用配置段。
+// ProxyConfig 是全局代理配置。
 //
-// ProxyNames 为按优先级排列的代理名称列表，引用 proxy 池中的代理。
-// 空列表表示直连，多个名称形成 fallback 链。
-type ProxyServiceConfig struct {
-	ProxyNames []string `json:"proxy_names"` // 代理名称列表（按优先级排列，fallback 链），空=直连
+// 与旧版按模块重复声明 proxy_names 不同，这里只有一份默认值：
+// 所有出网模块（RSS 抓取、图片缓存、Gravatar、favicon）都用 Default
+// 指向的代理链，不再各自配置。这样新增一个出网模块时不会因为漏配
+// 而静默走直连——那类失败表现为超时，排查时很难想到是配置缺失。
+//
+// Default 为空表示全局直连。
+type ProxyConfig struct {
+	Entries []ProxyEntry `json:"entries"` // 命名代理池
+	Default []string     `json:"default"` // 默认代理链（按优先级），空=直连
 }
 
 // GravatarConfig Gravatar 头像配置。
 type GravatarConfig struct {
-	Enabled      bool     `json:"enabled"`       // 是否启用以 Gravatar 生成头像
-	DefaultStyle string   `json:"default_style"` // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
-	DefaultSize  int      `json:"default_size"`  // 头像缓存尺寸（像素），默认 256，范围 16-512
-	Rating       string   `json:"rating"`        // 内容分级：g / pg / r / x
-	ProxyNames   []string `json:"proxy_names"`   // 直连模式下的代理名称列表（引用 proxy 池），空=直连
-
-	// ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。
-	//
-	// 为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：
-	// HomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=&d=&r=，
-	// extension 不反向连接、不需要数据库凭据。
-	ExtensionURL string `json:"extension_url"`
-	// ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
-	ExtensionToken string `json:"extension_token"`
+	Enabled      bool   `json:"enabled"`       // 是否启用以 Gravatar 生成头像
+	DefaultStyle string `json:"default_style"` // 默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404
+	DefaultSize  int    `json:"default_size"`  // 头像缓存尺寸（像素），默认 256，范围 16-512
+	Rating       string `json:"rating"`        // 内容分级：g / pg / r / x
 	// TimeoutSeconds 单次上游请求超时（秒），默认 10。
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// MaxBytes 单张头像的大小上限（字节），默认 2MB。
@@ -115,13 +110,13 @@ type GravatarConfig struct {
 }
 
 // BookmarkConfig 书签模块配置。
-type BookmarkConfig struct {
-	ProxyServiceConfig
-}
+//
+// favicon 抓取使用全局默认代理（ProxyConfig.Default），
+// 因此这里不再单独声明 proxy_names。
+type BookmarkConfig struct{}
 
 // RSSConfig RSS 订阅模块配置。
 type RSSConfig struct {
-	ProxyServiceConfig
 	RetentionCount          int    `json:"retention_count"`           // 每个订阅源保留条目数，默认 5000
 	BackgroundFetchEnabled  bool   `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
 	BackgroundFetchInterval int    `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300
@@ -153,14 +148,6 @@ type RSSConfig struct {
 	// ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。
 	// 仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。
 	ImageAllowPrivateHosts bool `json:"image_allow_private_hosts"`
-
-	// ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。
-	//
-	// 为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：
-	// HomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。
-	ExtensionURL string `json:"extension_url"`
-	// ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。
-	ExtensionToken string `json:"extension_token"`
 
 	// PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，
 	// 锁定标记仍然可用（锁定本身不依赖 PikPak）。
@@ -196,27 +183,65 @@ type PikPakConfig struct {
 	AutoLock bool `json:"auto_lock"`
 }
 
-// ExtensionHubConfig 是 HomeHub 作为宿主调用 HomeHub Extension
-// `/api/v1/hub/*` 机器通道的配置。
+// ExtensionConfig 是 HomeHub 与 HomeHub Extension 的唯一连接配置。
 //
-// 它与 `rss.extension_url` / `gravatar.extension_url` 是两件不同的事：
-// 后两者是 HomeHub 主动调用的无状态端点（`/fetch`、`/avatar`），走 Bearer；
-// 这里是 Ed25519 请求签名通道，Extension 侧会持久化订阅与访问密钥。
-// 混用一个配置项会让“只代理抓取”和“接管整个阅读器”无法区分。
+// 合并了旧版的三个入口：`extension_hub`（签名通道）、
+// `rss.extension_url`（代抓）、`gravatar.extension_url`（头像代理）。
+// 它们指向同一个服务，本该共用同一份地址与同一套认证：旧版让它们各自
+// 持有 Bearer token，结果是同一个对端存在两套凭据、三处地址配置，
+// 改一个域名要改三个地方。现在只留这一份。
 //
-// 默认关闭：未配置时 RSS 完全走本地抓取路径，与 1.0 的行为一致。
-type ExtensionHubConfig struct {
+// 认证只有 Ed25519 请求签名一种。`/hub/*`、`/fetch`、`/avatar` 共用同一把密钥。
+type ExtensionConfig struct {
 	// Enabled 是否启用对接。默认 false。
+	//
+	// 关闭时：RSS 完全走本地抓取，头像直连 Gravatar，签名通道不可用。
 	Enabled bool `json:"enabled"`
+
 	// BaseURL 是 Extension 的 API 根，必须包含版本前缀，例如
 	// `https://ext.example.com/api/v1`。端点路径会拼在它后面。
 	BaseURL string `json:"base_url"`
-	// PrivateKeyPath 是宿主 Ed25519 私钥（PKCS#8 PEM）的路径。
-	// 私钥只在本进程内读取，不写入日志、不入库、不下发到前端。
-	PrivateKeyPath string `json:"private_key_path"`
-	// TimeoutSeconds 单次请求超时（秒），默认 30。
+
+	// PrivateKeyPEM 是 Ed25519 私钥的 PKCS#8 PEM 原文。
+	//
+	// 写进 config.json 而不是单独的文件，也不是数据库：config.json 本身
+	// 已经是最高敏感度的文件（0600、已 gitignore、备份清单里必有它），
+	// 再拆一个 pem 文件只增加运维负担，安全性没有任何提升。
+	// 公钥由使用方（Extension 侧）存在自己的 config.json 里。
+	PrivateKeyPEM string `json:"private_key_pem"`
+
+	// Features 按能力细分是否交给 Extension。
+	//
+	// 一个 enabled 开关同时控制三条通路会出问题：Extension 目前只实现了
+	// /hub/*，/fetch 与 /avatar 还是空的。若共用同一个开关，打开签名通道
+	// 的瞬间头像与抓取会一起 404——而那两条通路本来工作得好好的。
+	//
+	// 连接与认证仍然只有一份（就是这个段），能力则各自声明。
+	Features ExtensionFeatures `json:"features"`
+
+	// ProxyNames 是这个连接专用的代理链，**默认空 = 直连**。
+	//
+	// 与全局 ProxyConfig.Default 的关系：Extension 通常是内网或同机部署，
+	// 走代理反而绕远路、还可能因为代理不转发内网地址而失败。所以这里
+	// 不开继承全局默认——需要走代理时显式填写。
+	ProxyNames []string `json:"proxy_names"`
+
+	// TimeoutSeconds 单次 hub 请求超时（秒），默认 30。
 	// 同步抓取端点 /refresh 另有 2 分钟的固定预算，不受这里约束。
 	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
+// ExtensionFeatures 声明哪些能力交给 Extension。
+//
+// 缺省全部 false：升级后行为与升级前一致，不会因为新增一个配置段
+// 就把流量悄悄改道。
+type ExtensionFeatures struct {
+	// Hub 走 /api/v1/hub/* 签名通道（订阅镜像、访问密钥）。
+	Hub bool `json:"hub"`
+	// Fetch 把 RSS 抓取交给 GET /fetch。
+	Fetch bool `json:"fetch"`
+	// Avatar 把头像下载交给 GET /avatar/{hash}。
+	Avatar bool `json:"avatar"`
 }
 
 // Config 应用顶层配置，对应 config.json 文件结构。
@@ -226,13 +251,13 @@ type Config struct {
 	Auth           AuthConfig           `json:"auth"`
 	Log            LogConfig            `json:"log"`
 	WebUI          WebUIConfig          `json:"webui"`
-	Proxy          []ProxyEntry         `json:"proxy,omitempty"`
+	Proxy          ProxyConfig          `json:"proxy"`
 	Gravatar       GravatarConfig       `json:"gravatar"`
 	Bookmark       BookmarkConfig       `json:"bookmark"`
 	RSS            RSSConfig            `json:"rss"`
 	BalanceMonitor BalanceMonitorConfig `json:"balance_monitor"`
 	Pastebin       PastebinConfig       `json:"pastebin"`
-	ExtensionHub   ExtensionHubConfig   `json:"extension_hub"`
+	Extension      ExtensionConfig      `json:"extension"`
 }
 
 // BalanceTarget 单个余额监控点配置。
@@ -294,7 +319,7 @@ func ResolveProxy(proxyNames []string) []ProxyEntry {
 
 	result := make([]ProxyEntry, 0, len(proxyNames))
 	for _, name := range proxyNames {
-		for _, p := range cfg.Proxy {
+		for _, p := range cfg.Proxy.Entries {
 			if p.Name == name && p.Enabled {
 				result = append(result, p)
 				break

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/hubclient"
 	"github.com/ignvex/HomeHub/internal/logger"
 )
 
@@ -93,33 +94,26 @@ type avatarSource interface {
 
 // newAvatarSource 按当前配置选择图片来源。
 //
-// extension_url 非空时只走 extension，不做直连回退：与 RSS 抓取保持同一策略，
-// 避免运维以为流量走 extension、实际却绕过它直连外网。
+// 只有 extension.features.avatar 为真且连接可用时才走 extension，
+// 否则直连 Gravatar（走全局代理）。不做自动回退：开关打开后若
+// Extension 不可用，错误会明确报出来，而不是偷偷直连——那会让运维
+// 以为流量走了 Extension。
 func newAvatarSource(cfg *config.Config) avatarSource {
 	timeout := 10 * time.Second
 	if cfg != nil && cfg.Gravatar.TimeoutSeconds > 0 {
 		timeout = time.Duration(cfg.Gravatar.TimeoutSeconds) * time.Second
 	}
 
-	if cfg != nil && cfg.Gravatar.ExtensionURL != "" {
-		return &extensionAvatarSource{
-			client: &http.Client{
-				Timeout: timeout,
-				// extension 地址由运维配置，跳转不应发生：跳转只会掩盖配置错误。
-				CheckRedirect: func(*http.Request, []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			},
-			endpoint: cfg.Gravatar.ExtensionURL,
-			token:    cfg.Gravatar.ExtensionToken,
+	if cfg != nil && cfg.Extension.Features.Avatar {
+		if client, err := buildExtensionClient(cfg, timeout); err == nil {
+			return &extensionAvatarSource{
+				client:   client,
+				endpoint: cfg.Extension.BaseURL,
+			}
 		}
 	}
 
-	var proxyNames []string
-	if cfg != nil {
-		proxyNames = cfg.Gravatar.ProxyNames
-	}
-	transport, err := config.TransportFor(proxyNames)
+	transport, err := config.DefaultTransport()
 	if err != nil {
 		logger.Warn("[gravatar] 代理配置不可用，改为直连", "error", err)
 		transport, _ = config.TransportFor(nil)
@@ -141,9 +135,19 @@ func newAvatarSource(cfg *config.Config) avatarSource {
 				return nil
 			},
 		},
-		baseURL:         gravatarDefaultBaseURL,
-		proxyConfigured: len(config.ResolveProxy(proxyNames)) > 0,
+		baseURL: gravatarDefaultBaseURL,
+		// proxyConfigured 只用于「超时且未配代理」时的诊断提示。
+		// 现在代理是全局的，判断依据随之改为全局默认链。
+		proxyConfigured: len(config.ResolveProxy(defaultProxyNames())) > 0,
 	}
+}
+
+// defaultProxyNames 返回全局默认代理链，供诊断文案判断「到底配没配代理」。
+func defaultProxyNames() []string {
+	if cfg := config.Get(); cfg != nil {
+		return cfg.Proxy.Default
+	}
+	return nil
 }
 
 // ============================================================
@@ -218,19 +222,21 @@ func (s *directAvatarSource) Fetch(ctx context.Context, req avatarRequest, known
 // extension 图片代理
 // ============================================================
 
-// extensionAvatarSource 通过外部 extension 服务获取头像。
+// extensionAvatarSource 通过 HomeHub Extension 获取头像。
 //
 // 契约（见 docs/extension.md）：
 //
-//	GET {extension_url}/avatar/{hash}?s={size}&d={style}&r={rating}
-//	Authorization: Bearer {token}
+//	GET {base}/avatar/{hash}?s={size}&d={style}&r={rating}
+//	Ed25519 签名头（与 /hub/* 同一把密钥）
 //
 // extension 负责代 HomeHub 访问官方 Gravatar（网络条件更好或已缓存），
 // 但仍要把上游的 Content-Type/ETag/Last-Modified 透传回来。
+//
+// 认证从 Bearer 换成签名是本次重构的一部分：同一个对端不该有两套凭据。
 type extensionAvatarSource struct {
-	client   *http.Client
+	client *hubclient.Client
+	// endpoint 仅用于 Key()，参与配置指纹计算。
 	endpoint string
-	token    string
 }
 
 func (s *extensionAvatarSource) Key() string {
@@ -239,26 +245,25 @@ func (s *extensionAvatarSource) Key() string {
 	return "ext:" + hex.EncodeToString(sum[:6])
 }
 
-func (s *extensionAvatarSource) buildURL(req avatarRequest) string {
+func (s *extensionAvatarSource) Fetch(ctx context.Context, req avatarRequest, known *avatarConditions) (*avatarPayload, bool, error) {
 	q := url.Values{}
 	q.Set("d", req.Style)
 	q.Set("r", req.Rating)
 	q.Set("s", strconv.Itoa(req.Size))
-	return strings.TrimRight(s.endpoint, "/") + "/avatar/" + url.PathEscape(req.Hash) + "?" + q.Encode()
-}
 
-func (s *extensionAvatarSource) Fetch(ctx context.Context, req avatarRequest, known *avatarConditions) (*avatarPayload, bool, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, s.buildURL(req), nil)
-	if err != nil {
-		return nil, false, fmt.Errorf("%w: 构造 extension 请求失败: %v", ErrAvatarUpstream, err)
+	extra := http.Header{}
+	if known != nil {
+		if known.ETag != "" {
+			extra.Set("If-None-Match", known.ETag)
+		}
+		if known.LastModified != "" {
+			extra.Set("If-Modified-Since", known.LastModified)
+		}
 	}
-	httpReq.Header.Set("Accept", "image/png, image/jpeg, image/gif, image/webp")
-	if s.token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+s.token)
-	}
-	applyAvatarConditions(httpReq, known)
 
-	resp, err := s.client.Do(httpReq)
+	resp, err := s.client.DoRaw(ctx, http.MethodGet,
+		"/avatar/"+url.PathEscape(req.Hash), q.Encode(),
+		"image/png, image/jpeg, image/gif, image/webp", extra)
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: extension 请求失败: %v", ErrAvatarUpstream, err)
 	}

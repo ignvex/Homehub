@@ -2,9 +2,13 @@ package handler
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"image"
 	"image/png"
 	"net/http"
@@ -46,6 +50,43 @@ func loadAvatarConfig(t *testing.T, extra string) {
 		"auth": {"session_secret": "` + strings.Repeat("a", 32) + `"},
 		"log": {"level": "error", "format": "json"},
 		"gravatar": {"enabled": true, "default_size": 256, "default_style": "identicon", "rating": "g"` + extra + `}
+	}`
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatalf("写入配置失败: %v", err)
+	}
+	if err := config.Load(path); err != nil {
+		t.Fatalf("加载配置失败: %v", err)
+	}
+}
+
+
+// loadAvatarConfigWithExtension 配置一份指向 upstream 的 Extension 代理。
+//
+// 旧版只需填 gravatar.extension_url；重构后连接与认证都合并到
+// extension 段，且认证从 Bearer 换成 Ed25519 签名，所以必须同时给出
+// 一把私钥——否则上游实现会在构造客户端时就失败。
+func loadAvatarConfigWithExtension(t *testing.T, upstreamURL string) {
+	t.Helper()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("生成密钥失败: %v", err)
+	}
+	_ = pub
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("编码私钥失败: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+
+	body := `{
+		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
+		"auth": {"session_secret": "` + strings.Repeat("a", 32) + `"},
+		"log": {"level": "error", "format": "json"},
+		"extension": {"enabled": true, "base_url": "` + upstreamURL + `/api/v1", "private_key_pem": ` + strconv.Quote(pemText) + `, "timeout_seconds": 5,
+		              "features": {"avatar": true}},
+		"gravatar": {"enabled": true, "default_size": 256, "default_style": "identicon", "rating": "g"}
 	}`
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
@@ -116,7 +157,7 @@ func TestAvatarGetSetsValidatingCacheHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	loadAvatarConfig(t, `, "extension_url": "`+upstream.URL+`"`)
+	loadAvatarConfigWithExtension(t, upstream.URL)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
@@ -159,10 +200,10 @@ func TestAvatarGetReturnsNotModified(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	loadAvatarConfig(t, `, "extension_url": "`+upstream.URL+`"`)
+	loadAvatarConfigWithExtension(t, upstream.URL)
 
 	u := model.User{Email: "a@b.com"}
-	variant := extensionVariant(upstream.URL, 256)
+	variant := extensionVariant(upstream.URL+"/api/v1", 256)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
@@ -249,7 +290,7 @@ func TestAvatarGetMeDisablesCaching(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	loadAvatarConfig(t, `, "extension_url": "`+upstream.URL+`"`)
+	loadAvatarConfigWithExtension(t, upstream.URL)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
@@ -284,7 +325,7 @@ func TestAvatarGetMapsUpstreamFailureTo502(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	loadAvatarConfig(t, `, "extension_url": "`+upstream.URL+`"`)
+	loadAvatarConfigWithExtension(t, upstream.URL)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()

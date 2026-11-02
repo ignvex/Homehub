@@ -149,9 +149,9 @@ func applyDefaults(cfg *Config) {
 		cfg.Gravatar.MaxBytes = 2 * 1024 * 1024 // 2MB
 	}
 
-	for i := range cfg.Proxy {
-		if cfg.Proxy[i].Type == "" {
-			cfg.Proxy[i].Type = "http"
+	for i := range cfg.Proxy.Entries {
+		if cfg.Proxy.Entries[i].Type == "" {
+			cfg.Proxy.Entries[i].Type = "http"
 		}
 	}
 
@@ -196,9 +196,9 @@ func applyDefaults(cfg *Config) {
 		cfg.Pastebin.CleanupIntervalHours = 24
 	}
 
-	// Extension hub 通道默认值
-	if cfg.ExtensionHub.TimeoutSeconds == 0 {
-		cfg.ExtensionHub.TimeoutSeconds = 30
+	// Extension 连接默认值
+	if cfg.Extension.TimeoutSeconds == 0 {
+		cfg.Extension.TimeoutSeconds = 30
 	}
 }
 
@@ -233,7 +233,7 @@ func (cfg *Config) boolFlags() []boolFlag {
 		{"balance_monitor", "enabled", &cfg.BalanceMonitor.Enabled, false},
 		{"log", "db_writer", &cfg.Log.DBWriter, false},
 		// 对接另一个实例，默认关闭。漏写这一项不应默默打开一条出站签名通道。
-		{"extension_hub", "enabled", &cfg.ExtensionHub.Enabled, false},
+		{"extension", "enabled", &cfg.Extension.Enabled, false},
 	}
 }
 
@@ -366,17 +366,29 @@ func validate(cfg *Config) error {
 	if cfg.Gravatar.MaxBytes < 64*1024 || cfg.Gravatar.MaxBytes > 10*1024*1024 {
 		errs = append(errs, "gravatar.max_bytes 必须在 65536-10485760 (64KB-10MB) 之间")
 	}
-	if cfg.Gravatar.ExtensionURL != "" {
-		u, err := url.Parse(cfg.Gravatar.ExtensionURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, "gravatar.extension_url 必须是完整的 http(s) 地址")
-		}
-	}
 
 	validProxyTypes := []string{"http", "socks5"}
-	for i, p := range cfg.Proxy {
+	for i, p := range cfg.Proxy.Entries {
 		if !slices.Contains(validProxyTypes, strings.ToLower(p.Type)) {
-			errs = append(errs, fmt.Sprintf("proxy[%d].type 必须为 http/socks5 之一", i))
+			errs = append(errs, fmt.Sprintf("proxy.entries[%d].type 必须为 http/socks5 之一", i))
+		}
+		if p.Name == "" {
+			errs = append(errs, fmt.Sprintf("proxy.entries[%d].name 不能为空", i))
+		}
+	}
+	// 默认代理链引用的名字必须真实存在，否则出网模块会静默直连。
+	known := make(map[string]struct{}, len(cfg.Proxy.Entries))
+	for _, p := range cfg.Proxy.Entries {
+		known[p.Name] = struct{}{}
+	}
+	for i, name := range cfg.Proxy.Default {
+		if _, ok := known[name]; !ok {
+			errs = append(errs, fmt.Sprintf("proxy.default[%d] 引用了不存在的代理 %q", i, name))
+		}
+	}
+	for i, name := range cfg.Extension.ProxyNames {
+		if _, ok := known[name]; !ok {
+			errs = append(errs, fmt.Sprintf("extension.proxy_names[%d] 引用了不存在的代理 %q", i, name))
 		}
 	}
 
@@ -420,29 +432,25 @@ func validate(cfg *Config) error {
 	if cfg.RSS.ImageCleanupIntervalHours < 1 || cfg.RSS.ImageCleanupIntervalHours > 168 {
 		errs = append(errs, "rss.image_cleanup_interval_hours 必须在 1-168 之间")
 	}
-	if cfg.RSS.ExtensionURL != "" {
-		u, err := url.Parse(cfg.RSS.ExtensionURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, "rss.extension_url 必须是完整的 http(s) 地址")
-		}
-	}
 
-	// Extension hub 通道：只在启用时校验，否则留空是合法的
-	if cfg.ExtensionHub.Enabled {
-		u, err := url.Parse(cfg.ExtensionHub.BaseURL)
+	// Extension 连接：只在启用时校验，否则留空是合法的
+	if cfg.Extension.Enabled {
+		u, err := url.Parse(cfg.Extension.BaseURL)
 		switch {
 		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
-			errs = append(errs, "extension_hub.base_url 必须是完整的 http(s) 地址，例如 https://ext.example.com/api/v1")
+			errs = append(errs, "extension.base_url 必须是完整的 http(s) 地址，例如 https://ext.example.com/api/v1")
 		case !strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/api/v1"):
 			// 少写前缀会让所有请求打到 /hub/* 之外的路径，表现为一律 404，
 			// 与“RSS 模块未启用”撞在同一个状态码上，很难查。这里提前拦下。
-			errs = append(errs, "extension_hub.base_url 必须以 /api/v1 结尾，例如 https://ext.example.com/api/v1")
+			errs = append(errs, "extension.base_url 必须以 /api/v1 结尾，例如 https://ext.example.com/api/v1")
 		}
-		// private_key_path 可以为空：私钥也可以只存在数据库里
-		// （多实例共用同一个库时，库里的那一份才是共享来源）。
-		// 两处都没有的情况由运行时判断并报错——配置层不知道库里的状态。
-		if cfg.ExtensionHub.TimeoutSeconds < 1 || cfg.ExtensionHub.TimeoutSeconds > 300 {
-			errs = append(errs, "extension_hub.timeout_seconds 必须在 1-300 之间")
+		// 私钥必须能解析成 Ed25519。格式错误在签名时才暴露，那时错误
+		// 表现为每个请求都 401，很难定位到配置。
+		if strings.TrimSpace(cfg.Extension.PrivateKeyPEM) == "" {
+			errs = append(errs, "extension.enabled 为 true 时 extension.private_key_pem 不能为空")
+		}
+		if cfg.Extension.TimeoutSeconds < 1 || cfg.Extension.TimeoutSeconds > 300 {
+			errs = append(errs, "extension.timeout_seconds 必须在 1-300 之间")
 		}
 	}
 
