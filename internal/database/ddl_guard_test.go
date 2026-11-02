@@ -92,7 +92,14 @@ func goSources(t *testing.T) []string {
 		}
 		if info.IsDir() {
 			name := info.Name()
-			if name == ".git" || name == "node_modules" || name == "dist" || name == "web" {
+			// 跳过隐藏目录（.git、.codewhale、.specify…）。它们要么
+			// 不是本仓库的代码，要么根本不进版本控制——扫描它们会让
+			// 测试结果随本地工具目录变化，比如一个叫 truncate() 的
+			// 辅助函数就能让 DDL 守卫误报。
+			if path != "../.." && strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			if name == "node_modules" || name == "dist" || name == "web" {
 				return filepath.SkipDir
 			}
 			return nil
