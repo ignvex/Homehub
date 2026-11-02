@@ -383,6 +383,36 @@ func RSSListEntries(c *gin.Context) {
 	Success(c, gin.H{"list": entries, "total": total, "page": page, "per_page": perPage})
 }
 
+// RSSEntryContent 获取单条条目的完整正文。
+//
+//	@Summary		获取条目正文
+//	@Description	按需返回清洗后的正文 HTML。列表接口只给纯文本摘要，展开条目时才调此端点。
+//	@Tags			RSS 订阅
+//	@Produce		json
+//	@Param			id	path		int		true	"条目 ID"
+//	@Success		200	{object}	Response{data=object}	"正文"
+//	@Failure		400	{object}	Response	"无效的条目 ID"
+//	@Failure		404	{object}	Response	"条目不存在"
+//	@Router			/rss/entries/{id}/content [get]
+func RSSEntryContent(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		FailBadRequest(c, "无效的条目 ID")
+		return
+	}
+
+	content, err := svc.RSS.EntryContent(id)
+	if err != nil {
+		if errors.Is(err, service.ErrRSSEntryNotFound) {
+			Fail(c, http.StatusNotFound, CodeNotFound, "条目不存在")
+			return
+		}
+		FailInternal(c, "读取条目正文失败")
+		return
+	}
+	Success(c, gin.H{"id": id, "content": content})
+}
+
 // ============================================================
 // 磁力链接锁定与 PikPak
 // ============================================================

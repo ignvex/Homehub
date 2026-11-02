@@ -506,16 +506,22 @@ type storedEntry struct {
 //
 // 条目本身不归属任何源，FeedIDs 列出收录它的全部源；Published 取该源
 // 给出的发布时间（按源筛选时），未筛选时取条目首次发布时间。
+//
+// 列表刻意**不包含正文**：正文动辄几十上百 KB，一页 20 条时它占据
+// 了响应体的绝大部分，而折叠区域通常没人展开。Excerpt 是服务端
+// 生成的纯文本摘要，回答「这条要不要展开」；真正的 HTML 由
+// GET /rss/entries/:id/content 按需取。
 type RSSEntryView struct {
-	ID        uint64    `json:"id"`
-	Title     string    `json:"title"`
-	Link      string    `json:"link"`
-	Author    string    `json:"author,omitempty"`
-	Content   string    `json:"content,omitempty"`
-	MagnetURL string    `json:"magnet_url,omitempty"`
-	Published time.Time `json:"published"`
-	FetchedAt time.Time `json:"fetched_at"`
-	FeedIDs   []uint64  `json:"feed_ids"`
+	ID         uint64    `json:"id"`
+	Title      string    `json:"title"`
+	Link       string    `json:"link"`
+	Author     string    `json:"author,omitempty"`
+	Excerpt    string    `json:"excerpt,omitempty"`
+	HasContent bool      `json:"has_content"`
+	MagnetURL  string    `json:"magnet_url,omitempty"`
+	Published  time.Time `json:"published"`
+	FetchedAt  time.Time `json:"fetched_at"`
+	FeedIDs    []uint64  `json:"feed_ids"`
 
 	MagnetLocked   bool       `json:"magnet_locked"`
 	MagnetLockedAt *time.Time `json:"magnet_locked_at,omitempty"`
@@ -523,6 +529,68 @@ type RSSEntryView struct {
 	PikPakTaskID   string     `json:"pikpak_task_id,omitempty"`
 	PikPakError    string     `json:"pikpak_error,omitempty"`
 	PikPakSavedAt  *time.Time `json:"pikpak_saved_at,omitempty"`
+}
+
+// entryListColumns 是列表查询取的列。
+//
+// content 被换成前 4000 个字符的 content_head：那个长度足够剥出
+// 300 字摘要，而把整段 text 拉到应用层再丢弃，是首屏最贵的一项。
+// has_content 让前端知道「有没有正文可展开」，不用拿摘要是否为空猜——
+// 正文可能只有图片，摘要为空但依然值得展开。
+const entryListColumns = `
+	id, title, link, author, magnet_url, published, fetched_at,
+	magnet_locked, magnet_locked_at, pikpak_status, pikpak_task_id,
+	pikpak_error, pikpak_saved_at,
+	COALESCE(LEFT(content, 4000), '') AS content_head,
+	(COALESCE(content, '') <> '') AS has_content`
+
+// entryListRow 是 entryListColumns 对应的扁平行。
+//
+// 不用 model.RSSEntry：那样 GORM 会按模型字段生成 SELECT，
+// 正文又会被整段读回来，前面省下的传输在数据库这一层又还了回去。
+//
+// PikPak 四列必须显式指定 column：Scan 会按字段名推断列名，
+// PikPakStatus 推断出来是 pik_pak_status，与实际列名对不上。
+// 而 Scan 对不上的列**不报错**，只是留零值——列表里「已锁定/已提交」
+// 会静默变成全空。这与 model.RSSEntry 上的注释是同一个坑。
+type entryListRow struct {
+	ID             uint64
+	Title          string
+	Link           string
+	Author         string
+	ContentHead    string
+	HasContent     bool
+	MagnetURL      string
+	Published      time.Time
+	FetchedAt      time.Time
+	MagnetLocked   bool
+	MagnetLockedAt *time.Time
+	PikPakStatus   string     `gorm:"column:pikpak_status"`
+	PikPakTaskID   string     `gorm:"column:pikpak_task_id"`
+	PikPakError    string     `gorm:"column:pikpak_error"`
+	PikPakSavedAt  *time.Time `gorm:"column:pikpak_saved_at"`
+}
+
+// EntryContent 按 ID 取单条正文 HTML。
+//
+// 这是列表分段的第二段：列表只给摘要，展开某一条时才走这里。
+// 找不到返回 ErrRSSEntryNotFound，由 handler 映射成 404——
+// 「刚看到的那条被 retention 清掉了」是正常竞态，不得回升为 500。
+func (s *RSSService) EntryContent(id uint64) (string, error) {
+	var row struct {
+		Content string
+	}
+	err := s.db.Table("rss_entries").
+		Select("COALESCE(content, '') AS content").
+		Where("id = ? AND deleted_at IS NULL", id).
+		Take(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrRSSEntryNotFound
+		}
+		return "", fmt.Errorf("查询条目前文失败: %w", err)
+	}
+	return row.Content, nil
 }
 
 // EntryFilter 是条目列表的查询条件。
@@ -620,11 +688,17 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 		return []RSSEntryView{}, total, nil
 	}
 
-	var entries []model.RSSEntry
-	if err := s.db.Where("id IN ?", ids).Find(&entries).Error; err != nil {
+	var entries []entryListRow
+	// Table + Scan 不经过模型，GORM 不会自动补软删除条件（原先是
+	// model.RSSEntry 的 Find 带的）。漏掉它会在两步查询之间刚好被
+	// 删除的条目上返回已删除内容——虽然主查询已经过滤过一遍。
+	if err := s.db.Table("rss_entries").
+		Select(entryListColumns).
+		Where("id IN ? AND deleted_at IS NULL", ids).
+		Scan(&entries).Error; err != nil {
 		return nil, 0, fmt.Errorf("查询条目详情失败: %w", err)
 	}
-	byID := make(map[uint64]model.RSSEntry, len(entries))
+	byID := make(map[uint64]entryListRow, len(entries))
 	for _, entry := range entries {
 		byID[entry.ID] = entry
 	}
@@ -658,7 +732,8 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 			Title:          entry.Title,
 			Link:           entry.Link,
 			Author:         entry.Author,
-			Content:        entry.Content,
+			Excerpt:        excerptFromHTML(entry.ContentHead, entryExcerptRunes),
+			HasContent:     entry.HasContent,
 			MagnetURL:      entry.MagnetURL,
 			Published:      entry.Published,
 			FetchedAt:      entry.FetchedAt,

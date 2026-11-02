@@ -156,6 +156,8 @@ func registerRoutes(r *gin.Engine) {
 			rssRead.GET("/feeds", handler.RSSListFeeds)
 			rssRead.GET("/feeds/:id", handler.RSSGetFeed)
 			rssRead.GET("/entries", handler.RSSListEntries)
+			// 正文按需取：列表只带摘要，展开某条时才请求完整 HTML。
+			rssRead.GET("/entries/:id/content", handler.RSSEntryContent)
 			rssRead.GET("/groups", handler.RSSListGroups)
 			rssRead.GET("/groups/:id", handler.RSSGetGroup)
 			rssRead.GET("/pikpak", handler.RSSPikPakStatus)
