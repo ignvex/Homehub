@@ -25,6 +25,7 @@ Extension 侧实现这些端点。它不解释任何一侧内部怎么组织代�
 | 批量推送订阅 | `POST /api/v1/hub/subscriptions/batch` | 200 |
 | 对账订阅列表 | `GET /api/v1/hub/subscriptions` | 200 |
 | 移除订阅 | `DELETE /api/v1/hub/subscriptions/{id}` | 204 |
+| 批量回收订阅 | `POST /api/v1/hub/subscriptions/prune` | 200 |
 | 立即抓取 | `POST /api/v1/hub/subscriptions/{id}/refresh` | 200 |
 | 签发访问密钥 | `POST /api/v1/hub/keys` | 201 |
 | 列出访问密钥 | `GET /api/v1/hub/keys` | 200 |
@@ -372,7 +373,7 @@ GET /api/v1/hub/subscriptions
 
 `items` 始终是数组，没有订阅时是 `[]` 而不是 `null`。时刻字段未设置时是 `null`。
 
-### 4.3 删除订阅
+### 4.3 删除单条订阅
 
 ```http
 DELETE /api/v1/hub/subscriptions/7
@@ -380,14 +381,10 @@ DELETE /api/v1/hub/subscriptions/7
 
 返回 204，条目与 blob 引用级联清理。订阅不存在返回 404。重复删除不是幂等的 204——第二次会是 404，宿主按「已删除」处理即可。
 
-**这是不可逆操作，宿主侧必须先自己把关。** 删除会连带清掉对方已抓取的条目与
-blob，没有回收路径。什么时候可以发这一步，见 §6.3 的两个前置条件；不要在对账
-循环里见到「本地没有」就删。
+**这是不可逆操作。** 删除会连带清掉对方已抓取的条目与 blob，没有回收路径。
+什么时候可以发，见 §6.3；不要在对账循环里见到「本地没有」就删。
 
-Extension 侧不需要校验请求来源是否「真的确认过」——它无从判断，也不该猜。
-安全边界在宿主：宿主是唯一知道本地状态与同步水位的一方。
-
-### 4.3a 批量推送
+### 4.3a 批量推送订阅
 
 ```http
 POST /api/v1/hub/subscriptions/batch
@@ -423,6 +420,55 @@ POST /api/v1/hub/subscriptions/batch
 `unchanged` 是推了但什么字段都没变的那部分。上限 500 条，
 超过返回 413。**批量推送不会触发立即抓取**——抓取由轮询器按
 `next_fetch_at` 调度，并受 `rss.fetch_concurrency` 约束。
+
+### 4.3b 批量回收订阅（拟议）
+
+```http
+POST /api/v1/hub/subscriptions/prune
+```
+
+```json
+{
+  "before": 1762000000,
+  "ids": [3, 7, 12]
+}
+```
+
+```json
+{
+  "deleted": [3, 7],
+  "skipped": [
+    { "id": 12, "reason": "created_after_watermark" }
+  ],
+  "missing": []
+}
+```
+
+`before` 是宿主最后一次成功完成对账的 Unix 秒（即 §6.3 的同步水位）。
+只有 `id ∈ ids` **且** `created_at <= before` 的订阅会被删。
+
+为什么不用一串 `DELETE /subscriptions/{id}`：
+
+- 对账一次可能要清几十条，逐条就是几十个签名验算与往返；
+- 逐条删无法携带水位，一旦宿主算出错的待删列表，Extension 没有任何
+  拦截机会。批量请求里的 `before` 是服务端侧的第二道闸门——它不代替
+  宿主的判断，而是把「宿主逻辑写错」变成 `skipped` 而不是永久删除。
+
+Extension 不需要验证 `before` 是否真实（它无从验证）。它的职责只是：
+**迟于水位的一律不删。** 宿主声称的水位越保守，能删的越少，只会少删
+不会多删。
+
+`missing` 是 `ids` 里但库里已经不存在的那些。幂等：重复提交同一批不会报错，
+`deleted` 只包含本次真的删掉的。
+
+上游任一条件不满足时返回 400 `invalid_request`，整个请求不执行：
+
+- `before` 缺失或 ≤ 0；
+- `ids` 为空或超过 500 条；
+- `ids` 里有 0 或非整数。
+
+> **状态**：本节与 §6.3 是**拟议**中的协议，两侧都尚未实现。
+> 先定契约再写代码：端点形状确定了，实现顺序才能按 §7.2 排。
 
 ### 4.4 立即抓取
 
@@ -597,41 +643,44 @@ DELETE /api/v1/hub/keys/01JC8Z…
 > 同一个函数分流，结果里用 `skipped_local` 单独报出被跳过的条数。
 > 测试见 `internal/service/extension_hub_push_test.go`。
 
-### 6.3 删除订阅的两个前置条件
+### 6.3 删除订阅：两道闸门
 
 删除会连带清掉 Extension 侧已抓取的条目与 blob，不可恢复。所以删除不能是
-「宿主说删就删」，需要两个条件同时成立：
+「宿主说删就删」，水位要同时挡在两侧：
 
-1. **宿主确认过它**：这条订阅在宿主最后一次成功对账**之前**就已存在。
-   对账之后新建的订阅，宿主可能还没拉到，此时删它是误删。
-2. **宿主明确要删**：走 `DELETE /subscriptions/{id}`，逐条确认。
+| 闸门 | 位置 | 作用 |
+| --- | --- | --- |
+| 第一道 | 宿主本地 | 根本不把「对账之后才出现的订阅」列进待删列表 |
+| 第二道 | Extension | 收到 `ids` 后，迟于 `before` 的一律不删 |
 
-第 1 条靠**同步水位**（watermark）落地。宿主记录自己最后一次成功完成对账的
-时刻 `synced_through`，这是宿主本地状态，不上报也不需要 Extension 知道。宿主
-自己用它判断某条远端订阅能不能删：
+第二道看似冗余（宿主已经筛过了），但它防的是**宿主侧的 bug**：对账逻辑写反、
+水位算错、或者拿旧快照算出一批 id，Extension 拿到 `before` 就能把这些全部
+拦成 `skipped`。多一层只会少删，不会多删。
+
+宿主记录自己最后一次成功完成对账的时刻 `synced_through`：
 
 ```
 可删  ⇔  remote.created_at <= synced_through  AND  本地已无此 URL
 ```
 
-为什么不把水位放进 `DELETE` 请求体里让 Extension 代判：Extension 不知道宿主的
-`synced_through` 是早是晚，也无从验证宿主没在说谎；而且 `DELETE` 是单条操作，
-每次多一个字段反而让语义变模糊。判断留在宿主侧，Extension 只管执行。
+对账之后新建的订阅，宿主可能还没拉到，此时删它是误删。这就是水位的全部意义。
 
 典型的对账循环：
 
 1. `GET /subscriptions` 拿到全部远端订阅（含 `created_at`）。
 2. 本地按 `fetch_by=extension` 列出应当存在的 URL 集合。
 3. 对每个远端订阅：URL 在集合里 → 保留；不在集合里且 `created_at <= synced_through`
-   → 列为待删，逐条 `DELETE`；不在集合里但 `created_at > synced_through`
-   → 本轮跳过，下一轮再看。
-4. 把本地有、远端没有的补推上去。
-5. 全部完成后，把 `synced_through` 推进到本轮开始时刻。
+   → 列为待删；不在集合里但 `created_at > synced_through` → 本轮跳过。
+4. 把待删 id 与 `synced_through` 一起发 `POST /subscriptions/prune`（§4.3b）。
+   比对 `deleted` 与请求的 `ids`，差异写日志——`skipped` 不为空往往意味着
+   宿主侧的判断有问题。
+5. 把本地有、远端没有的补推上去。
+6. 全部完成后，把 `synced_through` 推进到本轮开始时刻。
 
 **水位必须在本轮成功后推进**，不能在中途。中途推进会让「本轮没处理完的远端订阅」
 在下一轮被当成「早已见过」，于是被误删。
 
-> **宿主实现状态（2026-11）**：本节是**待实现**的协议定义。
+> **宿主实现状态（2026-11）**：§6.3 与 §4.3b 都是**待实现**的协议定义。
 > 当前 `SyncAll` 只推不删，也没有持久化 `synced_through`——它不会误删，
 > 但也清不掉宿主已删除的源，需要用户到 Extension 界面逐条删。
 > 接入前不要以为对账已经在做回收。
@@ -726,6 +775,6 @@ Extension 不定义协议，只实现协议。
 - [ ] **对账只推 `fetch_by=extension` 的源**：造一条 `local` 的源，点对账，
       Extension 列表里不应当多出它（见 §6.2）
 - [ ] **对账不误删**：造一条 `created_at` 晚于 `synced_through` 的远端订阅，
-      确认本轮对账不会删它（见 §6.3）
+      把它放进 `prune` 的 `ids`，确认返回里它在 `skipped` 而不是 `deleted`（见 §6.3）
 - [ ] **批量推送失败可定位**：故意推一条内网地址，确认 `failed[]` 里有它、
       其余条目仍然入库（单条失败不中断整批）
