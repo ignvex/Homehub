@@ -63,6 +63,15 @@ export function RSSPage() {
 
   const [feedDraft, setFeedDraft] = useState<DraftFeed | null>(null)
   const [showGroups, setShowGroups] = useState(false)
+  // 独立的「创建分组」弹窗：与分组管理分开，后者是列表 + 重命名/删除。
+  const [showNewGroup, setShowNewGroup] = useState(false)
+  // 拖拽中在外部订阅源；null 表示没在拖。用 state 而不是 dataTransfer
+  // 是因为 dragOver 阶段读不到 data（浏览器出于安全只允许在 drop 时读），
+  // 而高亮当前落点需要它。
+  const [draggingFeed, setDraggingFeed] = useState<number | null>(null)
+  // 当前悬停的落点是哪个分组：number = 分组 id，'loose' = 未分组，
+  // null = 没悬停在任何落点上。只用于视觉高亮。
+  const [dropTarget, setDropTarget] = useState<number | 'loose' | null>(null)
   const [newGroup, setNewGroup] = useState('')
   const [editGroup, setEditGroup] = useState<RSSGroup | null>(null)
   const [pendingDeleteFeed, setPendingDeleteFeed] = useState<RSSFeed | null>(null)
@@ -81,8 +90,13 @@ export function RSSPage() {
   }
 
   // ---------- 数据加载 ----------
-  async function loadFeeds() {
-    setLoading(true)
+  /** loadFeeds 拉取订阅源与分组。
+   *
+   * silent 为真时不切 loading 态——首屏之外的刷新（拖拽分组、改名）
+   * 若也切一次，整个页面会闪成「正在读取订阅源」，看起来像重载了。
+   */
+  async function loadFeeds(silent = false) {
+    if (!silent) setLoading(true)
     try {
       const [feedList, groupList] = await Promise.all([
         rssApi.listFeeds(),
@@ -96,7 +110,7 @@ export function RSSPage() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法读取订阅源')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -212,6 +226,71 @@ export function RSSPage() {
   }
 
   // ---------- 分组 ----------
+  /** moveFeedToGroup 把一个订阅源移入分组（或移出到未分组）。
+   *
+   * groupID 为 null 表示「未分组」，必须显式发 null——省略字段在协议里
+   * 表示「别动分组」，传 undefined 会让拖拽看起来毫无反应。
+   */
+  async function moveFeedToGroup(feedID: number, groupID: number | null) {
+    const feed = feeds.find(f => f.id === feedID)
+    if (!feed) return
+    const current = feed.group_id ?? null
+    if (current === groupID) return // 拖回原地：什么都不做
+
+    setBusy(true)
+    try {
+      await rssApi.updateFeed(feedID, { group_id: groupID })
+      const target = groupID === null
+        ? '未分组'
+        : groups.find(g => g.id === groupID)?.name ?? '目标分组'
+      setMessage(`「${feed.title || feed.url}」已移入${target}`)
+      setError('')
+      await loadFeeds(true)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '移动订阅源失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 拖拽目标的公共事件处理。 */
+  function dropHandlers(target: number | 'loose') {
+    return {
+      onDragOver: (event: React.DragEvent) => {
+        if (draggingFeed === null) return
+        // 必须 preventDefault，否则浏览器不会触发 drop。
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        setDropTarget(target)
+      },
+      onDragLeave: (event: React.DragEvent) => {
+        // 拖到自己的子元素（组内某个源、分组标题）上也会触发 dragleave，
+        // 若直接清空，高亮会在组内移动时反复闪。用 relatedTarget 判断
+        // 是否真的离开了这一块。
+        const next = event.relatedTarget as Node | null
+        if (next && event.currentTarget.contains(next)) return
+        setDropTarget(current => (current === target ? null : current))
+      },
+      onDrop: (event: React.DragEvent) => {
+        event.preventDefault()
+        const id = draggingFeed
+        setDraggingFeed(null)
+        setDropTarget(null)
+        if (id === null) return
+        // 落进一个收起的组会看不到结果——以为没成功。先展开它。
+        if (target !== 'loose') {
+          setCollapsedGroups(prev => {
+            if (!prev.has(target)) return prev
+            const next = new Set(prev)
+            next.delete(target)
+            return next
+          })
+        }
+        void moveFeedToGroup(id, target === 'loose' ? null : target)
+      },
+    }
+  }
+
   async function addGroup(event: FormEvent) {
     event.preventDefault()
     const name = newGroup.trim()
@@ -348,7 +427,11 @@ export function RSSPage() {
             {groups.map(group => {
               const groupFeeds = grouped.byGroup.get(group.id) ?? []
               const expanded = !collapsedGroups.has(group.id)
-              return <div key={group.id}>
+              return <div
+                key={group.id}
+                className={`rss-group${dropTarget === group.id ? ' is-drop-target' : ''}`}
+                {...dropHandlers(group.id)}
+              >
                 <button
                   type="button"
                   className="rss-group-head"
@@ -368,6 +451,9 @@ export function RSSPage() {
                       active={selectedFeed === feed.id}
                       remote={remoteByURL[feed.url]}
                       onSelect={() => selectFeed(feed.id)}
+                      dragging={draggingFeed === feed.id}
+                      onDragStart={() => setDraggingFeed(feed.id)}
+                      onDragEnd={() => { setDraggingFeed(null); setDropTarget(null) }}
                     />)}
                   <button
                     type="button"
@@ -381,7 +467,12 @@ export function RSSPage() {
               </div>
             })}
 
-            {grouped.loose.length > 0 && <div>
+            {/* 未分组块：平时为空时不显示，但拖拽过程中必须出现——
+                否则把一个源拖出分组就没有落点，等于出不去。 */}
+            {(grouped.loose.length > 0 || draggingFeed !== null) && <div
+              className={`rss-group${dropTarget === 'loose' ? ' is-drop-target' : ''}`}
+              {...dropHandlers('loose')}
+            >
               <span className="rss-group-head" style={{ cursor: 'default' }}>
                 <span className="rss-group-arrow" aria-hidden="true">▾</span>
                 <span className="rss-nav-label">未分组</span>
@@ -394,6 +485,9 @@ export function RSSPage() {
                   active={selectedFeed === feed.id}
                   remote={remoteByURL[feed.url]}
                   onSelect={() => selectFeed(feed.id)}
+                  dragging={draggingFeed === feed.id}
+                  onDragStart={() => setDraggingFeed(feed.id)}
+                  onDragEnd={() => { setDraggingFeed(null); setDropTarget(null) }}
                 />)}
               </div>
             </div>}
@@ -406,6 +500,22 @@ export function RSSPage() {
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
               添加订阅源
+            </button>
+            <button
+              type="button"
+              className="rss-sidebar-action"
+              onClick={() => { setNewGroup(''); setShowNewGroup(true) }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /><path d="M12 12v5m-2.5-2.5h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+              创建分组
+            </button>
+            <button
+              type="button"
+              className="rss-sidebar-action"
+              onClick={() => setShowGroups(true)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+              分组管理
             </button>
             <p className="rss-sidebar-summary">
               {feeds.length} 个源 · {groups.length} 个分组
@@ -581,6 +691,45 @@ export function RSSPage() {
       </form>
     </Modal>
 
+    {/* ---------- 创建分组弹窗 ----------
+        与管理分开：这里只做一件事（输名字、回车创建），
+        管理那个弹窗还要列出全部组并提供重命名/删除。 */}
+    <Modal
+      open={showNewGroup}
+      title="创建分组"
+      description="建好后把订阅源拖到分组标题上即可归入。"
+      size="small"
+      onClose={() => !busy && setShowNewGroup(false)}
+      footer={<>
+        <button className="button button--quiet" type="button" disabled={busy} onClick={() => setShowNewGroup(false)}>取消</button>
+        <button className="button button--primary" type="submit" form="new-group-form" disabled={busy || !newGroup.trim()}>
+          {busy ? '创建中...' : '创建'}
+        </button>
+      </>}
+    >
+      <form id="new-group-form" className="form-grid" onSubmit={async event => {
+        event.preventDefault()
+        const name = newGroup.trim()
+        if (!name) return
+        const saved = await run(() => rssApi.createGroup(name), `分组「${name}」已创建`)
+        if (saved) {
+          setNewGroup('')
+          setShowNewGroup(false)
+        }
+      }}>
+        <label className="form-field form-field--wide">分组名称
+          <input
+            autoFocus
+            required
+            maxLength={100}
+            value={newGroup}
+            onChange={event => setNewGroup(event.target.value)}
+            placeholder="例如 动漫、技术博客"
+          />
+        </label>
+      </form>
+    </Modal>
+
     {/* ---------- 分组管理弹窗 ---------- */}
     <Modal
       open={showGroups}
@@ -654,11 +803,15 @@ export function RSSPage() {
  * 侧栏是导航，不是控制台——把操作塞进这里会挤掉标题，而且每行
  * 五个可点区域，误触比操作本身更常发生。
  */
-function FeedNavItem({ feed, active, remote, onSelect }: {
+function FeedNavItem({ feed, active, remote, dragging, onSelect, onDragStart, onDragEnd }: {
   feed: RSSFeed
   active: boolean
   remote?: RemoteSubscription
+  /** 这一项正在被拖拽。 */
+  dragging: boolean
   onSelect: () => void
+  onDragStart: () => void
+  onDragEnd: () => void
 }) {
   const title = feed.title || feed.url
   const isRemote = feed.fetch_by === 'extension'
@@ -686,9 +839,17 @@ function FeedNavItem({ feed, active, remote, onSelect }: {
 
   return <button
     type="button"
-    className={`rss-nav-item${active ? ' is-active' : ''}`}
+    className={`rss-nav-item rss-draggable${active ? ' is-active' : ''}${dragging ? ' is-dragging' : ''}`}
     onClick={onSelect}
     title={hint || title}
+    draggable
+    onDragStart={event => {
+      // 不设 data 也能拖，但部分浏览器（Safari）要求至少设一项才启动。
+      event.dataTransfer.setData('text/plain', String(feed.id))
+      event.dataTransfer.effectAllowed = 'move'
+      onDragStart()
+    }}
+    onDragEnd={onDragEnd}
   >
     <span className={`status-dot ${dot}`} aria-hidden="true" />
     <span className="rss-nav-body">

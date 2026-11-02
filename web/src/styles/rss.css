@@ -123,6 +123,29 @@
   color: var(--color-primary-hover);
 }
 .rss-sidebar-add svg { width: 15px; height: 15px; }
+
+/* 次级动作（创建分组、分组管理）：与「添加订阅源」并列堆叠，
+ * 但视觉上轻一档——一条虚线框已经够醒目，三条都强调会互相打架。 */
+.rss-sidebar-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.rss-sidebar-action:hover {
+  background: color-mix(in srgb, var(--color-interactive) 8%, transparent);
+  color: var(--color-text);
+}
+.rss-sidebar-action svg { width: 15px; height: 15px; flex: none; }
 .rss-sidebar-summary {
   margin: 0;
   color: var(--color-text-secondary);
@@ -206,6 +229,24 @@
  * 两级字号。选中状态已经由 is-active 的背景与左边框表达。 */
 .rss-nav-all {
   border-bottom: 1px solid var(--color-border);
+}
+
+/* 拖拽：订阅源可拖到任意分组标题上。
+ * cursor 用 grab/grabbing 而不是 move：抓住-搬动-放下，比一个悬浮的
+ * 四向箭头更贴近「把这一项挪进那个组」的动作。 */
+.rss-draggable { cursor: grab; }
+.rss-draggable:active { cursor: grabbing; }
+/* 正在被拖的那一项淡下去，说明它已经「离位」——
+ * 浏览器默认的拖影只有半透明轮廓，列表里那一行看着还留在原地。 */
+.rss-draggable.is-dragging { opacity: .45; }
+
+/* 落点高亮：拖到分组标题或未分组区域上时整块染色。
+ * 用 outline 而不是 border：border 会改变盒模型高度，拖拽时列表会跳动。 */
+.rss-group.is-drop-target {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  outline: 1px dashed var(--color-primary);
+  outline-offset: -1px;
+  border-radius: var(--radius-control);
 }
 
 /* 分组行 */
@@ -431,46 +472,7 @@
 @media (max-width: 900px) {
   .rss-layout { grid-template-columns: 1fr; }
   .rss-sidebar { position: static; }
-  /* 侧栏底部：添加订阅源是列表的自然延伸，放在这里比放在页面顶部
-   更符合「先看已有，再加新的」这一动作顺序。 */
-.rss-sidebar-foot {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: auto;
-  padding: var(--space-3) var(--panel-head-pad-x) var(--space-4);
-  border-top: 1px solid var(--color-divider);
-}
-.rss-sidebar-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  width: 100%;
-  min-height: 32px;
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  cursor: pointer;
-}
-.rss-sidebar-add:hover {
-  border-style: solid;
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  color: var(--color-primary-hover);
-}
-.rss-sidebar-add svg { width: 15px; height: 15px; }
-.rss-sidebar-summary {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-2xs);
-  text-align: center;
-  line-height: var(--leading-base);
-}
-
-.rss-nav { max-height: 220px; }
+  .rss-nav { max-height: 220px; }
   .rss-entry-source { max-width: 140px; }
 }
 
