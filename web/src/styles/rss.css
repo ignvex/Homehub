@@ -45,8 +45,51 @@
   border-radius: var(--radius-panel);
   background: var(--color-surface);
 }
-/* 收起后浮在右栏左上角的小按钮，用于重新展开。
-   单独定位是因为侧栏本身已经宽度为 0，按钮没地方放。 */
+/* ============ 侧栏头部 ============ */
+.rss-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--panel-head-pad-y) var(--panel-head-pad-x);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+.rss-sidebar-head strong {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+/* 头部的图标按钮（分组管理、折叠/展开）。
+ * 文字按钮在 272px 的侧栏里会把标题挤掉，所以统一用 26px 图标。
+ * 不写 .rss-sidebar-head button 这类元素选择器：它会连带改掉按钮的
+ * 颜色与内边距，让图标按钮看起来像链接。 */
+.rss-sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.rss-sidebar-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.rss-sidebar-icon:hover {
+  background: color-mix(in srgb, var(--color-interactive) 10%, transparent);
+  color: var(--color-text);
+}
+.rss-sidebar-icon svg { width: 16px; height: 16px; }
+
 /* 侧栏底部：添加订阅源是列表的自然延伸，放在这里比放在页面顶部
    更符合「先看已有，再加新的」这一动作顺序。 */
 .rss-sidebar-foot {
