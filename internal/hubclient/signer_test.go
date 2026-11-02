@@ -108,11 +108,21 @@ func TestEmptyBodyUsesEmptyStringDigest(t *testing.T) {
 }
 
 // TestMessageNormalizesMethod 确认方法统一成大写。
+//
+// 宿主把这一步写成 strings.ToUpper(method)，而 Extension 侧验签用的
+// 是 r.Method 原样。Go 的 http 包发出去的总是大写，所以现在不会触发；
+// 但换一个客户端库、或有人在测试里手工构造请求，就会出现「同一个请求
+// 两边算出不同的待签消息」——表现为 401，且极难看出原因。
+//
+// 协议因此写死：**方法一律大写参与签名**，两侧都要规范化。
 func TestMessageNormalizesMethod(t *testing.T) {
-	upper := Message("post", "/p", "", nil, 1, "n")
-	lower := Message("POST", "/p", "", nil, 1, "n")
-	if upper != lower {
-		t.Errorf("大写与小写方法应产生相同消息\n%q\n%q", upper, lower)
+	for _, method := range []string{"GET", "POST", "DELETE"} {
+		want := Message(method, "/p", "", nil, 1, "n")
+		for _, variant := range []string{strings.ToLower(method), strings.Title(strings.ToLower(method))} {
+			if got := Message(variant, "/p", "", nil, 1, "n"); got != want {
+				t.Errorf("方法 %q 未规范化成 %q\n得到 %q\n期望 %q", variant, method, got, want)
+			}
+		}
 	}
 }
 

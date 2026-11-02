@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -33,10 +34,27 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	msg := fmt.Sprintf("hubclient: HTTP %d %s: %s", e.StatusCode, e.Code, e.Message)
+	if e.RetryAfter > 0 {
+		// 限流与临时不可用会给出建议等待时间。不写出来的话，读日志的人
+		// 只看到「429」和一句服务端说明，不知道该等多久、是源的问题
+		// 还是自己打得太快。
+		msg += fmt.Sprintf("（建议 %s 后重试）", e.RetryAfter)
+	}
 	if e.RequestID != "" {
 		msg += "（request_id=" + e.RequestID + "）"
 	}
 	return msg
+}
+
+// ErrorFromResponse 把一条非 2xx 响应转成 *APIError。
+//
+// 供 DoRaw 的调用方使用：DoRaw 不自动判定成功与否（头像要把 304、404
+// 分开对待），但那些确实算失败的响应仍需解析成统一结构，才能拿到
+// 协议错误码、request_id 与 Retry-After。只读前 512 字节，避免异常
+// 响应把内存吃满。
+func ErrorFromResponse(resp *http.Response) *APIError {
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return newAPIError(resp, snippet)
 }
 
 // IsNotFound 判断目标订阅或密钥不存在，也覆盖"RSS 模块未启用"。
