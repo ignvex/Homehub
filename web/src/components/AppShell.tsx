@@ -48,6 +48,12 @@ const navigation: NavGroup[] = [
   },
 ]
 
+/** ShellPageMeta 只承载文档级信息。
+ *
+ * eyebrow 与 description 曾用于页面顶部的标题块，那块已删除——
+ * 界面上不再需要它们，保留字段只是为了兼容既有的 pages 定义，
+ * 将来可以一并清掉。
+ */
 export interface ShellPageMeta { title: string; eyebrow?: string; description?: string }
 
 // ============================================================
@@ -83,6 +89,12 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
   const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => new Set())
   // 导航分组折叠状态 — 默认全部展开
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(loadFoldedGroups)
+
+  // 页面标题不再画在界面上（原先顶栏与正文各画一遍），但浏览器标签栏
+  // 仍需要它：多个标签并排时只靠 favicon 分不出谁是谁。
+  useEffect(() => {
+    document.title = meta.title ? `${meta.title} · HomeHub` : 'HomeHub'
+  }, [meta.title])
 
   // 浏览器前进、后退时关闭移动端侧栏。
   useEffect(() => {
@@ -212,25 +224,17 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
       </aside>
 
       <div className="shell-stage">
+        {/* 顶栏只留导航开关与全局动作。原先这里还重复了一遍页面名与
+            eyebrow，而页面正文里又有同样的一块（shell-page-head）——
+            同一个标题在一屏里出现两次，占掉的正是内容的高度。 */}
         <header className="shell-header">
           <button className="shell-menu" onClick={() => setOpen(true)} aria-label="打开导航">☰</button>
-          <div>
-            <span>{meta.eyebrow || 'HOMEHUB'}</span>
-            <strong>{meta.title}</strong>
-          </div>
           <div className="shell-header-actions">
             <ThemeToggle />
             <a href="/">返回首页</a>
           </div>
         </header>
         <main className="shell-main" id="shell-content">
-          <div className="shell-page-head">
-            <div>
-              <p>{meta.eyebrow || 'WORKSPACE'}</p>
-              <h1>{meta.title}</h1>
-              {meta.description && <span>{meta.description}</span>}
-            </div>
-          </div>
           {children}
         </main>
       </div>
