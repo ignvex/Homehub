@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ignvex/HomeHub/internal/logger"
 )
@@ -82,9 +83,36 @@ func Load(path string) error {
 		return err
 	}
 
+	warnExtensionFetchBudget(&cfg)
+
 	loadedPath.Store(path)
 	atomicStore(&cfg)
 	return nil
+}
+
+// minExtensionFetchBudget 是代抓时建议的最小单源预算。
+//
+// 本地抓取时 fetch_timeout_seconds 只覆盖「一次 HTTP 往返 + 解析」；
+// 交给 Extension 之后，同一次抓取里还叠了宿主导出 URL → Extension
+// 取源站 → 宿主解析这么几段，30 秒在源站偏慢时很容易不够。
+const minExtensionFetchBudget = 60 * time.Second
+
+// warnExtensionFetchBudget 在启用代抓而预算偏紧时提示一次。
+//
+// 只警告不修正：把用户的配置悄悄改大，会让「我明明设了 30 秒」变成
+// 一个查不出来的谜。这条日志出现在启动时，读者能自己决定要不要调。
+func warnExtensionFetchBudget(cfg *Config) {
+	if cfg == nil || !cfg.Extension.Enabled || !cfg.Extension.Features.Fetch {
+		return
+	}
+	budget := time.Duration(cfg.RSS.FetchTimeoutSeconds) * time.Second
+	if budget >= minExtensionFetchBudget {
+		return
+	}
+	logger.Warn("代抓模式下 rss.fetch_timeout_seconds 偏小，可能频繁超时",
+		"current", budget.String(),
+		"suggested", minExtensionFetchBudget.String(),
+		"hint", "代抓比本地抓取多一层网络往返，30 秒通常不够")
 }
 
 // createDefaultConfig 写入带默认值的配置文件并返回 ErrConfigGenerated。
