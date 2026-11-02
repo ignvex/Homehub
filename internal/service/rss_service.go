@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -1463,8 +1464,16 @@ func (s *RSSService) DeleteGroup(id uint64) error {
 var magnetPattern = regexp.MustCompile(`magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s"<]*`)
 
 // extractMagnet 从文本中提取第一个磁力链接。
+//
+// 先解码 HTML 实体再匹配。源站常把 href 写成
+// `magnet:?xt=...&amp;dn=...&amp;tr=...`，不解码的话提取结果会把
+// `&amp;` 当字面量带出去，粘到 PikPak/qBittorrent 时参数名变成
+// `amp;tr`，所有 tracker 全废。
+//
+// 这个问题很隐蔽：xt 参数在第一个位置，没被破坏，所以客户端仍能
+// 认出种子哈希、看上去“能用”，只是找不到 peers。
 func extractMagnet(text string) string {
-	return magnetPattern.FindString(text)
+	return magnetPattern.FindString(stdhtml.UnescapeString(text))
 }
 
 // cacheDir 图片缓存目录。

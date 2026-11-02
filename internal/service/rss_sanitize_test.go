@@ -235,3 +235,44 @@ func TestExternalImageSourcesSkipsLocal(t *testing.T) {
 		t.Errorf("应只返回去重后的一个外链，实际 %v", urls)
 	}
 }
+
+// TestSanitizeKeepsMagnetLink 确认正文里的磁力下载链接不会被剥掉 href。
+//
+// 动漫类源站的下载页普遍写成
+// `<a class="download-arrow arrow-magnet" href="magnet:?xt=...">`。
+// 早期白名单只放行 http/https/mailto，href 被丢弃后正文里只剩一个
+// 点不动的「磁力下载」，而磁力链接恰恰是这类条目唯一有用的内容。
+func TestSanitizeKeepsMagnetLink(t *testing.T) {
+	// 用真实的源站形态：属性顺序、class 名、&amp; 实体都照抄。
+	content := `<a class="download-arrow arrow-magnet" title="磁力下載" ` +
+		`href="magnet:?xt=urn:btih:ZA6RKOQA3623WR3MJZ2PVAQCLK7CGCVS&amp;dn=&amp;tr=utfdp%3A%2F%2Ftracker.example%3A80">&nbsp;</a>`
+	got := sanitizePlain(t, content)
+
+	if !strings.Contains(got, "magnet:?xt=urn:btih:ZA6RKOQA3623WR3MJZ2PVAQCLK7CGCVS") {
+		t.Fatalf("磁力链接应保留在 href 里: %s", got)
+	}
+	// HTML 解析会解码实体，输出里应当是干净的 &。
+	if !strings.Contains(got, "&amp;dn=") && !strings.Contains(got, "&dn=") {
+		t.Errorf("dn 参数丢失: %s", got)
+	}
+	if strings.Contains(got, "AMP;DN") {
+		t.Errorf("实体未按预期处理: %s", got)
+	}
+}
+
+// TestSanitizeStillRejectsDangerousSchemes 确认放行 magnet 没有开出口子。
+//
+// 白名单是按前缀替换的，稍不注意就会让 javascript: 跟着一起过关。
+func TestSanitizeStillRejectsDangerousSchemes(t *testing.T) {
+	got := sanitizePlain(t,
+		`<a href="javascript:alert(1)">a</a>`+
+			`<a href="JaVaScRiPt:alert(2)">b</a>`+
+			`<a href="vbscript:msgbox(3)">c</a>`+
+			`<a href="data:text/html;base64,PHNjcmlwdD4=">d</a>`)
+
+	for _, bad := range []string{"javascript:", "JaVaScRiPt:", "vbscript:", "data:text/html"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("危险协议 %s 应被拒绝: %s", bad, got)
+		}
+	}
+}

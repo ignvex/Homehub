@@ -180,11 +180,28 @@ func (d *contentDoc) filterAttrs(n *html.Node, tag string) {
 	}
 }
 
-// safeLinkURL 校验 <a href>：只放行 http/https/mailto 与站内相对路径。
+// safeLinkURL 校验 <a href>：放行 http/https/mailto、magnet 与站内相对路径。
+//
+// magnet 必须在白名单里。动漫类源站的下载页普遍把磁力链接写成
+// `<a class="download-arrow arrow-magnet" href="magnet:?xt=...">`；
+// 不放行的话 href 被剥掉，正文里就只剩一个点不动的「磁力下载」，
+// 而磁力链接恰恰是这类源唯一有用的东西。
+//
+// 安全性：magnet 不像 javascript:/vbscript: 那样能在页面里执行代码，
+// 它只会被交给系统注册的 BT 客户端。风险等级与放行一个 http 链接相当。
 func safeLinkURL(raw string) (string, bool) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return "", false
+	}
+
+	// 统一小写后判断，避免 `JaVaScRiPt:` 这类大小写变体绕过。
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "vbscript:") {
+		return "", false
+	}
+	if strings.HasPrefix(lower, "magnet:") {
+		return value, true
 	}
 
 	u, err := url.Parse(value)
