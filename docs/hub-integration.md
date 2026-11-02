@@ -47,24 +47,22 @@ openssl pkey -in homehub.key -pubout -out homehub.pub
 chmod 600 homehub.key
 ```
 
-公钥文件是 PKIX PEM（`-----BEGIN PUBLIC KEY-----`）。Extension 也接受裸 base64、raw Ed25519 PEM，但部署脚本统一用 PKIX 最省事。
+`homehub.pub` 是 PKIX PEM（`-----BEGIN PUBLIC KEY-----`）。Extension 也接受裸
+base64 与 raw Ed25519 PEM。这里的裸 base64 指的是 **32 字节 raw 公钥**的
+base64，不是 PEM 中间那段 DER 的 base64——两者解码后的长度不同（32 对 44
+字节），填错会被明确拒绝。
 
-### 2.2 部署公钥
+### 2.2 配置公钥
 
-把 `homehub.pub` 放到 Extension 主机的：
-
-```text
-/etc/hhe/homehub.pub
-```
-
-并在 `config.json` 里确认：
+把公钥**内容**填进 Extension 的 `auth.hub.public_key`。这个字段存取的是公钥
+本身，不是路径：填一个文件路径会明确报错，不会去读文件。
 
 ```json
 {
   "auth": {
     "hub": {
       "enabled": true,
-      "public_key_path": "/etc/hhe/homehub.pub",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA...\n-----END PUBLIC KEY-----\n",
       "clock_skew": "60s",
       "nonce_ttl": "2m"
     }
@@ -72,15 +70,32 @@ chmod 600 homehub.key
 }
 ```
 
-**公钥在进程启动时读取一次。** 换公钥要重启 Extension。文件缺失或解析失败时进程仍会启动，但 `/hub/*` 全部返回 `503 unavailable`，日志里有一条 `hub signature channel disabled`——这是部署问题，不是你的签名写错了。
+JSON 字符串里不能有裸换行，所以整段 PEM 要么把换行写成 `\n`（如上），要么
+只填单行 base64。后者最省事，可以从 `homehub.pub` 直接转出来：
 
-文件权限建议 `0644`，属主 `root`。Extension 以 `homehub` 用户运行，只要可读即可。
+```bash
+openssl pkey -in homehub.key -pubout -outform DER | tail -c 32 | base64 -w0; echo
+```
+
+**旧字段 `public_key_path` 已删除。** Extension 解析配置时启用了
+`DisallowUnknownFields`，配置里残留这个字段会让进程直接拒绝启动，而不是被
+忽略——部署时务必把它删掉。
+
+**公钥在进程启动时读取一次。** 换公钥要重启 Extension。公钥为空或解析失败
+时进程仍会启动，但 `/hub/*`、`/fetch`、`/avatar` 全部返回 `503 unavailable`，
+日志里有一条 `hub signature channel disabled`——这是部署问题，不是你的签名
+写错了。
 
 ### 2.3 密钥轮换
 
-1. 生成新密钥对，把新公钥放到另一个路径。
-2. 改配置指向新公钥，重启 Extension。
-3. 新旧公钥不能同时生效——首版只支持一把。所以轮换期间会有一个短暂窗口，旧私钥的请求全部 401。选在宿主不推送的时间做。
+1. 生成新密钥对。
+2. 把新公钥内容替换进 `auth.hub.public_key`，重启 Extension。
+3. 新旧公钥不能同时生效——首版只支持一把。
+
+顺序上无论先改哪边都会有一个 401 窗口：先换 Extension 的公钥，宿主还在用旧
+私钥；先换宿主的私钥，Extension 还认旧公钥。选在宿主不推送的时间做，两边
+改完隔一次探测确认 `authenticated=true`。宿主侧的私钥保存后热重载立即生效，
+不需要重启。
 
 ## 3. 请求签名
 
@@ -789,8 +804,8 @@ Extension 不定义协议，只实现协议。
 
 ## 8. 上线自检清单
 
-- [ ] 私钥权限 `0600`，不在镜像、日志、环境变量里
-- [ ] 公钥已放到 `auth.hub.public_key_path`，Extension 日志有 `hub signature channel ready`
+- [ ] `config.json` 权限 `0600`（程序加载时会自动收紧），私钥不出现在镜像、日志、环境变量里
+- [ ] 公钥内容已填进 `auth.hub.public_key`（不是路径，也不是旧的 `public_key_path`），Extension 日志有 `hub signature channel ready`
 - [ ] 宿主与 Extension 的时钟偏差小于 30 秒（留一半余量给 `clock_skew`）
 - [ ] `GET /api/v1/hub/subscriptions` 返回 200
 - [ ] 故意改一个字节的签名，确认得到 401（证明验签真的在跑）

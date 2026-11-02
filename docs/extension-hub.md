@@ -69,18 +69,22 @@ Extension 只由 `extension` 一段配置描述，认证只有 Ed25519 签名一
 
 ### 2.1 生成并部署密钥
 
-推荐用一条命令直接产出可粘贴的两串（各自一行）：
+推荐用以下命令直接产出可粘贴的两串（各自一行）：
 
 ```bash
-# 私钥（44 字符 base64 种子）与公钥（PKIX PEM）
+# 私钥（44 字符 base64 种子）
 openssl genpkey -algorithm ed25519 -out /tmp/hub.key
 openssl pkey -in /tmp/hub.key -outform DER | tail -c 32 | base64 -w0; echo
-openssl pkey -in /tmp/hub.key -pubout
+# 公钥（单行 base64，直接粘进 auth.hub.public_key）
+openssl pkey -in /tmp/hub.key -pubout -outform DER | tail -c 32 | base64 -w0; echo
 rm -f /tmp/hub.key
 ```
 
-第一行输出粘进 `extension.private_key_pem`，第二段粘到 Extension 主机的
-`auth.hub.public_key_path`（默认 `/etc/hhe/homehub.pub`）并重启 Extension。
+第一行输出粘进 `extension.private_key_pem`，公钥那串粘到 Extension 主机的
+`auth.hub.public_key`（内容是公钥本身，不是路径）并重启 Extension。
+
+也可以直接填 `openssl pkey -pubout` 输出的整段 PKIX PEM；但要放进 JSON
+字符串，得把换行写成 `\n`，否则文件本身就不合法。单行 base64 最省事。
 
 也可以在设置页直接粘贴 `openssl genpkey` 产生的 PEM：保存时会自动规范成
 单行 base64，之后 `config.json` 里就只剩那 44 个字符。
@@ -164,7 +168,7 @@ Extension 的 401 表示「宿主签名不对」，与 HomeHub 的会话无关�
 | 502 | `70002` | 上游不可达、签名失败、模块关闭、上游 4xx/5xx；以及启用后配置不齐 |
 | 500 | `10007` | 本地数据库读写失败（不是上游的问题） |
 
-启用后漏填 `base_url` / `private_key_path` 归入 502 而不是 70001：开关
+启用后漏填 `base_url` / `private_key_pem` 归入 502 而不是 70001：开关
 已经打开，该改的是具体字段而不是那个开关本身。本地存储失败单列 500——
 把它报成「上游不可达」会把人送去查另一台机器。
 
@@ -197,8 +201,9 @@ Extension 的 JSON 日志对上。
 - `disabled` / `config` —— 没启用或配置不齐，改 `config.json`
 - `network` —— 连不上，查地址与容器网络
 - `unauthenticated` —— 时钟偏差超过 `clock_skew`（默认 60 秒），或公钥不配对
-- `unavailable` —— Extension 起来了但签名通道不可用，通常是公钥文件缺失或
-  解析失败；它日志里会有一条 `hub signature channel disabled`
+- `unavailable` —— Extension 起来了但签名通道不可用，通常是
+  `auth.hub.public_key` 为空或解析失败；它日志里会有一条
+  `hub signature channel disabled`
 - `not_found` —— 签名通过但 RSS 模块关闭
 
 `request_id` 是唯一能和 Extension 日志对上的线索，任何上游错误都会带上它。
