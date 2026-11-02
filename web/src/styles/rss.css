@@ -74,12 +74,18 @@
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-muted);
 }
-/* 折叠按钮做成 24px 图标：文字版在 272px 的侧栏里会把标题挤掉。 */
-.rss-sidebar-collapse {
+/* 侧栏头部的图标按钮（分组管理、收起）。
+   文字按钮在 272px 的侧栏里会把标题挤掉，所以统一用 26px 图标。 */
+.rss-sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.rss-sidebar-icon {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-control);
@@ -87,11 +93,11 @@
   color: var(--color-text-secondary);
   cursor: pointer;
 }
-.rss-sidebar-collapse:hover {
+.rss-sidebar-icon:hover {
   background: color-mix(in srgb, var(--color-interactive) 10%, transparent);
   color: var(--color-text);
 }
-.rss-sidebar-collapse svg { width: 16px; height: 16px; }
+.rss-sidebar-icon svg { width: 16px; height: 16px; }
 .rss-sidebar-head strong {
   font-size: var(--text-2xs);
   font-weight: 700;
@@ -109,6 +115,45 @@
   cursor: pointer;
 }
 .rss-sidebar-head button:hover { color: var(--color-interactive); }
+
+/* 侧栏底部：添加订阅源是列表的自然延伸，放在这里比放在页面顶部
+   更符合「先看已有，再加新的」这一动作顺序。 */
+.rss-sidebar-foot {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding: var(--space-3) var(--panel-head-pad-x) var(--space-4);
+  border-top: 1px solid var(--color-divider);
+}
+.rss-sidebar-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 32px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.rss-sidebar-add:hover {
+  border-style: solid;
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-primary-hover);
+}
+.rss-sidebar-add svg { width: 15px; height: 15px; }
+.rss-sidebar-summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  text-align: center;
+  line-height: var(--leading-base);
+}
 
 .rss-nav {
   display: flex;
@@ -403,7 +448,46 @@
 @media (max-width: 900px) {
   .rss-layout { grid-template-columns: 1fr; }
   .rss-sidebar { position: static; }
-  .rss-nav { max-height: 220px; }
+  /* 侧栏底部：添加订阅源是列表的自然延伸，放在这里比放在页面顶部
+   更符合「先看已有，再加新的」这一动作顺序。 */
+.rss-sidebar-foot {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding: var(--space-3) var(--panel-head-pad-x) var(--space-4);
+  border-top: 1px solid var(--color-divider);
+}
+.rss-sidebar-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 32px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.rss-sidebar-add:hover {
+  border-style: solid;
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-primary-hover);
+}
+.rss-sidebar-add svg { width: 15px; height: 15px; }
+.rss-sidebar-summary {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+  text-align: center;
+  line-height: var(--leading-base);
+}
+
+.rss-nav { max-height: 220px; }
   .rss-entry-source { max-width: 140px; }
 }
 

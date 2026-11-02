@@ -289,22 +289,6 @@ export function RSSPage() {
   }
 
   return <div className="business-page rss-page">
-    <div className="page-toolbar">
-      <div className="toolbar-actions">
-        <button className="button button--quiet" onClick={() => setShowGroups(true)}>分组</button>
-        <button className="button button--quiet" disabled={busy || !feeds.length} onClick={() => void run(() => rssApi.fetchAll(), '已触发全部订阅源抓取', true)}>
-          全部抓取
-        </button>
-        <button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加订阅源</button>
-      </div>
-      <span className="toolbar-summary">
-        {feeds.length} 个订阅源 · {groups.length} 个分组
-        {remoteCount > 0 && ` · ${remoteCount} 个交给 Extension`}
-        {pausedCount > 0 && ` · ${pausedCount} 个已暂停`}
-        {errorFeeds.length > 0 && <strong className="is-error"> · {errorFeeds.length} 个异常</strong>}
-      </span>
-    </div>
-
     <Notice message={error} tone="error" onDismiss={() => setError('')} />
     <Notice message={message} onDismiss={() => setMessage('')} />
 
@@ -320,15 +304,26 @@ export function RSSPage() {
         <aside className="rss-sidebar" aria-label="订阅源导航">
           <div className="rss-sidebar-head">
             <strong>订阅源</strong>
-            <button
-              type="button"
-              className="rss-sidebar-collapse"
-              onClick={toggleSidebar}
-              aria-label="收起订阅源栏"
-              title="收起，让条目占满宽度"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            </button>
+            <div className="rss-sidebar-head-actions">
+              <button
+                type="button"
+                className="rss-sidebar-icon"
+                onClick={() => setShowGroups(true)}
+                aria-label="管理分组"
+                title="管理分组"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+              </button>
+              <button
+                type="button"
+                className="rss-sidebar-icon"
+                onClick={toggleSidebar}
+                aria-label="收起订阅源栏"
+                title="收起，让条目占满宽度"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </div>
           </div>
           <nav className="rss-nav">
             {/* 「全部条目」是导航的第一个入口，不是头部的一个按钮。 */}
@@ -393,6 +388,22 @@ export function RSSPage() {
               </div>
             </div>}
           </nav>
+          <div className="rss-sidebar-foot">
+            <button
+              type="button"
+              className="rss-sidebar-add"
+              onClick={() => setFeedDraft({ ...emptyFeedDraft })}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+              添加订阅源
+            </button>
+            <p className="rss-sidebar-summary">
+              {feeds.length} 个源 · {groups.length} 个分组
+              {remoteCount > 0 && ` · ${remoteCount} 远端`}
+              {pausedCount > 0 && ` · ${pausedCount} 暂停`}
+              {errorFeeds.length > 0 && <span className="is-error"> · {errorFeeds.length} 异常</span>}
+            </p>
+          </div>
         </aside>
 
         {/* ---------- 右栏 ---------- */}
@@ -412,6 +423,13 @@ export function RSSPage() {
               <p>{total.toLocaleString()} 条内容{activeFeed?.last_fetch ? ` · 最近抓取 ${relativeTime(activeFeed.last_fetch)}` : ''}</p>
             </div>
             <div className="rss-main-actions">
+              {!activeFeed && <button
+                className="button button--quiet"
+                disabled={busy || !feeds.length}
+                onClick={() => void run(() => rssApi.fetchAll(), '已触发全部订阅源抓取', true)}
+              >
+                全部抓取
+              </button>}
               {activeFeed && <>
                 <button className="button button--quiet" disabled={busy} onClick={() => void run(() => rssApi.fetchFeed(activeFeed.id), `已抓取「${activeFeed.title || activeFeed.url}」`, true)}>抓取</button>
                 <button className="button button--quiet" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, remark: activeFeed.remark ?? '', fetch_interval: activeFeed.fetch_interval, fetch_by: activeFeed.fetch_by ?? 'local', fetch_enabled: activeFeed.fetch_enabled ?? true, group_id: activeFeed.group_id, fetch_now: false })}>编辑</button>
