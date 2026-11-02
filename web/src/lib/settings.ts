@@ -8,8 +8,8 @@ import type { BackgroundSettings } from '@/lib/home'
 // 提交自己认识的那几个，后端整体替换时会把没映射的字段（timeout、
 // 图片缓存参数等）重置成零值。保留后端对象原样，保存时整段回传即可。
 //
-// 与后端的唯一差异是 extension_token：后端脱敏成空串，只用
-// extension_token_set 告诉前端「有没有配过」。保存时留空 = 不改。
+// 私钥不在这套结构里：后端只回 private_key_set 一位，写入走单独的
+// setKey 端点。这样「读配置 → 改一处 → 提交整段」的流程永远碰不到它。
 // ============================================================
 
 export interface GravatarConfig {
@@ -17,17 +17,11 @@ export interface GravatarConfig {
   default_style: string
   default_size: number
   rating: string
-  proxy_names: string[]
-  extension_url: string
-  /** 后端永远返回空串；要修改就填新值。 */
-  extension_token: string
-  extension_token_set: boolean
   timeout_seconds: number
   max_bytes: number
 }
 
 export interface RSSConfig {
-  proxy_names: string[]
   retention_count: number
   background_fetch_enabled: boolean
   background_fetch_interval: number
@@ -41,16 +35,38 @@ export interface RSSConfig {
   image_retention_days: number
   image_cleanup_interval_hours: number
   image_allow_private_hosts: boolean
-  extension_url: string
-  extension_token: string
-  extension_token_set: boolean
 }
 
-export interface ExtensionHubConfig {
+/** ExtensionConfig 是唯一的 Extension 连接配置。 */
+export interface ExtensionFeatures {
+  hub: boolean
+  fetch: boolean
+  avatar: boolean
+}
+
+export interface ExtensionConfig {
   enabled: boolean
   base_url: string
-  private_key_path: string
+  /** 哪些能力交给 Extension。缺省全 false，升级不会改变现有行为。 */
+  features: ExtensionFeatures
+  /** 留空 = 直连（默认）。 */
+  proxy_names: string[]
   timeout_seconds: number
+  /** 后端只回这一位，私钥内容永不下发。 */
+  private_key_set: boolean
+}
+
+/** ProxyEntry 是脱敏后的代理条目：不含 http_url / https_url。 */
+export interface ProxyEntry {
+  name: string
+  type: string
+  enabled: boolean
+}
+
+export interface ProxyConfig {
+  entries: ProxyEntry[]
+  /** 全局默认代理链，所有出网模块共用。 */
+  default: string[]
 }
 
 export interface SafeConfig {
@@ -59,11 +75,11 @@ export interface SafeConfig {
   auth: { username: string }
   log: { level: string; format: string; db_writer: boolean }
   background: BackgroundSettings
-  proxy: { name: string; type: string; enabled: boolean }[]
+  proxy: ProxyConfig
   gravatar: GravatarConfig
-  bookmark: { proxy_names: string[] }
+  bookmark: Record<string, never>
   rss: RSSConfig
-  extension_hub: ExtensionHubConfig
+  extension: ExtensionConfig
 }
 
 /** Secrets 是不从服务端回传的字段，单独维护，留空表示不改。 */
@@ -71,16 +87,12 @@ export interface Secrets {
   database_password: string
   auth_password: string
   session_secret: string
-  gravatar_extension_token: string
-  rss_extension_token: string
 }
 
 export const emptySecrets: Secrets = {
   database_password: '',
   auth_password: '',
   session_secret: '',
-  gravatar_extension_token: '',
-  rss_extension_token: '',
 }
 
 /** settingsSection 是设置页可独立保存的模块。 */
@@ -130,24 +142,22 @@ export function buildPayload(
     case 'appearance':
       return { webui: { home: { background: draft.background } } }
     case 'gravatar':
-      return {
-        gravatar: {
-          ...draft.gravatar,
-          // 空串 = 后端保留原值；填了才覆盖。
-          extension_token: secrets.gravatar_extension_token,
-        },
-      }
+      return { gravatar: draft.gravatar }
     case 'bookmark':
       return { bookmark: draft.bookmark }
     case 'rss':
+      return { rss: draft.rss }
+    case 'extension':
+      // 私钥不在这里：它走 setKey，避免整段覆盖时被清空。
       return {
-        rss: {
-          ...draft.rss,
-          extension_token: secrets.rss_extension_token,
+        extension: {
+          enabled: draft.extension.enabled,
+          base_url: draft.extension.base_url,
+          features: draft.extension.features,
+          proxy_names: draft.extension.proxy_names,
+          timeout_seconds: draft.extension.timeout_seconds,
         },
       }
-    case 'extension':
-      return { extension_hub: draft.extension_hub }
   }
 }
 
@@ -176,11 +186,11 @@ interface BackendSafeConfig {
     home?: { background?: BackgroundSettings }
     login?: { background?: BackgroundSettings; layout?: string }
   }
-  proxy?: { name: string; type: string; enabled: boolean }[]
+  proxy?: Partial<ProxyConfig>
   gravatar?: Partial<GravatarConfig>
-  bookmark?: { proxy_names?: string[] }
+  bookmark?: Record<string, never>
   rss?: Partial<RSSConfig>
-  extension_hub?: Partial<ExtensionHubConfig>
+  extension?: Partial<ExtensionConfig>
 }
 
 const defaultBackground: BackgroundSettings = {
@@ -198,23 +208,20 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
     auth: raw.auth,
     log: raw.log,
     background: raw.webui?.home?.background ?? defaultBackground,
-    proxy: raw.proxy ?? [],
+    proxy: {
+      entries: raw.proxy?.entries ?? [],
+      default: raw.proxy?.default ?? [],
+    },
     gravatar: {
       enabled: raw.gravatar?.enabled ?? false,
       default_style: raw.gravatar?.default_style ?? 'identicon',
       default_size: raw.gravatar?.default_size ?? 256,
       rating: raw.gravatar?.rating ?? 'g',
-      proxy_names: raw.gravatar?.proxy_names ?? [],
-      extension_url: raw.gravatar?.extension_url ?? '',
-      // 后端永远返回空串，这里保持一致：留空即不改。
-      extension_token: '',
-      extension_token_set: raw.gravatar?.extension_token_set ?? false,
       timeout_seconds: raw.gravatar?.timeout_seconds ?? 10,
       max_bytes: raw.gravatar?.max_bytes ?? 2097152,
     },
-    bookmark: { proxy_names: raw.bookmark?.proxy_names ?? [] },
+    bookmark: {},
     rss: {
-      proxy_names: raw.rss?.proxy_names ?? [],
       retention_count: raw.rss?.retention_count ?? 5000,
       background_fetch_enabled: raw.rss?.background_fetch_enabled ?? true,
       background_fetch_interval: raw.rss?.background_fetch_interval ?? 300,
@@ -228,15 +235,18 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
       image_retention_days: raw.rss?.image_retention_days ?? 30,
       image_cleanup_interval_hours: raw.rss?.image_cleanup_interval_hours ?? 24,
       image_allow_private_hosts: raw.rss?.image_allow_private_hosts ?? false,
-      extension_url: raw.rss?.extension_url ?? '',
-      extension_token: '',
-      extension_token_set: raw.rss?.extension_token_set ?? false,
     },
-    extension_hub: {
-      enabled: raw.extension_hub?.enabled ?? false,
-      base_url: raw.extension_hub?.base_url ?? '',
-      private_key_path: raw.extension_hub?.private_key_path ?? '',
-      timeout_seconds: raw.extension_hub?.timeout_seconds ?? 30,
+    extension: {
+      enabled: raw.extension?.enabled ?? false,
+      base_url: raw.extension?.base_url ?? '',
+      features: {
+        hub: raw.extension?.features?.hub ?? false,
+        fetch: raw.extension?.features?.fetch ?? false,
+        avatar: raw.extension?.features?.avatar ?? false,
+      },
+      proxy_names: raw.extension?.proxy_names ?? [],
+      timeout_seconds: raw.extension?.timeout_seconds ?? 30,
+      private_key_set: raw.extension?.private_key_set ?? false,
     },
   }
 }

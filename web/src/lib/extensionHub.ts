@@ -96,15 +96,15 @@ export interface CreatedKey extends AccessKey {
 
 /** 签名私钥的来源与公钥。**不含私钥本身**。 */
 export interface KeyInfo {
-  /** database / file / none */
-  source: 'database' | 'file' | 'none'
-  in_database: boolean
+  /** config / none */
+  source: 'config' | 'none'
+  configured: boolean
   public_key?: string
   /** PKIX PEM 全文，部署时优先用它（自带类型标记，无歧义）。 */
   public_key_pem?: string
   fingerprint?: string
-  updated_at?: string
-  file_path?: string
+  /** 配了 PEM 但解析不了：粘贴时多半被截断了。 */
+  broken?: boolean
 }
 
 export const extensionHubApi = {

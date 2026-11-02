@@ -33,7 +33,7 @@ function sectionFields(cfg: SafeConfig, section: SettingsSection): Partial<SafeC
     case 'gravatar': return { gravatar: cfg.gravatar }
     case 'bookmark': return { bookmark: cfg.bookmark }
     case 'rss': return { rss: cfg.rss }
-    case 'extension': return { extension_hub: cfg.extension_hub }
+    case 'extension': return { extension: cfg.extension }
   }
 }
 
@@ -196,7 +196,7 @@ export function SettingsPage() {
   const dirty = (section: SettingsSection) =>
     sectionSnapshot(draft, section) !== sectionSnapshot(config, section) || hasPendingSecret(section, secrets)
 
-  const proxyNames = draft.proxy.map(item => item.name)
+  const proxyNames = draft.proxy.entries.map(item => item.name)
 
   return <div className="business-page">
     <div className="page-toolbar">
@@ -409,41 +409,16 @@ export function SettingsPage() {
                 <option value="x">X - 严格</option>
               </select>
             </Field>
-            <Field label="直连代理">
-              <select
-                value={draft.gravatar.proxy_names[0] ?? ''}
-                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, proxy_names: event.target.value ? [event.target.value] : [] } }))}
-              >
-                <option value="">不使用代理</option>
-                {proxyNames.map(name => <option key={name} value={name}>{name}</option>)}
-              </select>
+            <Field label="出网方式">
+              <small>
+                {draft.extension.enabled
+                  ? '经 Extension 代理，使用 extension 段配置'
+                  : `直连，走全局代理「${draft.proxy.default.join(',') || '无'}」`}
+              </small>
             </Field>
             <Field label="请求超时（秒）">
               <input type="number" min="1" max="120" value={draft.gravatar.timeout_seconds}
                 onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: Number(event.target.value) } }))} />
-            </Field>
-          </div>
-        </Section>
-
-        <Section
-          section="bookmark"
-          title="书签"
-          description="书签图标抓取使用的代理链。"
-          dirty={dirty('bookmark')}
-          saving={saving === 'bookmark'}
-          onSave={() => void saveSection('bookmark')}
-          onReset={() => patch(current => ({ ...current, bookmark: config.bookmark }))}
-        >
-          <div className="form-grid form-grid--three">
-            <Field label="代理链（逗号分隔）">
-              <input
-                value={draft.bookmark.proxy_names.join(',')}
-                placeholder="router,backup"
-                onChange={event => patch(current => ({
-                  ...current,
-                  bookmark: { proxy_names: event.target.value.split(',').map(item => item.trim()).filter(Boolean) },
-                }))}
-              />
             </Field>
           </div>
         </Section>
@@ -470,18 +445,12 @@ export function SettingsPage() {
             <Field label="单源超时（秒）">
               <input type="number" min="5" max="600" value={draft.rss.fetch_timeout_seconds} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, fetch_timeout_seconds: Number(event.target.value) } }))} />
             </Field>
-            <Field label="代理链（逗号分隔）">
-              <input
-                value={draft.rss.proxy_names.join(',')}
-                placeholder="router,backup"
-                onChange={event => patch(current => ({
-                  ...current,
-                  rss: {
-                    ...current.rss,
-                    proxy_names: event.target.value.split(',').map(item => item.trim()).filter(Boolean),
-                  },
-                }))}
-              />
+            <Field label="出网方式">
+              <small>
+                {draft.extension.enabled && draft.extension.base_url
+                  ? '经 Extension 抓取'
+                  : `本机抓取，走全局代理「${draft.proxy.default.join(',') || '无'}」`}
+              </small>
             </Field>
             <label className="choice-tile">
               <input type="checkbox" checked={draft.rss.background_fetch_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_enabled: event.target.checked } }))} />
@@ -500,31 +469,53 @@ export function SettingsPage() {
 
         <Section
           section="extension"
-          title="订阅镜像与登录密钥（Extension 签名通道）"
-          description="把订阅推给 Extension、为用户签发登录密钥，并查看对端状态。这是与 Extension 唯一的集成方式。"
+          title="Extension 连接"
+          description="订阅镜像、抓取代理、头像代理与登录密钥共用这一份地址与密钥。"
           dirty={dirty('extension')}
           saving={saving === 'extension'}
           onSave={() => void saveSection('extension')}
-          onReset={() => patch(current => ({ ...current, extension_hub: config.extension_hub }))}
+          onReset={() => patch(current => ({ ...current, extension: config.extension }))}
         >
           <div className="form-grid form-grid--three">
             <label className="choice-tile">
-              <input type="checkbox" checked={draft.extension_hub.enabled}
-                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, enabled: event.target.checked } }))} />
-              <span>启用签名通道</span>
+              <input type="checkbox" checked={draft.extension.enabled}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, enabled: event.target.checked } }))} />
+              <span>启用 Extension</span>
             </label>
             <Field label="API 根地址">
-              <input value={draft.extension_hub.base_url} placeholder="https://ext.example.com/api/v1"
-                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, base_url: event.target.value } }))} />
+              <input value={draft.extension.base_url} placeholder="https://ext.example.com/api/v1"
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, base_url: event.target.value } }))} />
             </Field>
-            <Field label="宿主私钥路径">
-              <input value={draft.extension_hub.private_key_path} placeholder="/etc/homehub/extension-hub.key"
-                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, private_key_path: event.target.value } }))} />
+            <Field label="连接代理">
+              <select
+                value={draft.extension.proxy_names[0] ?? ''}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, proxy_names: event.target.value ? [event.target.value] : [] } }))}
+              >
+                <option value="">直连（默认）</option>
+                {proxyNames.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
             </Field>
             <Field label="请求超时（秒）">
-              <input type="number" min="1" max="300" value={draft.extension_hub.timeout_seconds}
-                onChange={event => patch(current => ({ ...current, extension_hub: { ...current.extension_hub, timeout_seconds: Number(event.target.value) } }))} />
+              <input type="number" min="1" max="300" value={draft.extension.timeout_seconds}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, timeout_seconds: Number(event.target.value) } }))} />
             </Field>
+          </div>
+          <div className="form-grid form-grid--three">
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.extension.features.hub}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, hub: event.target.checked } } }))} />
+              <span>订阅镜像与密钥（/hub/*）</span>
+            </label>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.extension.features.fetch}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, fetch: event.target.checked } } }))} />
+              <span>RSS 抓取（/fetch）</span>
+            </label>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.extension.features.avatar}
+                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, avatar: event.target.checked } } }))} />
+              <span>头像代理（/avatar）</span>
+            </label>
           </div>
           <div style={{ display: 'grid', gap: 12, marginTop: 4 }}>
             <div className="metric-row" style={{ alignItems: 'center' }}>
@@ -611,11 +602,11 @@ export function SettingsPage() {
                 <small>{keySourceHint(keyInfo)}</small>
               </div>
               <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <StatusBadge tone={keyInfo?.source === 'none' ? 'danger' : keyInfo?.source === 'database' ? 'success' : 'warning'}>
-                  {keyInfo?.source === 'database' ? '已存入数据库' : keyInfo?.source === 'file' ? '使用本机文件' : '缺失'}
+                <StatusBadge tone={keyInfo?.broken ? 'danger' : keyInfo?.source === 'config' ? 'success' : 'warning'}>
+                  {keyInfo?.broken ? '私钥无法解析' : keyInfo?.source === 'config' ? '已配置' : '缺失'}
                 </StatusBadge>
                 {keyInfo?.fingerprint && <code style={{ fontSize: 'var(--text-xs)' }}>{keyInfo.fingerprint}</code>}
-                {keyInfo?.in_database && <button
+                {keyInfo?.configured && <button
                   type="button"
                   className="button button--quiet"
                   disabled={keyBusy}
@@ -715,11 +706,9 @@ export function SettingsPage() {
 /** keySourceHint 说明密钥来自哪里，以及该去哪改。 */
 function keySourceHint(info: KeyInfo | null): string {
   if (!info) return '无法读取密钥状态'
-  switch (info.source) {
-    case 'database': return '来自数据库，所有共用该库的实例都使用同一把'
-    case 'file': return info.file_path ? `来自文件 ${info.file_path}` : '来自本机文件'
-    default: return '数据库与文件里都没有可用私钥'
-  }
+  if (info.broken) return 'config.json 里的 private_key_pem 解析失败，请重新粘贴'
+  if (info.source === 'config') return '来自 config.json 的 extension.private_key_pem'
+  return '尚未配置私钥：粘贴一把 PKCS#8 PEM，或直接写 config.json'
 }
 
 /** hubLabel 把四层探测结果压成一句话。 */
