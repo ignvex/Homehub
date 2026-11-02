@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/ignvex/HomeHub/internal/logger"
 )
 
 // 哨兵错误：首次启动时 config.json 不存在，已生成默认配置文件。
@@ -51,6 +53,21 @@ func Load(path string) error {
 			return createDefaultConfig(path)
 		}
 		return fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
+	}
+
+	// 配置文件里有数据库密码、session_secret 与签名私钥。权限过宽时
+	// 直接收紧到 0600：这不需要征得同意——能读这个文件就能冒充宿主
+	// 驱动 Extension，而 chmod 是可逆且无副作用的。
+	// 失败只警告不阻断：某些挂载点（如只读 configmap）允许读但不允许改，
+	// 那种部署应当由运维在外层保证权限。
+	if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+		if chmodErr := os.Chmod(path, 0o600); chmodErr != nil {
+			logger.Warn("配置文件权限过宽且无法收紧，其中含数据库密码与签名私钥",
+				"path", path, "mode", info.Mode().Perm().String(), "error", chmodErr)
+		} else {
+			logger.Info("已把配置文件权限收紧到 0600", "path", path,
+				"was", info.Mode().Perm().String())
+		}
 	}
 
 	var cfg Config
