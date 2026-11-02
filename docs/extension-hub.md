@@ -7,28 +7,36 @@
 签名通道。协议本身（待签消息、错误码、端点语义）以
 [hub-integration.md](hub-integration.md) 为准，这里只讲 HomeHub 这一侧的实现取舍。
 
-## 1. 与 `rss.extension_url` 的区别
+## 1. 一个连接，三种能力
 
-两个配置项都指向 Extension，但做的是完全不同的事，不要混用：
+Extension 只由 `extension` 一段配置描述，认证只有 Ed25519 签名一种。
+能力分开声明，因为对端不一定都实现了：
 
-| | `rss.extension_url` | `extension_hub` |
-| --- | --- | --- |
-| 方向 | HomeHub 主动 GET `/fetch?url=…` | HomeHub 主动签名调用 `/api/v1/hub/*` |
-| 认证 | Bearer（`extension_token`） | Ed25519 请求签名 |
-| 数据归属 | 条目仍落在 HomeHub 的 PostgreSQL | 订阅与条目落在 Extension 的 SQLite + blob |
-| 作用 | 把抓取外包出去，阅读仍在 HomeHub | 让 Extension 拥有一份独立的阅读器与登录体系 |
+| 能力 | 开关 | 端点 | 认证 |
+| --- | --- | --- | --- |
+| 订阅镜像与访问密钥 | `extension.features.hub` | `/api/v1/hub/*` | Ed25519 签名 |
+| RSS 抓取代理 | `extension.features.fetch` | `/api/v1/fetch?url=` | Ed25519 签名 |
+| 头像代理 | `extension.features.avatar` | `/api/v1/avatar/{hash}` | Ed25519 签名 |
 
-可以同时开启，但那样同一批 feed 会被抓两遍。只在确实需要
-「手机上用 Extension 读、内网用 HomeHub 读」时才两个都开。
+**为什么能力要分开**：三条通路共用一份地址与一把密钥，但 Extension 的
+实现进度不一样。用一个开关同时控制，打开签名通道的瞬间会让还没实现的
+`/fetch`、`/avatar` 一起 404——而那两条通路本来工作得好好的。缺省全部
+关闭，升级后行为与升级前一致。
+
+`features.hub` 与 `fetch`/`avatar` 的语义也不同：前者是「让 Extension 拥有
+独立的阅读器」，条目落在对端；后两者是「只把出网这一步外包」，条目仍然
+落在 HomeHub 的 PostgreSQL。可以只开前者、只开后两者，或全开。
 
 ## 2. 配置
 
 ```json
 {
-  "extension_hub": {
+  "extension": {
     "enabled": true,
     "base_url": "https://ext.example.com/api/v1",
-    "private_key_path": "/etc/homehub/extension-hub.key",
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+    "features": { "hub": true, "fetch": false, "avatar": false },
+    "proxy_names": [],
     "timeout_seconds": 30
   }
 }
@@ -37,6 +45,14 @@
 `base_url` **必须**带 `/api/v1`。少了前缀时所有请求会打到 `/hub/*` 之外的
 路径，表现为一律 404——而 404 在协议里恰好又表示「RSS 模块未启用」，两个
 问题撞在同一个状态码上极难排查，所以配置校验直接拒绝。
+
+`proxy_names` **默认空 = 直连**。Extension 通常在内网或同机部署，绕一层
+外部代理反而更慢，很多代理也不转发内网地址。这与全局 `proxy.default`
+是两个独立的东西。
+
+`private_key_pem` 写在这里而不是单独的文件或数据库：`config.json` 本身
+已是最高敏感度的文件（0600、gitignore、备份清单必有它），再拆一处只会
+增加运维负担。Web 端设置页可以粘贴写入，但读取接口永不返回私钥内容。
 
 ### 2.1 生成并部署密钥
 
@@ -122,7 +138,7 @@ Extension 的 401 表示「宿主签名不对」，与 HomeHub 的会话无关�
 
 | HomeHub 状态 | `code` | 含义 |
 | --- | --- | --- |
-| 503 | `70001` | 对接未启用（`extension_hub.enabled` 为 false） |
+| 503 | `70001` | 对接未启用（`extension.enabled` 或 `extension.features.hub` 为 false） |
 | 502 | `70002` | 上游不可达、签名失败、模块关闭、上游 4xx/5xx；以及启用后配置不齐 |
 | 500 | `10007` | 本地数据库读写失败（不是上游的问题） |
 
@@ -139,7 +155,7 @@ Extension 的 JSON 日志对上。
 
 | 字段 | 为真说明 | 为假时该查什么 |
 | --- | --- | --- |
-| `configured` | 配置齐全且私钥可读 | `config.json` 的 `extension_hub` 段与键文件路径 |
+| `configured` | 配置齐全且私钥可读 | `config.json` 的 `extension` 段 |
 | `reachable` | HTTP 层通了 | 地址、网络、Extension 是否在跑 |
 | `authenticated` | 签名被接受 | 时钟偏差、两边公钥是否配对 |
 | `rss_available` | 对方 RSS 模块开着 | Extension 的 `rss.enabled` |

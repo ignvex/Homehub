@@ -1,24 +1,19 @@
-# HomeHub Extension 接入
+# HomeHub Extension 接入（抓取与头像代理）
 
-> **⚠️ 本文描述的 `/fetch` 与 `/avatar` 端点，在当前 HomeHub Extension
-> 版本上并不存在。**
+> **⚠️ 本文描述的 `/fetch` 与 `/avatar` 端点在当前 Extension 上尚未实现。**
 >
 > 2026-11 实测 `https://www.ignvex.cc`：`/fetch` 与 `/avatar/{hash}` 都返回
-> `200 text/html` 的 SPA 首页（630 字节），真实存在的公开端点是
-> `/healthz` 与 `/readyz`（JSON）。按照本文配置 `rss.extension_url` 或
-> `gravatar.extension_url`，结果必然是抓不到东西。
+> `200 text/html` 的 SPA 首页（630 字节），真实存在的公开端点是 `/healthz`
+> 与 `/readyz`（JSON）。
 >
-> 现在的 Extension 是**自己抓取**的（见其 `docs/rss.md` 第 0 节：订阅由
-> 网页端或宿主推送进入，由 Extension 本地抓取与本地化），所以「代抓」
-> 这个模型已经不适用了。真正可用的是签名通道，见
+> 因此 `extension.features.fetch` 与 `extension.features.avatar` 默认关闭。
+> 打开它们之前，先确认对端真的实现了这两个端点——HomeHub 会把 HTML 当成
+> 错误拦下并明确说「返回的是 HTML 而不是 feed」，但排查仍然要花时间。
+>
+> 现在可用的是 `/hub/*` 签名通道（`extension.features.hub`），见
 > [hub-integration.md](hub-integration.md) 与 [extension-hub.md](extension-hub.md)。
 >
-> 本文保留下来是作为**契约参考**：如果将来要实现一个只做 `/fetch` +
-> `/avatar` 的轻量代理，下面这套协议仍然适用。但别拿它去配当前的 Extension。
->
-> 已做的防御：HomeHub 在两条路径上都不会静默接受 HTML——RSS 报「返回的是
-> HTML 而不是 feed」，Gravatar 报「头像端点返回了 HTML 页面」，不再把
-> 排查方向引到 XML 或图片格式上。
+> 本文作为**契约参考**保留：要实现对端代理能力时，按下面的协议做。
 
 `homehub-extension` 是独立部署的外部资源代理服务。本文定义它与 HomeHub 的
 通信契约，曾经包含两类能力：
@@ -35,10 +30,10 @@ HomeHub 本地实现。
 不推送数据。
 
 ```
-HomeHub ──GET {extension_url}/fetch?url=...────────▶ homehub-extension
+HomeHub ──GET {base}/fetch?url=...────────▶ homehub-extension
         ◀──── 原始 RSS/Atom XML 或 JSON ────────────
 
-HomeHub ──GET {extension_url}/avatar/{hash}?s=...──▶ homehub-extension
+HomeHub ──GET {base}/avatar/{hash}?s=...──▶ homehub-extension
         ◀──── 头像二进制 + ETag/Last-Modified ──────
         ◀──── 304 Not Modified（未变化）────────────
 ```
@@ -58,9 +53,9 @@ HomeHub ──GET {extension_url}/avatar/{hash}?s=...──▶ homehub-extension
 ### 请求
 
 ```
-GET {extension_url}/fetch?url=<URL 编码的订阅源地址>
+GET {base}/fetch?url=<URL 编码的订阅源地址>
 Accept: application/xml, application/rss+xml, application/atom+xml, application/json
-Authorization: Bearer <extension_token>        # token 非空时携带
+X-HH-Timestamp / X-HH-Nonce / X-HH-Signature     # Ed25519 签名，与 /hub/* 同一把密钥
 ```
 
 - 超时由 HomeHub 侧 `rss.fetch_timeout_seconds` 控制（默认 30s）
@@ -112,26 +107,33 @@ upstream timeout
 
 ## 配置
 
-`config.json` → `rss`：
+配置在 `config.json` → `extension`，与 `/hub/*` 共用同一份地址与密钥：
+
+```json
+"extension": {
+  "enabled": true,
+  "base_url": "https://ext.example.com/api/v1",
+  "private_key_pem": "[redacted] PRIVATE KEY-----\n...",
+  "features": { "hub": true, "fetch": true, "avatar": false },
+  "proxy_names": []
+}
+```
 
 | 字段 | 说明 |
 |------|------|
-| `extension_url` | 为空时本地抓取（默认）；非空时全部交给 extension |
-| `extension_token` | 调用 extension 的 Bearer Token，留空则不带认证头 |
-
-```json
-"rss": {
-  "extension_url": "http://192.168.1.2:8090",
-  "extension_token": "change-me",
-  "fetch_timeout_seconds": 30
-}
-```
+| `features.fetch` | 为真时 RSS 抓取全部交给 `GET /fetch`，否则本地抓取 |
+| `features.avatar` | 为真时头像下载全部交给 `GET /avatar/{hash}`，否则直连上游 |
+| `proxy_names` | 与 Extension 连接专用的代理链，留空 = 直连 |
 
 地址必须是完整的 `http(s)://host[:port]`，否则配置校验不通过。
 改完即生效（下一次抓取就会用新地址），**无需重启**：
 `autoFetcher` 按配置指纹重建底层实现。
 
 ## 实现示例
+
+> 下面的示例只演示**取数与回传**，认证部分仍写成 Bearer——重构后
+> `/fetch` 与 `/avatar` 已改为 Ed25519 签名，与 `/hub/*` 共用同一套。
+> 验签实现见 [hub-integration.md](hub-integration.md) §3.4（Go）与 §3.5（TS）。
 
 最小可用的 extension（Go）：
 
@@ -183,12 +185,12 @@ func main() {
 
 HomeHub 侧有覆盖这些行为的测试（`internal/service/rss_remote_fetcher_test.go`）：
 
-- 请求确实是 `GET /fetch?url=`，且带 `Authorization: Bearer`
+- 请求确实是 `GET /fetch?url=`，且带三个签名头
 - XML、`{"feed": ...}`、gofeed JSON 三种响应都能解析
 - 非 2xx 返回带状态码的错误
 - 配置在 `local` / `remote` 之间切换即时生效
 
-本地联调时把 `extension_url` 指向 `httptest` 服务器或临时进程即可。
+本地联调时把 `extension.base_url` 指向 `httptest` 服务器或临时进程即可。
 
 ## Gravatar 头像代理
 
@@ -198,17 +200,13 @@ HomeHub 侧有覆盖这些行为的测试（`internal/service/rss_remote_fetcher
 
 | 字段 | 说明 |
 |------|------|
-| `extension_url` | 为空时直连官方 Gravatar（默认）；非空时全部交给 extension |
-| `extension_token` | 调用 extension 的 Bearer Token，留空则不带认证头 |
+| `features.avatar` | 为真时头像交给 extension，否则直连官方 Gravatar |
 | `timeout_seconds` | 单次上游请求超时，默认 10，范围 1-60 |
 | `max_bytes` | 单张头像大小上限，默认 2MB，范围 64KB-10MB |
-| `proxy_names` | **仅在直连模式生效**；交给 extension 后由 extension 自行决定出网方式 |
 
 ```json
 "gravatar": {
   "enabled": true,
-  "extension_url": "http://homehub-extension:8090",
-  "extension_token": "change-me",
   "timeout_seconds": 10,
   "max_bytes": 2097152
 }
@@ -217,16 +215,16 @@ HomeHub 侧有覆盖这些行为的测试（`internal/service/rss_remote_fetcher
 改完即生效（下一次缓存未命中就用新地址），**无需重启**：
 `GravatarService` 按配置指纹重建上游实现。
 
-**不做自动回退。** `extension_url` 配好后若 extension 不可用，头像接口返回
+**不做自动回退。** `features.avatar` 打开后若 extension 不可用，头像接口返回
 `502`，不会偷偷直连外网 —— 与 RSS 抓取保持同一策略，避免运维以为流量走了
 extension、实际却绕过了它。
 
 ### 请求
 
 ```http
-GET {extension_url}/avatar/{hash}?s={size}&d={style}&r={rating}
+GET {base}/avatar/{hash}?s={size}&d={style}&r={rating}
 Accept: image/png, image/jpeg, image/gif, image/webp
-Authorization: Bearer {token}          # token 非空时携带
+X-HH-Timestamp / X-HH-Nonce / X-HH-Signature     # Ed25519 签名
 If-None-Match: {etag}                  # 服务端有缓存时携带
 If-Modified-Since: {last_modified}     # 同上
 ```
@@ -325,7 +323,7 @@ func avatarHandler(w http.ResponseWriter, r *http.Request) {
 HomeHub 侧覆盖这些行为（`internal/service/gravatar_source_test.go`、
 `internal/handler/avatar_test.go`）：
 
-- 请求形状：`GET /avatar/{hash}?s=&d=&r=`、`Authorization: Bearer`
+- 请求形状：`GET /avatar/{hash}?s=&d=&r=`、Ed25519 签名头
 - 条件头透传，304 视为「未变化」
 - 404 归类为「无头像」，其他非 2xx 归类为上游故障
 - 3xx 不被跟随

@@ -32,8 +32,8 @@
 1. 查 `rss_feeds`；
 2. 复验 feed URL（SSRF 防护）；
 3. 通过 `RSSFetcher` 抓取：
-   - `rss.extension_url` 为空 → `httpFeedFetcher` 直接 HTTP 拉取；
-   - 非空 → `remoteFetcher` 请求 `GET {extension_url}/fetch?url=...`；
+   - `extension.features.fetch` 为假 → `httpFeedFetcher` 直接 HTTP 拉取；
+   - 为真 → `remoteFetcher` 请求 `GET {extension.base_url}/fetch?url=...`（Ed25519 签名）；
 4. `gofeed` 解析成 `*gofeed.Feed`；
 5. 逐条 `itemToEntry` 构造**不含正文的骨架**（标题、链接、作者、磁力链接）；
 6. 骨架批量 `INSERT ... ON CONFLICT (link) DO UPDATE magnet_url`；
