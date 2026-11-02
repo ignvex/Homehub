@@ -71,11 +71,20 @@ base64，不是 PEM 中间那段 DER 的 base64——两者解码后的长度不
 ```
 
 JSON 字符串里不能有裸换行，所以整段 PEM 要么把换行写成 `\n`（如上），要么
-只填单行 base64。后者最省事，可以从 `homehub.pub` 直接转出来：
+只填单行 base64。后者最省事，可以从 `homehub.pub` 直接转出来，不需要私钥：
 
 ```bash
-openssl pkey -in homehub.key -pubout -outform DER | tail -c 32 | base64 -w0; echo
+openssl pkey -pubin -in homehub.pub -outform DER | tail -c 32 | base64 -w0; echo
 ```
+
+从私钥转同一个值也等价：
+
+```bash
+openssl pkey -in homehub.key -pubout -outform DER | tail -c 32 | base64 -w0
+```
+
+两者都取 PKIX DER 末尾的 32 字节 raw 公钥——Ed25519 的 PKIX 头固定 12 字节，
+总长 44。
 
 **旧字段 `public_key_path` 已删除。** Extension 解析配置时启用了
 `DisallowUnknownFields`，配置里残留这个字段会让进程直接拒绝启动，而不是被
