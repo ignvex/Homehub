@@ -574,7 +574,7 @@ export function SettingsPage() {
               <div className="metric-row">
                 <div className="metric-label">
                   <span>宿主公钥</span>
-                  <small>整段（含 BEGIN/END）写进 Extension 的 public_key_path 指向的文件</small>
+                  <small>粘进 Extension 的 auth.hub.public_key（内容是公钥本身，不是路径）</small>
                 </div>
                 <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <StatusBadge tone="success">与私钥配对</StatusBadge>
@@ -605,30 +605,26 @@ export function SettingsPage() {
                   onClick={() => {
                     const value = hubStatus.public_key_pem ?? ''
                     void navigator.clipboard.writeText(value)
-                      .then(() => { setMessage('公钥 PEM 已复制，可直接粘贴'); setError('') })
+                      .then(() => { setMessage('公钥 PEM 已复制'); setError('') })
                       .catch(() => setError('复制失败，请手动选中上面的文本'))
                   }}
                 >
-                  复制公钥
+                  复制公钥 PEM
                 </button>
-                <button
+                {hubStatus.public_key && <button
                   type="button"
                   className="button button--quiet"
                   onClick={() => {
-                    const value = hubStatus.public_key_pem ?? ''
-                    const blob = new Blob([value], { type: 'application/x-pem-file' })
-                    const url = URL.createObjectURL(blob)
-                    const link = document.createElement('a')
-                    link.href = url
-                    link.download = 'homehub.pub'
-                    link.click()
-                    URL.revokeObjectURL(url)
+                    const value = hubStatus.public_key ?? ''
+                    void navigator.clipboard.writeText(value)
+                      .then(() => { setMessage('单行 base64 已复制，可直接粘进 auth.hub.public_key'); setError('') })
+                      .catch(() => setError('复制失败，请手动选中上面的文本'))
                   }}
                 >
-                  下载 .pub 文件
-                </button>
+                  复制单行 base64
+                </button>}
                 <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                  用 PEM 而不是裸 base64：两者内容不同，选错会被对端当成无效公钥。
+                  单行 base64 可直接粘进 config.json；用 PEM 则要把换行写成 \n，否则 JSON 字符串不合法。
                 </span>
               </div>
             </div>}
@@ -712,7 +708,7 @@ export function SettingsPage() {
               <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
               <ol style={{ margin: 0, paddingLeft: 18 }}>
                 <li>生成密钥：<code>openssl genpkey -algorithm ed25519 -out hub.key</code></li>
-                <li>把上面的<strong>公钥 PEM</strong>整段存成文件（或点「下载 .pub 文件」），放到 Extension 主机的 <code>auth.hub.public_key_path</code>，重启它</li>
+                <li>把公钥粘进 Extension 主机的 <code>auth.hub.public_key</code>（内容是公钥本身，不是路径），重启它</li>
                 <li>把私钥粘进下面的输入框并保存（会自动规范成一行 44 字符），填好 <strong>API 根地址</strong>，勾上启用，然后点「重新探测」</li>
               </ol>
               <p style={{ margin: '8px 0 0', color: 'var(--color-text-secondary)' }}>

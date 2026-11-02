@@ -234,7 +234,7 @@ export function ExtensionPage() {
       <PageState
         kind="empty"
         title="Extension 对接未启用"
-        description="在 config.json 的 extension_hub 段填写 base_url 与 private_key_path，把 enabled 设为 true，保存后配置会自动热重载。"
+        description="在 config.json 的 extension 段填写 base_url 与 private_key_pem，把 enabled 设为 true，保存后配置会自动热重载。"
         action={<button className="button button--primary" disabled={busy} onClick={() => void refresh()}>重新探测</button>}
       />
       <Notice message={status.error_message} tone="info" />
@@ -296,7 +296,7 @@ export function ExtensionPage() {
         {status.public_key && <div className="metric-row">
           <div className="metric-label">
             <span>宿主公钥</span>
-            <small>与 Extension 的 auth.hub.public_key_path 内容比对</small>
+            <small>与 Extension 的 auth.hub.public_key 内容比对</small>
           </div>
           <div className="metric-value">
             <code style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)' }}>{status.public_key}</code>
@@ -308,7 +308,7 @@ export function ExtensionPage() {
           tone="info"
         />}
         {status.error_code === 'unavailable' && <Notice
-          message="Extension 启动了但签名通道不可用：通常是公钥文件缺失或解析失败，看它日志里的 hub signature channel disabled。"
+          message="Extension 启动了但签名通道不可用：通常是 auth.hub.public_key 为空或解析失败，看它日志里的 hub signature channel disabled。"
           tone="info"
         />}
       </div>
@@ -329,7 +329,7 @@ export function ExtensionPage() {
       </header>
       <div className="modal-body">
         {!status.configured
-          ? <PageState kind="empty" title="配置不完整" description={status.error_message || '检查 extension_hub.base_url 与 private_key_path。'} />
+          ? <PageState kind="empty" title="配置不完整" description={status.error_message || '检查 extension.base_url 与 extension.private_key_pem。'} />
           : !status.authenticated
             ? <PageState kind="empty" title="签名未通过" description="Extension 没认可这把宿主私钥。检查两侧时钟偏差与公钥是否配对。" />
             : !status.rss_available
