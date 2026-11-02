@@ -105,11 +105,18 @@ func newAvatarSource(cfg *config.Config) avatarSource {
 	}
 
 	if cfg != nil && cfg.Extension.Features.Avatar {
-		if client, err := buildExtensionClient(cfg, timeout); err == nil {
-			return &extensionAvatarSource{
-				client:   client,
-				endpoint: cfg.Extension.BaseURL,
-			}
+		// 开关打开后不再有静默直连的退路。
+		//
+		// 之前构造失败会继续往下走直连：流量明明没走 Extension，界面却
+		// 显示「已启用」，运维以为代理生效了。构造失败本身就是可诊断的
+		// 状态，让它以错误的形式出现在调用处更有用。
+		client, err := buildExtensionClient(cfg, timeout)
+		if err != nil {
+			return &brokenAvatarSource{key: "broken|" + cfg.Extension.BaseURL, cause: err}
+		}
+		return &extensionAvatarSource{
+			client:   client,
+			endpoint: cfg.Extension.BaseURL,
 		}
 	}
 
@@ -148,6 +155,21 @@ func defaultProxyNames() []string {
 		return cfg.Proxy.Default
 	}
 	return nil
+}
+
+// brokenAvatarSource 表示「已声明交给 Extension 但连接不可用」。
+//
+// 它不做任何网络请求，只在 Fetch 时把配置错误原样抛出。存在的意义是
+// 让「开关打开但配置有问题」变成显式失败，而不是悄悄退回直连。
+type brokenAvatarSource struct {
+	key   string
+	cause error
+}
+
+func (s *brokenAvatarSource) Key() string { return s.key }
+
+func (s *brokenAvatarSource) Fetch(context.Context, avatarRequest, *avatarConditions) (*avatarPayload, bool, error) {
+	return nil, false, fmt.Errorf("%w: extension.features.avatar 已开启但连接不可用: %v", ErrAvatarUpstream, s.cause)
 }
 
 // ============================================================

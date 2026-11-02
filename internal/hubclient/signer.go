@@ -253,6 +253,16 @@ var Now = func() time.Time { return time.Now() }
 //
 // 不用于协议（协议走 Sign 的七行消息），只给「私钥自检」这类内部用途：
 // 能解析不代表能用，签一次再验一次才能确认内容没被截断。
+// SeedBase64 把私钥的 32 字节种子编码成一行 base64。
+//
+// 44 个字符，适合直接写进 config.json。PEM 需要四行 + 换行转义，
+// 在 JSON 里既难读也容易在复制时被浏览器或编辑器插进不可见字符。
+//
+// 种子足以还原完整私钥（ed25519.NewKeyFromSeed），因此不损失任何能力。
+func (s *Signer) SeedBase64() string {
+	return base64.StdEncoding.EncodeToString(s.key.Seed())
+}
+
 func (s *Signer) SignRaw(msg []byte) []byte {
 	return ed25519.Sign(s.key, msg)
 }

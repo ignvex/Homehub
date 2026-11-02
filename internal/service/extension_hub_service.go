@@ -736,17 +736,22 @@ func (s *ExtensionHubService) SetKey(raw string) (*ExtensionHubKeyInfo, error) {
 		return nil, fmt.Errorf("%w: 私钥自检失败，内容可能已损坏", ErrExtensionHubInvalidInput)
 	}
 
-	pemText, err := signer.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("%w: 规范化私钥失败: %v", ErrExtensionHubInvalidInput, err)
-	}
+	// 落盘用一行 base64 种子而不是 PEM。
+	//
+	// PEM 是四行文本，进 JSON 要写成 \n 转义，粘进 config.json 后
+	// 既难读也容易在复制过程中混入不可见字符。32 字节种子的 base64
+	// 是 44 个字符，一行装得下，且足以还原完整私钥。
+	//
+	// 读取侧仍然兼容 PEM 与完整私钥的 base64：LoadSignerFromBytes
+	// 三种形态都认，从 openssl 直接粘过来也能用。
+	seed := signer.SeedBase64()
 
-	if err := writeExtensionField("private_key_pem", pemText); err != nil {
+	if err := writeExtensionField("private_key_pem", seed); err != nil {
 		return nil, fmt.Errorf("%w: 写入配置失败: %v", ErrExtensionHubStorage, err)
 	}
 
 	s.invalidateCache()
-	logger.Info("已把签名私钥写入 config.json",
+	logger.Info("已把签名私钥写入 config.json（base64 种子）",
 		"public_key", signer.PublicKeyBase64(),
 		"fingerprint", fingerprintKey(signer.PublicKeyBase64()))
 	return s.KeyInfo()

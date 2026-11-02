@@ -120,7 +120,7 @@
     "extension": {
         "_comment": "===== HomeHub Extension 连接（唯一一处）=====",
         "_comment_base_url": "base_url 必须带 /api/v1 前缀。/hub/*、/fetch、/avatar 都走这个地址。",
-        "_comment_key": "私钥用 openssl genpkey -algorithm ed25519 -out hub.key 生成。整份 PEM 粘进 private_key_pem（换行写成 \\n），对应公钥放到 Extension 的 auth.hub.public_key。config.json 权限应设为 600。",
+        "_comment_key": "私钥推荐写成一行 base64 种子（44 字符）：openssl genpkey -algorithm ed25519 | openssl pkey -outform DER | tail -c 32 | base64。也接受 PKCS#8 PEM 与完整私钥的 base64。设置页粘贴任意一种都行，保存时会规范成单行。对应公钥放到 Extension 的 auth.hub.public_key。config.json 权限由程序自动收紧到 600。",
         "_comment_features": "按能力分别开关。默认全关：升级后行为与升级前一致，不会因为新增配置段就把流量改道。",
         "_comment_proxy": "proxy_names 留空 = 直连（默认）。Extension 通常在内网或同机，绕代理反而更慢。",
         "base_url": "https://ext.example.com/api/v1",

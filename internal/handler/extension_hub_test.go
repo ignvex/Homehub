@@ -45,13 +45,15 @@ func writeTestSigner(t *testing.T) (string, ed25519.PublicKey) {
 func loadExtensionHubConfig(t *testing.T, enabled bool, baseURL, pemText string) {
 	t.Helper()
 
+	// features 必须跟随 enabled：能力开着而总开关关着会被校验拒绝，
+	// 那条规则本身是在防「以为开了功能实际没开」，测试不该绕过它。
 	body := fmt.Sprintf(`{
 		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
 		"auth": {"session_secret": "%s"},
 		"log": {"level": "error", "format": "json"},
 		"extension": {"enabled": %t, "base_url": %q, "private_key_pem": %s, "timeout_seconds": 5,
-		              "features": {"hub": true}}
-	}`, strings.Repeat("a", 32), enabled, baseURL, strconv.Quote(pemText))
+		              "features": {"hub": %t}}
+	}`, strings.Repeat("a", 32), enabled, baseURL, strconv.Quote(pemText), enabled)
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

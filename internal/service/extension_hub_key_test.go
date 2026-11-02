@@ -210,12 +210,24 @@ func TestSetKeyWritesConfigFile(t *testing.T) {
 	}
 
 	stored := readExtensionPEM(t, path)
-	if !strings.HasPrefix(stored, "-----BEGIN PRIVATE KEY-----") {
-		t.Fatalf("落盘内容应是 PEM，实际 %q", firstLine(stored))
+
+	// 落盘应是一行 base64 种子：44 字符、无换行、无 PEM 头。
+	// 多行 PEM 进 JSON 要写成 \n 转义，粘进 config.json 后极难阅读，
+	// 也容易在复制时混入不可见字符。
+	if strings.ContainsAny(stored, "\n\r") {
+		t.Fatalf("落盘内容不应含换行，实际 %q", stored)
 	}
+	if strings.Contains(stored, "BEGIN") {
+		t.Fatalf("落盘内容应是 base64 种子而不是 PEM，实际 %q", stored)
+	}
+	// 32 字节种子的 base64 固定 44 字符（含一个 padding）。
+	if len(stored) != 44 {
+		t.Fatalf("落盘长度 = %d，期望 44（32 字节种子的 base64）", len(stored))
+	}
+
 	signer, err := hubclient.LoadSignerFromBytes([]byte(stored))
 	if err != nil {
-		t.Fatalf("落盘的 PEM 无法解析: %v", err)
+		t.Fatalf("落盘的 base64 无法解析: %v", err)
 	}
 	if signer.PublicKeyBase64() != publicB64 {
 		t.Fatal("落盘私钥与提交的不一致")

@@ -411,3 +411,32 @@ func newExtAvatarSource(t *testing.T, srvURL string) avatarSource {
 		Gravatar: config.GravatarConfig{TimeoutSeconds: 2},
 	})
 }
+
+// TestAvatarSourceFailsClosedWhenExtensionDeclared 锁住「开关打开就不再直连」。
+//
+// 之前构造失败会继续往下走直连：流量明明没走 Extension，界面却显示
+// 「已启用」。这类静默降级会让运维得出完全错误的结论——排查时发现的
+// 是「头像能出来」，于是转去怀疑别的地方。
+func TestAvatarSourceFailsClosedWhenExtensionDeclared(t *testing.T) {
+	src := newAvatarSource(&config.Config{
+		Extension: config.ExtensionConfig{
+			Enabled:   true,
+			BaseURL:   "https://ext.example.com/api/v1",
+			Features:  config.ExtensionFeatures{Avatar: true},
+			// 私钥缺失：构造客户端必然失败。
+		},
+		Gravatar: config.GravatarConfig{TimeoutSeconds: 2},
+	})
+
+	_, _, err := src.Fetch(context.Background(),
+		avatarRequest{Hash: "abc", Size: 64, Style: "identicon", Rating: "g"}, nil)
+	if err == nil {
+		t.Fatal("声明交给 Extension 后连接不可用必须报错，不能静默直连")
+	}
+	if !errors.Is(err, ErrAvatarUpstream) {
+		t.Errorf("错误应可识别为上游故障，实际 %v", err)
+	}
+	if !strings.Contains(err.Error(), "private_key") {
+		t.Errorf("错误应指出配置缺什么，实际 %v", err)
+	}
+}

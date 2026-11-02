@@ -451,6 +451,13 @@ func validate(cfg *Config) error {
 	}
 
 	// Extension 连接：只在启用时校验，否则留空是合法的
+	anyFeature := cfg.Extension.Features.Hub || cfg.Extension.Features.Fetch || cfg.Extension.Features.Avatar
+	if anyFeature && !cfg.Extension.Enabled {
+		// 能力开关开着、总开关关着，几乎总是「以为开了功能实际没开」。
+		// 不拦的话表现为：RSS 照常本地抓、头像照常直连、hub 报未启用，
+		// 三处看起来都正常，唯独流量根本没走 Extension。
+		errs = append(errs, "extension.features 有开关打开时 extension.enabled 必须为 true")
+	}
 	if cfg.Extension.Enabled {
 		u, err := url.Parse(cfg.Extension.BaseURL)
 		switch {

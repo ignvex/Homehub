@@ -3,6 +3,7 @@ package hubclient
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -228,5 +229,74 @@ func TestLoadSignerRejectsPublicKey(t *testing.T) {
 func TestLoadSignerMissingFile(t *testing.T) {
 	if _, err := LoadSigner(filepath.Join(t.TempDir(), "nope.key")); err == nil {
 		t.Error("文件不存在时应报错")
+	}
+}
+
+// TestSeedBase64RoundTrips 确认单行 base64 种子能还原出同一把密钥。
+//
+// 这是配置可读性的基础：落盘用 44 字符的一行，读回必须得到同一把私钥。
+// 种子与完整私钥的 base64 长度不同（44 vs 88），很容易在解析分支里错位。
+func TestSeedBase64RoundTrips(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("生成密钥失败: %v", err)
+	}
+	signer, err := NewSigner(priv)
+	if err != nil {
+		t.Fatalf("构造签名器失败: %v", err)
+	}
+
+	seed := signer.SeedBase64()
+	if strings.ContainsAny(seed, "\n\r") {
+		t.Fatalf("种子不应含换行: %q", seed)
+	}
+	if len(seed) != 44 {
+		t.Fatalf("种子长度 = %d，期望 44（32 字节 base64）", len(seed))
+	}
+
+	back, err := LoadSignerFromBytes([]byte(seed))
+	if err != nil {
+		t.Fatalf("解析种子失败: %v", err)
+	}
+	if back.PublicKeyBase64() != base64.StdEncoding.EncodeToString(pub) {
+		t.Fatal("从种子还原出的公钥与原公钥不一致")
+	}
+
+	// 签名结果也必须等价：种子与完整私钥应产生同一把签名密钥。
+	msg := []byte("roundtrip")
+	if !ed25519.Verify(pub, msg, back.SignRaw(msg)) {
+		t.Fatal("从种子还原的私钥签出的内容验签失败")
+	}
+}
+
+// TestSeedBase64DistinctFromFullKeyBase64 确认两种 base64 形态都被接受。
+//
+// 从 openssl 直接导出私钥后转 base64 得到的是 88 字符（64 字节）；
+// 种子是 44 字符（32 字节）。两个长度都落在 LoadSignerFromBytes 的
+// 解析分支里，混淆会导致「粘贴能用但签出来是另一把」。
+func TestSeedBase64DistinctFromFullKeyBase64(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("生成密钥失败: %v", err)
+	}
+	signer, err := NewSigner(priv)
+	if err != nil {
+		t.Fatalf("构造签名器失败: %v", err)
+	}
+
+	seedForm := signer.SeedBase64()
+	fullForm := base64.StdEncoding.EncodeToString(priv)
+	if seedForm == fullForm {
+		t.Fatal("两种形态不应相同")
+	}
+
+	for name, form := range map[string]string{"种子": seedForm, "完整私钥": fullForm} {
+		loaded, err := LoadSignerFromBytes([]byte(form))
+		if err != nil {
+			t.Fatalf("%s形态解析失败: %v", name, err)
+		}
+		if loaded.PublicKeyBase64() != signer.PublicKeyBase64() {
+			t.Errorf("%s形态还原出的公钥不一致", name)
+		}
 	}
 }
