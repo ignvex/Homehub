@@ -248,7 +248,6 @@ export function SettingsPage() {
         <Section
           section="connection"
           title="服务与数据库"
-          description="修改监听地址或数据库连接可能导致当前连接中断。"
           dirty={dirty('connection')}
           saving={saving === 'connection'}
           onSave={() => void saveSection('connection')}
