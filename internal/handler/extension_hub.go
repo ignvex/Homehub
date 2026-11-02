@@ -96,10 +96,10 @@ func ExtensionHubPushSubscription(c *gin.Context) {
 	Success(c, result)
 }
 
-// ExtensionHubSync 把本地全部订阅补推到 Extension。
+// ExtensionHubSync 把归属 Extension 的订阅补推到 Extension。
 //
-//	@Summary		全量对账
-//	@Description	只推送不删除：删除会连带清掉对方已抓取的条目，必须逐条确认
+//	@Summary		对账 Extension 订阅
+//	@Description	只推 fetch_by=extension 的源，归属本机的不会推送（否则两边各抓一份）；只推送不删除，删除会连带清掉对方已抓取的条目，必须逐条确认
 //	@Tags			Extension 对接
 //	@Produce		json
 //	@Success		200	{object}	Response{data=service.ExtensionHubSyncResult}

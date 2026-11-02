@@ -66,10 +66,13 @@ export interface SyncItem {
 }
 
 export interface SyncResult {
+  /** 本次推送到 Extension 的条数，不含归属本机的源。 */
   total: number
   created: number
   updated: number
   failed: number
+  /** 归属本机抓取、因此没有推送的条数。 */
+  skipped_local: number
   items: SyncItem[]
 }
 

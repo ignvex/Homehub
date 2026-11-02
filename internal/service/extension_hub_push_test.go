@@ -16,11 +16,15 @@ import (
 )
 
 // rssFeedColumns 与 RSSFeed 的列一一对应。
+//
+// 手写清单的代价是模型加列后这里必须同步，否则扫描出的字段是零值——
+// 而零值的 FetchBy 会被当成 local，让「只推 extension 源」的用例假绿。
 func rssFeedColumns() []string {
 	return []string{
 		"id", "created_at", "updated_at", "deleted_at",
-		"title", "url", "site_url", "description", "icon_url",
-		"fetch_interval", "last_fetch", "error_msg", "group_id",
+		"title", "url", "site_url", "description", "remark", "icon_url",
+		"fetch_interval", "fetch_by", "fetch_enabled",
+		"last_fetch", "error_msg", "group_id",
 	}
 }
 
@@ -29,7 +33,8 @@ func expectFeedByID(mock sqlmock.Sqlmock, id uint64, title, url string, interval
 	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
 		WithArgs(id, 1).
 		WillReturnRows(sqlmock.NewRows(rssFeedColumns()).
-			AddRow(id, time.Now(), time.Now(), nil, title, url, "", "", "", interval, time.Time{}, "", nil))
+			AddRow(id, time.Now(), time.Now(), nil, title, url, "", "", "", "",
+				interval, "local", true, time.Time{}, "", nil))
 }
 
 // captureUpsert 起一个假 Extension，把收到的推送请求体解出来。
@@ -162,10 +167,13 @@ func TestPushFeedReportsMissingLocalFeed(t *testing.T) {
 	}
 }
 
-// isFeedNotFound 判断错误是否为 ErrRSSFeedNotFound。
-func TestSyncAllPushesEveryFeedWithoutDeleting(t *testing.T) {
-	// 对账只推不删：删除会连带清掉 Extension 已抓取的条目，
-	// 必须由用户逐条确认。这条测试同时锁住“删除请求一次都不发”。
+// TestSyncAllPushesOnlyExtensionFeeds 锁住对账的两个边界：
+//
+//   - 归属本机（fetch_by=local）的源不能被推过去。Extension 新建订阅
+//     默认启用，全推的后果是同一个源两边各抓一份。
+//   - 对账只推不删：删除会连带清掉 Extension 已抓取的条目，
+//     必须由用户逐条确认。这条测试同时锁住“删除请求一次都不发”。
+func TestSyncAllPushesOnlyExtensionFeeds(t *testing.T) {
 	var pushes int
 	var deletes int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,8 +199,12 @@ func TestSyncAllPushesEveryFeedWithoutDeleting(t *testing.T) {
 
 	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
 		WillReturnRows(sqlmock.NewRows(rssFeedColumns()).
-			AddRow(1, time.Now(), time.Now(), nil, "A", "https://a.example/feed", "", "", "", 3600, time.Time{}, "", nil).
-			AddRow(2, time.Now(), time.Now(), nil, "B", "https://b.example/feed", "", "", "", 1800, time.Time{}, "", nil))
+			// 归属本机，不应被推送。
+			AddRow(1, time.Now(), time.Now(), nil, "A", "https://a.example/feed", "", "", "", "",
+				3600, "local", true, time.Time{}, "", nil).
+			// 归属 Extension，应被推送。
+			AddRow(2, time.Now(), time.Now(), nil, "B", "https://b.example/feed", "", "", "", "",
+				1800, "extension", true, time.Time{}, "", nil))
 
 	keyPath, _ := newTestSignerFile(t)
 	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
@@ -202,13 +214,60 @@ func TestSyncAllPushesEveryFeedWithoutDeleting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("对账失败: %v", err)
 	}
-	if result.Total != 2 || result.Updated != 2 || result.Failed != 0 {
+	if result.Total != 1 || result.Updated != 1 || result.Failed != 0 {
 		t.Fatalf("统计不对: %+v", result)
 	}
-	if pushes != 2 {
-		t.Fatalf("应推送 2 条，实际 %d", pushes)
+	if result.SkippedLocal != 1 {
+		t.Fatalf("应报告 1 条本机源被跳过，实际 %d", result.SkippedLocal)
+	}
+	if pushes != 1 {
+		t.Fatalf("应只推送 extension 源 1 条，实际 %d", pushes)
 	}
 	if deletes != 0 {
 		t.Fatalf("对账绝不能删除远端订阅，实际发了 %d 次 DELETE", deletes)
+	}
+	if len(result.Items) != 1 || result.Items[0].FeedID != 2 {
+		t.Fatalf("逐条结果应只包含 extension 源，实际 %+v", result.Items)
+	}
+}
+
+// TestSyncAllWithOnlyLocalFeedsSendsNothing 验证“全本机”时不发任何写请求。
+//
+// 这条是上一条的另一面：如果某次改动把过滤条件写反了，
+// TestSyncAllPushesOnlyExtensionFeeds 可能因为两边都有源而蒙混过关，
+// 这里要求一个请求都不发。
+func TestSyncAllWithOnlyLocalFeedsSendsNothing(t *testing.T) {
+	var requests int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+	}))
+	defer upstream.Close()
+
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
+		WillReturnRows(sqlmock.NewRows(rssFeedColumns()).
+			AddRow(1, time.Now(), time.Now(), nil, "A", "https://a.example/feed", "", "", "", "",
+				3600, "local", true, time.Time{}, "", nil))
+
+	keyPath, _ := newTestSignerFile(t)
+	svc := newTestHubService(t, upstream.URL+"/api/v1", keyPath)
+	svc.db = db
+
+	result, err := svc.SyncAll(context.Background())
+	if err != nil {
+		t.Fatalf("对账失败: %v", err)
+	}
+	if result.Total != 0 || result.SkippedLocal != 1 {
+		t.Fatalf("统计不对: %+v", result)
+	}
+	if len(result.Items) != 0 {
+		t.Fatalf("不应有条目，实际 %+v", result.Items)
+	}
+	if requests != 0 {
+		t.Fatalf("全是本机源时不应发出任何请求，实际 %d 次", requests)
 	}
 }

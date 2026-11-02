@@ -531,17 +531,33 @@ type ExtensionHubSyncItem struct {
 
 // ExtensionHubSyncResult 是全量对账的结果。
 type ExtensionHubSyncResult struct {
-	Total   int                    `json:"total"`
-	Created int                    `json:"created"`
-	Updated int                    `json:"updated"`
-	Failed  int                    `json:"failed"`
-	Items   []ExtensionHubSyncItem `json:"items"`
+	// Total 是本次推送到 Extension 的条数，不含归属本机的源。
+	Total   int `json:"total"`
+	Created int `json:"created"`
+	Updated int `json:"updated"`
+	Failed  int `json:"failed"`
+	// SkippedLocal 是归属本机抓取、因此没有推送的条数。
+	//
+	// 单独报出来是因为「total=0」有两种含义：本地确实没有订阅源，
+	// 或者有源但都归本机。不区分的话，使用者会以为对账没干活。
+	SkippedLocal int                    `json:"skipped_local"`
+	Items        []ExtensionHubSyncItem `json:"items"`
 }
 
-// SyncAll 把本地全部订阅补推到 Extension。
+// SyncAll 把归属 Extension 的订阅补推到 Extension。
+//
+// 只推 fetch_by=extension 的源。全推的后果是镜像里混进一批本机也在抓
+// 的源：Extension 新建时默认启用，于是同一篇文章两边各抓一份、各存一份，
+// 而使用者只会在其中一处阅读。归属判断与 FetchAll 共用 NormalizeFetchBy，
+// 两处必须同源——否则会出现「本机不抓、也没推给对方」的源，静默停摆。
 //
 // 只推不删。删除会连带清掉 Extension 侧已抓取的条目与 blob，不可恢复，
 // 必须由用户逐条确认——混在一次「对账」里悄悄删掉是最不该发生的事。
+// 由此带来一个已知不对等：把某个源从 extension 改回 local 之后，
+// Extension 侧那条仍然存在且继续抓取，需要用户自己到 Extension 界面删。
+//
+// enabled 一律传 nil（不碰对方启停状态），理由见 PushFeed 的注释：
+// 用户在 Extension 侧手动暂停过的源，不该被一次例行对账重新打开。
 //
 // 串行推送：Extension 是单写连接，并发只会互相排队并撞上 429 限流。
 // 对账是低频操作，慢一点比报错好。也不触发抓取（fetch_now=false），
@@ -557,16 +573,31 @@ func (s *ExtensionHubService) SyncAll(ctx context.Context) (*ExtensionHubSyncRes
 		return nil, fmt.Errorf("%w: 查询订阅源失败: %v", ErrExtensionHubStorage, err)
 	}
 
-	result := &ExtensionHubSyncResult{
-		Total: len(feeds),
-		Items: make([]ExtensionHubSyncItem, 0, len(feeds)),
-	}
+	// 分流在内存里做而不是写进 WHERE：
+	//   1. 与 FetchAll 的 NormalizeFetchBy 判断保持逐字一致，
+	//      空串与历史数据都按 local 处理；
+	//   2. 同一次查询就能统计出 skipped，不必再数一次。
+	pending := make([]model.RSSFeed, 0, len(feeds))
+	skipped := 0
 	for i := range feeds {
+		if model.NormalizeFetchBy(feeds[i].FetchBy) != model.FetchByExtension {
+			skipped++
+			continue
+		}
+		pending = append(pending, feeds[i])
+	}
+
+	result := &ExtensionHubSyncResult{
+		Total:        len(pending),
+		SkippedLocal: skipped,
+		Items:        make([]ExtensionHubSyncItem, 0, len(pending)),
+	}
+	for i := range pending {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 
-		feed := &feeds[i]
+		feed := &pending[i]
 		item := ExtensionHubSyncItem{FeedID: feed.ID, URL: feed.URL}
 
 		remote, created, perr := client.UpsertSubscription(ctx, feedToHubUpsert(feed, nil, false))

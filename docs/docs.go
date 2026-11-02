@@ -2072,14 +2072,14 @@ const docTemplate = `{
         },
         "/extension/subscriptions/sync": {
             "post": {
-                "description": "只推送不删除：删除会连带清掉对方已抓取的条目，必须逐条确认",
+                "description": "只推 fetch_by=extension 的源，归属本机的不会推送（否则两边各抓一份）；只推送不删除，删除会连带清掉对方已抓取的条目，必须逐条确认",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Extension 对接"
                 ],
-                "summary": "全量对账",
+                "summary": "对账 Extension 订阅",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -5084,7 +5084,12 @@ const docTemplate = `{
                         "$ref": "#/definitions/service.ExtensionHubSyncItem"
                     }
                 },
+                "skipped_local": {
+                    "description": "SkippedLocal 是归属本机抓取、因此没有推送的条数。\n\n单独报出来是因为「total=0」有两种含义：本地确实没有订阅源，\n或者有源但都归本机。不区分的话，使用者会以为对账没干活。",
+                    "type": "integer"
+                },
                 "total": {
+                    "description": "Total 是本次推送到 Extension 的条数，不含归属本机的源。",
                     "type": "integer"
                 },
                 "updated": {

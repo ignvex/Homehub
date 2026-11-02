@@ -38,6 +38,22 @@ const expiresOptions = [
   { label: '永久有效', value: '' },
 ]
 
+/**
+ * syncMessage 把对账结果拼成一句人话。
+ *
+ * 对账只推归属 Extension 的源，所以 total=0 有两种含义：本地没有订阅源，
+ * 或者有源但全归本机。不把后者说出来的话，使用者会以为对账什么都没做。
+ */
+function syncMessage(result: SyncResult): string {
+  const skipped = result.skipped_local > 0 ? `；${result.skipped_local} 条由本机抓取，未推送` : ''
+  if (result.total === 0) {
+    return result.skipped_local > 0
+      ? `没有需要同步的源：${result.skipped_local} 条都由本机抓取`
+      : '本地还没有订阅源'
+  }
+  return `对账完成：新建 ${result.created}、更新 ${result.updated}、失败 ${result.failed}（共 ${result.total} 条）${skipped}`
+}
+
 export function ExtensionPage() {
   const [status, setStatus] = useState<ExtensionHubStatus | null>(null)
   const [subscriptions, setSubscriptions] = useState<RemoteSubscription[]>([])
@@ -117,9 +133,9 @@ export function ExtensionPage() {
     try {
       const result = await extensionHubApi.sync()
       setSyncResult(result)
-      setMessage(
-        `对账完成：新建 ${result.created}、更新 ${result.updated}、失败 ${result.failed}（共 ${result.total} 条）`,
-      )
+      // 对账只推归属 Extension 的源。total=0 有两种含义（本地没源 /
+      // 有源但都归本机），不区分的话使用者会以为对账没干活。
+      setMessage(syncMessage(result))
       setError('')
       await loadSubscriptions()
     } catch (cause) {

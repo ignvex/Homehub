@@ -64,7 +64,7 @@ chmod 600 extension-hub.key
 | `GET` | `/api/v1/extension/status` | 登录 | 四层状态探测，不抛错，结果在 `data` 里 |
 | `GET` | `/api/v1/extension/subscriptions` | 登录 | Extension 侧订阅，标注本地是否也有 |
 | `POST` | `/api/v1/extension/subscriptions` | 3 级 | 推送单条 `{feed_id, enabled?, fetch_now?}` |
-| `POST` | `/api/v1/extension/subscriptions/sync` | 3 级 | 全量对账，只推不删 |
+| `POST` | `/api/v1/extension/subscriptions/sync` | 3 级 | 对账 `fetch_by=extension` 的源，只推不删 |
 | `DELETE` | `/api/v1/extension/subscriptions/{id}` | 2 级 | 删除远端订阅，不可恢复 |
 | `GET` | `/api/v1/extension/keys` | 2 级 | 访问密钥列表 |
 | `POST` | `/api/v1/extension/keys` | 2 级 | 签发，明文只出现一次 |
@@ -94,7 +94,25 @@ Extension 上本地没有的条目。删除会连带清掉对方已抓取的条�
 恢复；把它混在一次「对账」里悄悄做掉是最不该发生的事。要删就逐条走
 `DELETE`，界面上有单独的确认框。
 
-### 4.3 上游状态码不透传
+### 4.3 对账只推 `fetch_by=extension` 的源
+
+`fetch_by` 是**阅读器归属**，不是抓取开关（见 `model.RSSFeed` 的注释）。
+归属本机的源推给 Extension 会得到两份各不相通的条目：Extension 新建订阅
+默认启用，于是同一个源两边各抓一次，而使用者只会在其中一处阅读。
+
+所以对账只推 `fetch_by=extension`，判断复用 `model.NormalizeFetchBy`——
+与 `RSSService.FetchAll` 同一个函数，两处必须同源。写反任何一边都会造出
+「本机不抓、也没推给对方」的源，静默停摆。
+
+响应里的 `total` 只算实际推送的条数，被跳过的本机源单独报在
+`skipped_local`。不分开的话，`total=0` 会同时表示「本地没订阅源」和
+「有源但全归本机」两件完全不同的事。
+
+**已知不对等**：把某个源从 `extension` 改回 `local` 之后，Extension 侧那条
+仍然存在并继续抓取。对账不能自动删（见 §4.2），需要用户到 Extension 界面
+手动删掉。
+
+### 4.4 上游状态码不透传
 
 Extension 的 401 表示「宿主签名不对」，与 HomeHub 的会话无关。原样透传会
 让前端把用户踢回登录页——把一次部署配置错误演成「你掉登录了」。同理，
