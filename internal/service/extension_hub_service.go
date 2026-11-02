@@ -230,6 +230,18 @@ type ExtensionHubStatus struct {
 	// SubscriptionCount 只在 RSSAvailable 为真时有意义。
 	SubscriptionCount int `json:"subscription_count"`
 
+	// Capabilities 记录对端是否真的实现了 /fetch 与 /avatar。
+	//
+	// 声明式配置（extension.features）只能表达「我想用」，不能证明
+	// 「对端有」。开着一个对端没实现的开关时，表现是每次抓取/头像都失败，
+	// 而错误看起来像上游故障。这里用一次无副作用的探测把答案摊开。
+	//
+	// 两条都探，不论 features 是否已开启：开关打开前就应当能看到
+	// 「对端到底有没有」，否则只能靠打开后失败来发现。探测本身是
+	// 无参数 GET，代价接近一个 RTT。
+	FetchAvailable  *bool `json:"fetch_available"`
+	AvatarAvailable *bool `json:"avatar_available"`
+
 	// Ready 来自 Extension 的 /readyz（不签名、不进鉴权的那条探针）。
 	//
 	// 指针三态：nil 表示没探到（路径不对、端点不存在、超时）。
@@ -315,10 +327,51 @@ func (s *ExtensionHubService) Status(ctx context.Context) ExtensionHubStatus {
 	st.RSSAvailable = true
 	st.SubscriptionCount = len(subs)
 
+	// 能力探测。只探用户已开启的那几条，且失败一律留 nil。
+	st.FetchAvailable = probeEndpoint(ctx, client, "/fetch")
+	st.AvatarAvailable = probeEndpoint(ctx, client, "/avatar/00000000000000000000000000000000")
+
 	// 最后再探一次 /readyz。它不影响前面的结论：拿不到就保持 nil，
 	// 而不是判成「未就绪」——那会把一个没部署的探针演成故障。
 	st.Ready, st.ReadyDetail = s.probeReady(ctx, hub.BaseURL)
 	return st
+}
+
+// probeEndpoint 判断对端是否实现了某个端点。
+//
+// 判据是「不是 404、也不是 SPA 兜底的 HTML」：
+//   - 404  → 端点不存在（或 RSS 模块关闭，但那条由 RSSAvailable 表达）
+//   - 200 + HTML → 落到了 SPA 兜底，端点其实不存在。这是当前 Extension
+//     的真实形态：/fetch 与 /avatar 都返回 630 字节的首页。
+//   - 400/401/422 → 端点存在，只是我们没给对参数
+//
+// 请求本身没有副作用：/fetch 缺 url 参数、/avatar 用全零 hash，都不会
+// 触发任何抓取或下载。失败一律返回 nil，不让它污染状态主结论。
+func probeEndpoint(ctx context.Context, client *hubclient.Client, path string) *bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	resp, err := client.DoRaw(probeCtx, http.MethodGet, path, "", "*/*", nil)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	yes, no := true, false
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return &no
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// 2xx 只可能是 SPA 兜底或真的端点。看 Content-Type：
+		// feed 是 XML，头像是图片，都不该是 text/html。
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+			return &no
+		}
+		return &yes
+	default:
+		// 其余状态码（400/401/403/405/422…）说明路由存在，只是参数不对。
+		return &yes
+	}
 }
 
 // probeReady 请求 Extension 的 /readyz。

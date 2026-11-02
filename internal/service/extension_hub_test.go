@@ -547,3 +547,56 @@ func TestDeleteRemoteSubscriptionDoesNotClaimSuccessWhenProbeFails(t *testing.T)
 		t.Fatal("探测失败时不能返回 already_deleted=true")
 	}
 }
+
+// TestProbeEndpointDistinguishesSPAFallbackFromRealEndpoint 锁住能力探测的判据。
+//
+// 这三条覆盖当前真实遇到过的两种形态：对端把未知路径交给 SPA 兜底
+// （200 + text/html），以及端点存在但缺参数（400）。前者误判成「有」
+// 会让运维以为代抓可用，实际每次抓取都拿到 HTML。
+func TestProbeEndpointDistinguishesSPAFallbackFromRealEndpoint(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		contentType string
+		want        *bool
+	}{
+		{"SPA 兜底返回首页", http.StatusOK, "text/html; charset=utf-8", boolPtr(false)},
+		{"真端点返回 XML", http.StatusOK, "application/rss+xml", boolPtr(true)},
+		{"端点存在但缺参数", http.StatusBadRequest, "application/json", boolPtr(true)},
+		{"端点不存在", http.StatusNotFound, "application/json", boolPtr(false)},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", c.contentType)
+				w.WriteHeader(c.status)
+			}))
+			defer srv.Close()
+
+			pemText, _ := newTestSigner(t)
+			client, err := buildExtensionClient(&config.Config{
+				Extension: config.ExtensionConfig{
+					Enabled:        true,
+					BaseURL:        srv.URL + "/api/v1",
+					PrivateKeyPEM:  pemText,
+					TimeoutSeconds: 5,
+					Features:       config.ExtensionFeatures{Hub: true},
+				},
+			}, 5*time.Second)
+			if err != nil {
+				t.Fatalf("构造客户端失败: %v", err)
+			}
+
+			got := probeEndpoint(context.Background(), client, "/fetch")
+			switch {
+			case c.want == nil && got != nil:
+				t.Errorf("期望 nil，实际 %v", *got)
+			case c.want != nil && got == nil:
+				t.Errorf("期望 %v，实际 nil", *c.want)
+			case c.want != nil && got != nil && *got != *c.want:
+				t.Errorf("期望 %v，实际 %v", *c.want, *got)
+			}
+		})
+	}
+}
