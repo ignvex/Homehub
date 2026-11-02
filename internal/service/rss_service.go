@@ -25,6 +25,12 @@ var (
 	ErrRSSFeedNotFound  = errors.New("订阅源不存在")
 	ErrRSSFeedExists    = errors.New("订阅源已存在")
 	ErrRSSEntryNotFound = errors.New("条目不存在")
+	// ErrRSSBatchEmpty 表示批量操作没选中任何订阅源。
+	//
+	// 单独一个错误而不是静默返回 0：批量更新拼的是 `WHERE id IN ?`，
+	// 万一上游把空列表当成「无条件」传下来，那一次请求就能改光整张表。
+	// 这条拒绕把那个可能性变成一次 400。
+	ErrRSSBatchEmpty = errors.New("未选中任何订阅源")
 )
 
 // RSSService RSS 订阅业务服务。
@@ -311,6 +317,68 @@ func (s *RSSService) UpdateFeed(id uint64, u FeedUpdate) error {
 		return ErrRSSFeedNotFound
 	}
 	return nil
+}
+
+// maxBatchFeeds 是单次批量更新允许的订阅源数量上限。
+//
+// 不是性能阈值，是防误用：一个拼错的 ID 列表变成 `IN` 里几百个值时，
+// 出错的代价比多几次请求大得多。个人部署的订阅源规模远低于这个数。
+const maxBatchFeeds = 500
+
+// UpdateFeeds 把同一组变更应用到多个订阅源，返回实际更新的条数。
+//
+// 一次事务、一条 UPDATE：前端逐条发 PUT 在 20 个源上就是 20 次往返，
+// 中间失败会留下一半改过一半没改的状态——而用户看到的是「批量」这个
+// 单一动作，不该有中间态。
+//
+// 语义与单条 UpdateFeed 一致：零值跳过、空串清空、Group 三态。
+// 已删除或不存在的 ID 被忽略而不是报错：批量选中后某个源恰好被删掉
+// 是正常协态，不该让整批操作失败。
+func (s *RSSService) UpdateFeeds(ids []uint64, u FeedUpdate) (int64, error) {
+	clean := make([]uint64, 0, len(ids))
+	seen := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		// id=0 不是合法主键；去重是为了让 RowsAffected 不被重复计数误导。
+		if id == 0 {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return 0, ErrRSSBatchEmpty
+	}
+	if len(clean) > maxBatchFeeds {
+		return 0, fmt.Errorf("单次最多批量操作 %d 个订阅源", maxBatchFeeds)
+	}
+
+	updates, err := buildFeedUpdates(u)
+	if err != nil {
+		return 0, err
+	}
+	if len(updates) == 0 {
+		// 没有任何字段要改：合法但不产生变更，不是错误。
+		return 0, nil
+	}
+
+	var affected int64
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.RSSFeed{}).
+			Where("id IN ?", clean).
+			Updates(updates)
+		if result.Error != nil {
+			return fmt.Errorf("批量更新订阅源失败: %w", result.Error)
+		}
+		affected = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 // DeleteFeed 删除订阅源。

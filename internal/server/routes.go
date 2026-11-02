@@ -165,6 +165,9 @@ func registerRoutes(r *gin.Engine) {
 		rssWrite := contentWrite.Group("/rss")
 		{
 			rssWrite.POST("/feeds", handler.RSSCreateFeed)
+			// 批量更新放在 :id 之前仅为可读性；路由树里静态段优先于参数段，
+			// 两者不会互相遮蔽。
+			rssWrite.PUT("/feeds/batch", handler.RSSBatchUpdateFeeds)
 			rssWrite.PUT("/feeds/:id", handler.RSSUpdateFeed)
 			rssWrite.DELETE("/feeds/:id", handler.RSSDeleteFeed)
 			rssWrite.POST("/feeds/:id/fetch", handler.RSSFetchFeed)

@@ -211,6 +211,54 @@ func RSSUpdateFeed(c *gin.Context) {
 	Success(c, nil)
 }
 
+// batchUpdateRSSFeedsRequest 批量更新请求体。
+//
+// 复用 updateRSSFeedRequest 的字段定义而不是手工复制一份：
+// 三态分组、空串清空、nil 跳过的语义必须与单条完全一致，
+// 两份定义早晚会在某次改动后分叉。
+type batchUpdateRSSFeedsRequest struct {
+	IDs []uint64 `json:"ids" binding:"required"`
+	updateRSSFeedRequest
+}
+
+// RSSBatchUpdateFeeds 对多个订阅源应用同一组变更。
+//
+//	@Summary		批量更新订阅源
+//	@Description	一次事务内把同一组变更应用到多个订阅源，语义与单条更新一致；不存在的 ID 被忽略
+//	@Tags			RSS 订阅
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		batchUpdateRSSFeedsRequest	true	"批量更新请求"
+//	@Success		200		{object}	Response{data=object}	"实际更新的条数"
+//	@Failure		400		{object}	Response	"未选中订阅源或参数无效"
+//	@Router			/rss/feeds/batch [put]
+func RSSBatchUpdateFeeds(c *gin.Context) {
+	var req batchUpdateRSSFeedsRequest
+	if err := c.ShouldBind(&req); err != nil {
+		FailBadRequest(c, "无效的请求参数")
+		return
+	}
+
+	affected, err := svc.RSS.UpdateFeeds(req.IDs, service.FeedUpdate{
+		Title:         req.Title,
+		Remark:        req.Remark,
+		FetchInterval: req.FetchInterval,
+		FetchBy:       req.FetchBy,
+		FetchEnabled:  req.FetchEnabled,
+		Group: service.GroupUpdate{
+			Set:   req.GroupID.Set,
+			Value: req.GroupID.Value,
+		},
+	})
+	if err != nil {
+		// 空选中与非法参数都是调用方能修正的输入，统一 400；
+		// 只有数据库故障才该是 500，那种情况目前不会走到这里。
+		FailBadRequest(c, err.Error())
+		return
+	}
+	Success(c, gin.H{"updated": affected})
+}
+
 // RSSDeleteFeed 删除订阅源及其所有条目。
 //
 //	@Summary		删除订阅源
