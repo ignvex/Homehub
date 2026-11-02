@@ -1,6 +1,5 @@
 /* ============================================================
-   仪表盘 — 只保留本页独有的两个构件
-     顶部指标条（.dash-stats）与快捷入口宫格（.dash-tiles）
+   仪表盘 — 只保留本页独有的构件：顶部指标条（.dash-stats）
    面板、度量行、状态灯均来自 components.css
    ============================================================ */
 
@@ -133,79 +132,6 @@
   font-size: var(--text-sm);
 }
 
-/* ============ 快捷入口 ============ */
-.dash-tiles {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-.dash-tile {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
-  color: var(--color-text);
-  text-decoration: none;
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
-}
-.dash-tile:last-child { border-right: 0; }
-.dash-tile:hover {
-  background: color-mix(in srgb, var(--color-interactive) 6%, transparent);
-  color: var(--color-interactive);
-}
-.dash-tile-icon {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
-  color: var(--color-primary-hover);
-}
-.dash-tile-icon svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.dash-tile-copy {
-  min-width: 0;
-  display: grid;
-  gap: 1px;
-}
-.dash-tile-copy strong {
-  overflow: hidden;
-  font-size: var(--text-base);
-  font-weight: 620;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.dash-tile-copy small {
-  overflow: hidden;
-  color: var(--color-text-secondary);
-  font-size: var(--text-2xs);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.dash-tile-arrow {
-  flex: none;
-  margin-left: auto;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  opacity: 0;
-  transition: opacity var(--dur-fast) ease, transform var(--dur-fast) ease;
-}
-.dash-tile:hover .dash-tile-arrow {
-  opacity: 1;
-  transform: translateX(2px);
-  color: var(--color-interactive);
-}
-
 /* ============ 响应式 ============ */
 @media (max-width: 1080px) {
   .dash-grid { grid-template-columns: 1fr; }
@@ -216,10 +142,6 @@
   .dash-stat:nth-child(2) { border-right: 0; }
   .dash-stat:nth-child(1),
   .dash-stat:nth-child(2) { border-bottom: 1px solid var(--color-divider); }
-  .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dash-tile:nth-child(2n) { border-right: 0; }
-  .dash-tile:nth-child(1),
-  .dash-tile:nth-child(2) { border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent); }
 }
 
 @media (max-width: 560px) {
@@ -229,10 +151,4 @@
     border-bottom: 1px solid var(--color-divider);
   }
   .dash-stat:last-child { border-bottom: 0; }
-  .dash-tiles { grid-template-columns: 1fr; }
-  .dash-tile {
-    border-right: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
-  }
-  .dash-tile:last-child { border-bottom: 0; }
 }
