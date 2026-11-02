@@ -707,3 +707,56 @@ a:focus-visible,
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
+
+/* ============ 表单内的分组（大段落里再分小节） ============ */
+/* 一个 Section 里塞进三五块互不相干的内容时，用这条分隔。
+ * 只做视觉分组，不改保存语义——所有字段仍属于同一个 section。 */
+.form-block {
+  display: grid;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-divider);
+}
+.form-block:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+.form-block-head {
+  display: grid;
+  gap: var(--space-1);
+}
+.form-block-head h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--color-text);
+}
+.form-block-head p {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: var(--leading-relaxed);
+}
+/* 能力开关每行一条说明，比并排三个方块更省横向空间，
+ * 也让「这个开关会改变什么」有地方写。 */
+.feature-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+.feature-row input { margin-top: 2px; }
+.feature-row-body { display: grid; gap: 2px; min-width: 0; }
+.feature-row-body strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.feature-row-body small {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: var(--leading-relaxed);
+}

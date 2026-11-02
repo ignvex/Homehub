@@ -17,12 +17,16 @@ export interface ExtensionHubStatus {
   public_key_pem?: string
   /** 公钥 SHA-256 前 16 位，便于在日志里核对。 */
   key_fingerprint?: string
-  /** 私钥来处：database / file / none。 */
+  /** 私钥来处：config / none。 */
   key_source?: string
   reachable: boolean
   authenticated: boolean
   rss_available: boolean
   subscription_count: number
+  /** 对端是否真的实现了 /fetch。null 表示没探到。 */
+  fetch_available: boolean | null
+  /** 对端是否真的实现了 /avatar。null 表示没探到。 */
+  avatar_available: boolean | null
   /** ready 来自 Extension 的 /readyz；null 表示没探到（端点不存在或超时）。 */
   ready: boolean | null
   ready_detail?: string

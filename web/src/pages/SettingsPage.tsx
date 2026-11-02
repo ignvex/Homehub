@@ -476,51 +476,88 @@ export function SettingsPage() {
           onSave={() => void saveSection('extension')}
           onReset={() => patch(current => ({ ...current, extension: config.extension }))}
         >
-          <div className="form-grid form-grid--three">
-            <label className="choice-tile">
-              <input type="checkbox" checked={draft.extension.enabled}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, enabled: event.target.checked } }))} />
-              <span>启用 Extension</span>
-            </label>
-            <Field label="API 根地址">
-              <input value={draft.extension.base_url} placeholder="https://ext.example.com/api/v1"
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, base_url: event.target.value } }))} />
-            </Field>
-            <Field label="连接代理">
-              <select
-                value={draft.extension.proxy_names[0] ?? ''}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, proxy_names: event.target.value ? [event.target.value] : [] } }))}
-              >
-                <option value="">直连（默认）</option>
-                {proxyNames.map(name => <option key={name} value={name}>{name}</option>)}
-              </select>
-            </Field>
-            <Field label="请求超时（秒）">
-              <input type="number" min="1" max="300" value={draft.extension.timeout_seconds}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, timeout_seconds: Number(event.target.value) } }))} />
-            </Field>
+          {/* 连接：地址与网络路径 */}
+          <div className="form-block">
+            <div className="form-block-head">
+              <h3>连接</h3>
+              <p>/hub/*、/fetch、/avatar 共用这一份地址与密钥。</p>
+            </div>
+            <div className="form-grid form-grid--three">
+              <label className="choice-tile">
+                <input type="checkbox" checked={draft.extension.enabled}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, enabled: event.target.checked } }))} />
+                <span>启用 Extension</span>
+              </label>
+              <Field label="API 根地址">
+                <input value={draft.extension.base_url} placeholder="https://ext.example.com/api/v1"
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, base_url: event.target.value } }))} />
+              </Field>
+              <Field label="连接代理">
+                <select
+                  value={draft.extension.proxy_names[0] ?? ''}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, proxy_names: event.target.value ? [event.target.value] : [] } }))}
+                >
+                  <option value="">直连（默认）</option>
+                  {proxyNames.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </Field>
+              <Field label="请求超时（秒）">
+                <input type="number" min="1" max="300" value={draft.extension.timeout_seconds}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, timeout_seconds: Number(event.target.value) } }))} />
+              </Field>
+            </div>
           </div>
-          <div className="form-grid form-grid--three">
-            <label className="choice-tile">
-              <input type="checkbox" checked={draft.extension.features.hub}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, hub: event.target.checked } } }))} />
-              <span>订阅镜像与密钥（/hub/*）</span>
-            </label>
-            <label className="choice-tile">
-              <input type="checkbox" checked={draft.extension.features.fetch}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, fetch: event.target.checked } } }))} />
-              <span>RSS 抓取（/fetch）</span>
-            </label>
-            <label className="choice-tile">
-              <input type="checkbox" checked={draft.extension.features.avatar}
-                onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, avatar: event.target.checked } } }))} />
-              <span>头像代理（/avatar）</span>
-            </label>
+
+          {/* 能力：每一条都会改变流量去哪 */}
+          <div className="form-block">
+            <div className="form-block-head">
+              <h3>能力</h3>
+              <p>三条通路可以分别开关。对端没实现的不要打开——右侧会显示探测结果。</p>
+            </div>
+            <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
+              <label className="feature-row">
+                <input type="checkbox" checked={draft.extension.features.hub}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, hub: event.target.checked } } }))} />
+                <span className="feature-row-body">
+                  <strong>订阅镜像与访问密钥（/hub/*）
+                    <CapabilityHint available={null} />
+                  </strong>
+                  <small>把订阅推给 Extension、签发登录密钥。条目落在对端，宿主这侧不再抓。</small>
+                </span>
+              </label>
+              <label className="feature-row">
+                <input type="checkbox" checked={draft.extension.features.fetch}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, fetch: event.target.checked } } }))} />
+                <span className="feature-row-body">
+                  <strong>RSS 抓取代理（/fetch）
+                    <CapabilityHint available={hubStatus?.fetch_available} />
+                  </strong>
+                  <small>只把出网这一步外包，条目仍解析回本地库。会占用 rss.fetch_timeout_seconds 的预算。</small>
+                </span>
+              </label>
+              <label className="feature-row">
+                <input type="checkbox" checked={draft.extension.features.avatar}
+                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, avatar: event.target.checked } } }))} />
+                <span className="feature-row-body">
+                  <strong>头像代理（/avatar）
+                    <CapabilityHint available={hubStatus?.avatar_available} />
+                  </strong>
+                  <small>头像下载交给对端。关闭时直连 Gravatar，走全局代理。</small>
+                </span>
+              </label>
+            </div>
           </div>
-          <div style={{ display: 'grid', gap: 12, marginTop: 4 }}>
+
+          {/* 状态：一次探测的四层结论 */}
+          <div className="form-block">
+            <div className="form-block-head">
+              <h3>当前状态</h3>
+              <p>四层依次是：配置齐全 → HTTP 可达 → 签名通过 → RSS 模块可用。</p>
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
             <div className="metric-row" style={{ alignItems: 'center' }}>
               <div className="metric-label">
-                <span>当前状态</span>
+                <span>探测结果</span>
                 <small>{hubStatus?.base_url || '未配置对接地址'}</small>
               </div>
               <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -596,9 +633,18 @@ export function SettingsPage() {
               </div>
             </div>}
 
+            </div>
+          </div>
+
+          {/* 密钥：身份，与连接和能力分开 */}
+          <div className="form-block">
+            <div className="form-block-head">
+              <h3>签名私钥</h3>
+              <p>宿主的身份。换一把就必须同步更新 Extension 侧的公钥，否则所有 /hub/* 调用都会 401。</p>
+            </div>
             <div className="metric-row">
               <div className="metric-label">
-                <span>签名私钥</span>
+                <span>当前私钥</span>
                 <small>{keySourceHint(keyInfo)}</small>
               </div>
               <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -665,9 +711,9 @@ export function SettingsPage() {
             <div style={{ background: 'var(--color-surface-muted)', borderRadius: 6, padding: 16, fontSize: 12, lineHeight: 1.7 }}>
               <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
               <ol style={{ margin: 0, paddingLeft: 18 }}>
-                <li>在 HomeHub 主机生成密钥：<code>openssl genpkey -algorithm ed25519 -out /etc/homehub/extension-hub.key</code></li>
+                <li>生成密钥：<code>openssl genpkey -algorithm ed25519 -out hub.key</code></li>
                 <li>把上面的<strong>公钥 PEM</strong>整段存成文件（或点「下载 .pub 文件」），放到 Extension 主机的 <code>auth.hub.public_key_path</code>，重启它</li>
-                <li>回到这里填 <strong>API 根地址</strong>（必须带 <code>/api/v1</code>）与<strong>私钥路径</strong>，勾上启用并保存，然后点「重新探测」</li>
+                <li>把私钥粘进下面的输入框并保存（会自动规范成一行 44 字符），填好 <strong>API 根地址</strong>，勾上启用，然后点「重新探测」</li>
               </ol>
               <p style={{ margin: '8px 0 0', color: 'var(--color-text-secondary)' }}>
                 Extension 是单实例：一个 HomeHub 对接一个 Extension，不支持在这里添加多个。
@@ -679,8 +725,8 @@ export function SettingsPage() {
 
     <ConfirmDialog
       open={confirmingKeyDelete}
-      title="移除数据库里的签名私钥"
-      description="移除后如果配置里填了私钥路径，会回退到那个文件；两处都没有则无法再签名，所有 /hub/* 调用会失败。"
+      title="移除签名私钥"
+      description="会把 config.json 里的 private_key_pem 清空。清空后无法再签名，所有 /hub/* 调用都会失败。需要先关闭 extension.enabled 才能执行。"
       confirmLabel="移除"
       danger
       busy={keyBusy}
@@ -703,6 +749,19 @@ export function SettingsPage() {
 // ------------------------------------------------------------
 // 局部组件
 // ------------------------------------------------------------
+
+/**
+ * CapabilityHint 在对端探测结果旁给一个小标记。
+ *
+ * available 为 null 表示还没探测到（未配置、不可达、或该能力不在探测范围）。
+ * 不显示比显示「未知」更好：一个常驻的灰色「未知」会让整页看起来像坏了。
+ */
+function CapabilityHint({ available }: { available: boolean | null | undefined }) {
+  if (available === null || available === undefined) return null
+  return available
+    ? <StatusBadge tone="success">对端已实现</StatusBadge>
+    : <StatusBadge tone="danger">对端未实现</StatusBadge>
+}
 
 /** keySourceHint 说明密钥来自哪里，以及该去哪改。 */
 function keySourceHint(info: KeyInfo | null): string {
