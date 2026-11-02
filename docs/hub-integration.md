@@ -1,6 +1,17 @@
 # Homehub 宿主对接指南
 
-这份文档写给 **Homehub 宿主的实现者**：你在宿主里推送订阅、查询抓取状态、为用户签发登录密钥。它不解释 Extension 内部怎么实现，只说明你必须遵守的协议，以及出错时该怎么判断。
+> **本文是 `/api/v1/hub/*` 协议的唯一定义来源。**
+>
+> 契约由 Homehub 提出并维护，Extension 实现它、也读它。两侧不再各存一份
+> 全文副本——副本必然漂移，上一轮就已经漂了（批量推送端点只写在了
+> Extension 侧，宿主侧连它的存在都不知道）。
+>
+> Extension 仓库的 `docs/hub-integration.md` 已降为指向本文的指针。要改协议，
+> 先改这里，再按 §7.2 的顺序施到实现上。
+
+这份文档写给 **协议两侧的实现者**：宿主侧推送订阅、查询抓取状态、签发登录密钥，
+Extension 侧实现这些端点。它不解释任何一侧内部怎么组织代码，只说明必须遵守的
+协议，以及出错时该怎么判断。
 
 浏览器端与 REST API 的完整约定见 Extension 仓库的 [docs/api.md](https://github.com/ignvex/HomehubExtension/blob/main/docs/api.md)；本文只覆盖 `/api/v1/hub/*` 这条机器通道。
 
@@ -11,6 +22,7 @@
 | 能力 | 方法与路径 | 成功状态 |
 | --- | --- | --- |
 | 推送/更新订阅 | `POST /api/v1/hub/subscriptions` | 201 新建 / 200 更新 |
+| 批量推送订阅 | `POST /api/v1/hub/subscriptions/batch` | 200 |
 | 对账订阅列表 | `GET /api/v1/hub/subscriptions` | 200 |
 | 移除订阅 | `DELETE /api/v1/hub/subscriptions/{id}` | 204 |
 | 立即抓取 | `POST /api/v1/hub/subscriptions/{id}/refresh` | 200 |
@@ -312,6 +324,20 @@ POST /api/v1/hub/subscriptions
 
 `interval` 会被夹到 `[rss.min_interval, rss.max_interval]`（默认 10 分钟到 6 小时）。超出范围不报错，直接取边界值——响应里的 `fetch_interval` 是实际生效值。
 
+`url` 会经过与网页端新建订阅相同的校验，不通过时返回 400 `invalid_request`：
+
+- scheme 必须是 `http` / `https`；
+- 不能带 `user:pass@`；
+- 字面 IP 不能是回环、私网、链路本地（含 `169.254.169.254`）、CGNAT 等；
+- 路径里显式写的端口只能是 `80` / `443` / `8080` / `8443`。
+
+域名形式的地址在这里**不做 DNS 解析**，检查发生在真正建连时。所以
+`http://localhost/feed` 能通过入库，但首次抓取会因解析到回环被拒——
+`last_error` 会写 `blocked host`。宿主应当在推送前就过滤掉这类地址。
+
+`rss.allow_private_hosts=true` 时上述地址限制全部放开（端口限制也一并取消），
+用于订阅自家 NAS 上的源。
+
 `next_fetch_at` 只在间隔真的变化时重排。重复推送同一间隔不会把抓取时间往后推。
 
 响应里的 `fetch_interval` 是紧凑写法（`"30m"`、`"1h30m"`、`"6h"`），可以直接作为下一次推送的 `interval` 原样传回。
@@ -353,6 +379,50 @@ DELETE /api/v1/hub/subscriptions/7
 ```
 
 返回 204，条目与 blob 引用级联清理。订阅不存在返回 404。重复删除不是幂等的 204——第二次会是 404，宿主按「已删除」处理即可。
+
+**这是不可逆操作，宿主侧必须先自己把关。** 删除会连带清掉对方已抓取的条目与
+blob，没有回收路径。什么时候可以发这一步，见 §6.3 的两个前置条件；不要在对账
+循环里见到「本地没有」就删。
+
+Extension 侧不需要校验请求来源是否「真的确认过」——它无从判断，也不该猜。
+安全边界在宿主：宿主是唯一知道本地状态与同步水位的一方。
+
+### 4.3a 批量推送
+
+```http
+POST /api/v1/hub/subscriptions/batch
+```
+
+```json
+{
+  "items": [
+    { "url": "https://a.example.com/feed.xml", "title": "A" },
+    { "url": "https://b.example.com/feed.xml", "interval": "1h", "enabled": false }
+  ]
+}
+```
+
+启动对账补推几百条订阅时用这个，而不是逐个 `POST /subscriptions`：
+每次请求都要验签、读 body、建连接，200 条就是 200 个往返。
+
+字段语义与单条推送完全一致（省略表示保留原值、`interval` 夹紧、
+`url` 过同一套地址校验）。单条失败不中断整批：
+
+```json
+{
+  "created": 2,
+  "updated": 1,
+  "unchanged": 1,
+  "failed": [
+    { "url": "http://127.0.0.1/feed.xml", "reason": "blocked host: 127.0.0.1" }
+  ],
+  "total": 5
+}
+```
+
+`unchanged` 是推了但什么字段都没变的那部分。上限 500 条，
+超过返回 413。**批量推送不会触发立即抓取**——抓取由轮询器按
+`next_fetch_at` 调度，并受 `rss.fetch_concurrency` 约束。
 
 ### 4.4 立即抓取
 
@@ -461,7 +531,7 @@ DELETE /api/v1/hub/keys/01JC8Z…
 
 | HTTP | code | 含义 | 宿主该怎么做 |
 | --- | --- | --- | --- |
-| 400 | `invalid_request` | 字段格式错误 | 修正后重试，不要原样重发 |
+| 400 | `invalid_request` | 字段格式错误；`url` 指向内网地址或端口不在白名单 | 修正后重试，不要原样重发 |
 | 401 | `unauthenticated` | 签名/时间戳/nonce 问题 | **不要重试**。检查时钟、nonce 唯一性、PATH/QUERY 编码 |
 | 404 | `not_found` | 订阅或密钥不存在；RSS 模块未启用 | 从本地状态里移除；模块关闭时停止展示 RSS |
 | 413 | `payload_too_large` | 超过 `server.max_body_bytes` | 缩小请求体 |
@@ -486,12 +556,87 @@ DELETE /api/v1/hub/keys/01JC8Z…
 宿主不需要轮询。推荐这三个触发点：
 
 1. **用户在宿主里订阅/取消订阅时**：调 `POST` 或 `DELETE`。
-2. **启动时**：`GET /api/v1/hub/subscriptions` 与本地订阅表对账。Extension 里存在但宿主没有的，删除；宿主有但 Extension 没有的，补推。
+2. **启动时**：`GET /api/v1/hub/subscriptions` 与本地订阅表对账。
 3. **定期（如每小时）**：再对账一次，修复漏推。
 
 `fetch_now` 默认是 `true`，所以首次推送后不必额外调 refresh。只有用户在界面上显式点「立即刷新」时才调 `/refresh`。
 
-### 6.2 抓取状态的解读
+### 6.2 对账只覆盖 `fetch_by=extension` 的源
+
+宿主侧每条订阅有一个归属字段 `fetch_by`：
+
+| 取值 | 含义 |
+| --- | --- |
+| `local` | 宿主自己抓，条目存在宿主库 |
+| `extension` | 推给 Extension 抓，条目存在 Extension 库 |
+
+**这是阅读器归属的选择，不是抓取开关。** 两个取值对应的条目存在不同库里，
+互不相通；选 `extension` 就意味着使用者要去 Extension 的界面阅读。
+
+因此对账只推送 `fetch_by=extension` 的源。归属本机的源推过去，Extension 会新建
+订阅并默认启用（除非显式传 `enabled`），结果是同一个源两边各抓一份、各存一份，
+而使用者只会在其中一处阅读。
+
+宿主实现要点：
+
+- 过滤必须在**推送前**完成，不能推完再删。Extension 无法自行判断一个 URL
+  在宿主那边该归谁。
+- 判断归属的函数必须与宿主自己抓取时用的**同一个**。两处各写一份会分叉，
+  结果是某个源宿主不抓、也没推给 Extension，静默停摆。
+- 空串与历史数据一律按 `local` 处理。这一条是默认值约定，不是特例。
+
+对账结果里应当分开报「实际推送的条数」与「因归属本机而跳过的条数」。合并成
+一个总数的话，`total=0` 会同时表示「本地没有订阅源」和「有源但全归本机」两件
+完全不同的事。
+
+**已知不对称**：把某个源从 `extension` 改回 `local` 之后，Extension 侧那条仍然
+存在并继续抓取。宿主不应在对账里自动删它——删除的条件见 §6.3。
+
+> **宿主实现状态（2026-11）**：§6.2 的过滤已落地——
+> `ExtensionHubService.SyncAll` 用 `model.NormalizeFetchBy` 与 `RSSService.FetchAll`
+> 同一个函数分流，结果里用 `skipped_local` 单独报出被跳过的条数。
+> 测试见 `internal/service/extension_hub_push_test.go`。
+
+### 6.3 删除订阅的两个前置条件
+
+删除会连带清掉 Extension 侧已抓取的条目与 blob，不可恢复。所以删除不能是
+「宿主说删就删」，需要两个条件同时成立：
+
+1. **宿主确认过它**：这条订阅在宿主最后一次成功对账**之前**就已存在。
+   对账之后新建的订阅，宿主可能还没拉到，此时删它是误删。
+2. **宿主明确要删**：走 `DELETE /subscriptions/{id}`，逐条确认。
+
+第 1 条靠**同步水位**（watermark）落地。宿主记录自己最后一次成功完成对账的
+时刻 `synced_through`，这是宿主本地状态，不上报也不需要 Extension 知道。宿主
+自己用它判断某条远端订阅能不能删：
+
+```
+可删  ⇔  remote.created_at <= synced_through  AND  本地已无此 URL
+```
+
+为什么不把水位放进 `DELETE` 请求体里让 Extension 代判：Extension 不知道宿主的
+`synced_through` 是早是晚，也无从验证宿主没在说谎；而且 `DELETE` 是单条操作，
+每次多一个字段反而让语义变模糊。判断留在宿主侧，Extension 只管执行。
+
+典型的对账循环：
+
+1. `GET /subscriptions` 拿到全部远端订阅（含 `created_at`）。
+2. 本地按 `fetch_by=extension` 列出应当存在的 URL 集合。
+3. 对每个远端订阅：URL 在集合里 → 保留；不在集合里且 `created_at <= synced_through`
+   → 列为待删，逐条 `DELETE`；不在集合里但 `created_at > synced_through`
+   → 本轮跳过，下一轮再看。
+4. 把本地有、远端没有的补推上去。
+5. 全部完成后，把 `synced_through` 推进到本轮开始时刻。
+
+**水位必须在本轮成功后推进**，不能在中途。中途推进会让「本轮没处理完的远端订阅」
+在下一轮被当成「早已见过」，于是被误删。
+
+> **宿主实现状态（2026-11）**：本节是**待实现**的协议定义。
+> 当前 `SyncAll` 只推不删，也没有持久化 `synced_through`——它不会误删，
+> 但也清不掉宿主已删除的源，需要用户到 Extension 界面逐条删。
+> 接入前不要以为对账已经在做回收。
+
+### 6.4 抓取状态的解读
 
 | 字段 | 含义 |
 | --- | --- |
@@ -502,7 +647,7 @@ DELETE /api/v1/hub/keys/01JC8Z…
 
 `last_status` 为 0 且 `last_fetch_at` 为 `null`，说明还没开始抓——通常是刚推送、异步抓取尚未完成。
 
-### 6.3 自动停用与恢复
+### 6.5 自动停用与恢复
 
 Extension 的退避规则：
 
@@ -517,7 +662,7 @@ Extension 的退避规则：
 
 `error_count` 会被清零、`last_error` 清空、`next_fetch_at` 按当前间隔重排。不要只把 `enabled` 改回 `true` 就以为完事——Extension 侧必须看到这次显式推送才会清零，否则下一次失败立刻又越线。
 
-### 6.4 模块关闭时
+### 6.6 模块关闭时
 
 `rss.enabled = false` 时，四个订阅端点统一返回 404 `not_found` + `RSS 模块未启用`；密钥端点不受影响。判断发生在验签之后，所以未签名请求仍然先得到 401——模块是否启用不会泄露给未授权方。
 
@@ -525,10 +670,46 @@ Extension 的退避规则：
 
 ## 7. 版本与兼容
 
+### 7.1 兼容性约定
+
 - 签名域前缀是 `homehubext/req/v1`。协议有不兼容变更时才会升到 `v2`，届时会提供并行支持窗口。
 - 请求体里未知字段会被忽略，宿主可以提前发送未来字段。
 - 响应里可能新增字段。宿主解析时应忽略未知字段，不要做严格模式校验。
-- 端点只增不减；删除端点会走版本升级。
+- 只增加新端点不算不兼容：宿主不调它就不会受影响。
+
+### 7.2 契约归属与变更顺序
+
+**契约由 Homehub 提出，Extension 实现并读取本文。** 这是单向依赖：
+Extension 不定义协议，只实现协议。
+
+变更按方向分两类，顺序不能颠倒：
+
+| 变更 | 顺序 | 理由 |
+| --- | --- | --- |
+| 加端点、加响应字段 | Homehub 先改文档 → Extension 实现 → 宿主接入 | 向后兼容，中间态两边都能跑 |
+| 删端点、改字段语义 | 宿主先停用 → Extension 再删 | 反过来会直接打断在跑的实例 |
+
+删除端点的判定标准不是「等了多久」，而是**有没有调用方**：
+
+- 宿主 `internal/hubclient` 与本仓 `web/src/lib/extensionHub.ts` 都搜不到该路径，
+  即可直接删，不必升版本、不必留并行窗口。
+- 一旦有调用方，删除就必须先让宿主停用并发布，等确认无流量后才能真删。
+
+这条取代了早先的「端点只增不减」：那条规则假设了一个没有验证机制的承诺，实际
+执行时只会导致没人敢删、死代码越积越多。上一轮删 `GET /hub/entries` 与
+`GET /hub/stats` 走的就是「先查证宿主从未调用」，而不走版本升级——那两个端点
+从一开始就无人使用，升级版本号对谁都没意义。
+
+### 7.3 变更时两侧各改什么
+
+| 角色 | 改什么 |
+| --- | --- |
+| Homehub | 本文（唯一事实源）、`internal/hubclient/types.go`、必要时改 swagger |
+| Extension | 端点实现与测试；**不维护本文副本**，只留指向本文件的链接 |
+
+不要把协议文本再复制到 Extension 仓库。副本必然漂移：上一轮的批量推送端点
+就只写在了 Extension 侧，宿主连它的存在都不知道，结果是协议里有一半在本仓
+文档里查不到。
 
 ## 8. 上线自检清单
 
@@ -542,3 +723,9 @@ Extension 的退避规则：
 - [ ] 密钥签发后只保存 `id` 与明文 `key` 一次，并确认 `GET /keys` 里 `live=true`
 - [ ] 撤销密钥后，用它兑换登录得到 401
 - [ ] 错误日志里记录了 `request_id`，能和服务端日志对上
+- [ ] **对账只推 `fetch_by=extension` 的源**：造一条 `local` 的源，点对账，
+      Extension 列表里不应当多出它（见 §6.2）
+- [ ] **对账不误删**：造一条 `created_at` 晚于 `synced_through` 的远端订阅，
+      确认本轮对账不会删它（见 §6.3）
+- [ ] **批量推送失败可定位**：故意推一条内网地址，确认 `failed[]` 里有它、
+      其余条目仍然入库（单条失败不中断整批）
