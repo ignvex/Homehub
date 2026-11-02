@@ -49,8 +49,13 @@
   min-width: 0;
   overflow: hidden;
   color: var(--color-text);
-  font-size: var(--text-lg);
+  /* 仪表盘的核心是这四个数字，它们比页面里任何文字都更值得占用字号。
+   * 之前是 --text-lg，与面板标题、列表项标题完全同级，扫一眼分不出
+   * 哪个是「要看的数」哪个是「在说什么」。 */
+  font-size: var(--text-xl);
   font-weight: 640;
+  /* 四个格子里的数字位数不同，等宽数字让它们在视觉上对齐。 */
+  font-variant-numeric: tabular-nums;
   line-height: var(--leading-tight);
   letter-spacing: -.01em;
   font-variant-numeric: tabular-nums;

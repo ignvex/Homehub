@@ -707,7 +707,7 @@ html[data-theme="dark"] .home-header {
 }
 .home-empty-copy h2 {
   margin: 6px 0 8px;
-  font-size: clamp(20px, 2.6vw, 26px);
+  font-size: clamp(var(--text-lg), 2.6vw, var(--text-2xl));
   letter-spacing: -.03em;
 }
 .home-empty-copy p:not(.block-eyebrow) {

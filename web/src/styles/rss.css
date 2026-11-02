@@ -173,13 +173,11 @@
   border-left: 2px solid transparent;
   background: transparent;
   color: var(--color-text);
-  /* 与右栏条目标题（--text-lg）同级。
+  /* 列表项标题用 --text-md。
    *
-   * 两个卡片是并排的两种「列表」：左边列出订阅源，右边列出条目。
-   * 同为列表项就该同字号——之前左边 14px、右边 16px，并排看着像两套
-   * 界面拼在一起。窄栏放不下长标题时靠 ellipsis 截断，那是正常表现，
-   * 不该靠缩小字号来回避。 */
-  font-size: var(--text-lg);
+   * 上一版把它提到了 --text-lg，结果与卡片头（「订阅源」「全部条目」）
+   * 一样大——列表项比它所属的卡片还显眼，层级就倒了。 */
+  font-size: var(--text-md);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -259,12 +257,13 @@
   border: 0;
   background: transparent;
   color: var(--color-text-secondary);
-  /* 13px：介于导航项（16px）与备注（12px）之间。
-   * 原先是 12px，与提到 16px 的导航项放在一起，落差陡得像漏了样式。 */
-  font-size: var(--text-base);
+  /* 与订阅源标题同为 --text-md，靠字重 700 + 字距 + 次要色拉开层级。
+   *
+   * 之前这里比它管辖的订阅源还小（13px vs 16px），层级是反的。
+   * 分组是标签不是标题，所以不必比列表项更大；但绝不能更小。 */
+  font-size: var(--text-md);
   font-weight: 700;
-  letter-spacing: .04em;
-  text-transform: uppercase;
+  letter-spacing: .02em;
   text-align: left;
   cursor: pointer;
 }
@@ -332,9 +331,9 @@
 .rss-entry-body { flex: 1; min-width: 0; display: grid; gap: var(--space-1); }
 .rss-entry-title {
   color: var(--color-text);
-  /* 与 --text-md(14px) 相比放大一档：在「全部条目」里连续扫标题时，
-     14px 读起来偏累，尤其是密集列表。 */
-  font-size: var(--text-lg);
+  /* 列表项标题 --text-md，低于卡片头 --text-lg。
+   * 条目是最密集的列表，行高与字号要成比例，不能靠顶格字号撑场面。 */
+  font-size: var(--text-md);
   font-weight: 600;
   line-height: var(--leading-tight);
   text-decoration: none;
@@ -346,7 +345,10 @@
   gap: var(--space-3);
   flex-wrap: wrap;
   color: var(--color-text-secondary);
-  font-size: var(--text-base);
+  /* 作者、时间、来源都是辅助信息，归 --text-sm。
+   * 之前用 --text-base 与正文同级，标题—正文—元信息三者挤在同一档，
+   * 整块看起来像糊在一起。 */
+  font-size: var(--text-sm);
 }
 .rss-entry-meta .meta-dot { opacity: .5; }
 .rss-entry-source {
@@ -388,7 +390,10 @@
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
   color: var(--color-text-secondary);
-  font-size: var(--text-md);
+  /* 正文归 --text-base，行高 1.7 与它配对。
+   * 之前是 --text-md，而列表项标题也是同一档——正文和标题一样大，
+   * 展开正文后分不清哪是标题。 */
+  font-size: var(--text-base);
   line-height: 1.7;
 }
 .rss-entry-content * {
@@ -451,7 +456,7 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -480,9 +485,7 @@
   .rss-main-head { flex-direction: column; align-items: flex-start; }
   .rss-main-actions { width: 100%; }
   .rss-main-actions .button { flex: 1; }
-  /* 窄屏原先压到 --text-base(13px)，比桌面还小——而手机上更需要
-     字号撑起来。收到 --text-md(14px) 作为折中：比原来大一档，
-     又不会让一条标题占到三行。 */
+  /* 条形目标题与桌面同档：手机上字更不该变小。 */
   .rss-entry-title { font-size: var(--text-md); }
 }
 

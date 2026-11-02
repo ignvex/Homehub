@@ -91,7 +91,9 @@
 
 .login-card h1 {
   margin: var(--space-3) 0 var(--space-2);
-  font-size: clamp(24px, 3.4vw, 30px);
+  /* 跟随令牌：栅格下限 --text-xl、上限 --text-2xl。
+   * 写死数值的标题不会随体系调整，改一次令牌就要回来单独改一遍。 */
+  font-size: clamp(var(--text-xl), 3.4vw, var(--text-2xl));
   letter-spacing: -.02em;
   line-height: var(--leading-tight);
 }
