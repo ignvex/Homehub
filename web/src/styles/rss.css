@@ -56,10 +56,12 @@
   background: var(--color-surface-muted);
 }
 .rss-sidebar-head strong {
-  font-size: var(--text-2xs);
+  /* 与右栏卡片头（.rss-main-head h2）同为 --text-lg。
+   * 同一个层级的标题用两种字号，是并排布局里最容易被看成 bug 的地方。 */
+  font-size: var(--text-lg);
   font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+  /* 16px 下 .1em 的疏排会散开，收到 .02em 仍保留一点呼吸感。 */
+  letter-spacing: .02em;
   color: var(--color-text-secondary);
 }
 
@@ -148,9 +150,13 @@
   border-left: 2px solid transparent;
   background: transparent;
   color: var(--color-text);
-  /* 侧栏整体偏小的问题是累积出来的：标题 13px、备注 10px、计数 10px，
-     三者叠在一起读起来发虚。标题提一档到 14px，其余按比例跟上。 */
-  font-size: var(--text-md);
+  /* 与右栏条目标题（--text-lg）同级。
+   *
+   * 两个卡片是并排的两种「列表」：左边列出订阅源，右边列出条目。
+   * 同为列表项就该同字号——之前左边 14px、右边 16px，并排看着像两套
+   * 界面拼在一起。窄栏放不下长标题时靠 ellipsis 截断，那是正常表现，
+   * 不该靠缩小字号来回避。 */
+  font-size: var(--text-lg);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -194,10 +200,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 「全部条目」是导航的第一项，不是头部按钮 */
+/* 「全部条目」是导航的第一项，不是头部按钮。
+ *
+ * 不加粗：它与下面的订阅源项同为列表项，唯有字重不同会让人误以为是
+ * 两级字号。选中状态已经由 is-active 的背景与左边框表达。 */
 .rss-nav-all {
   border-bottom: 1px solid var(--color-border);
-  font-weight: 600;
 }
 
 /* 分组行 */
@@ -210,9 +218,11 @@
   border: 0;
   background: transparent;
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  /* 13px：介于导航项（16px）与备注（12px）之间。
+   * 原先是 12px，与提到 16px 的导航项放在一起，落差陡得像漏了样式。 */
+  font-size: var(--text-base);
   font-weight: 700;
-  letter-spacing: .06em;
+  letter-spacing: .04em;
   text-transform: uppercase;
   text-align: left;
   cursor: pointer;
