@@ -331,6 +331,44 @@ HomeHub 侧覆盖这些行为（`internal/service/gravatar_source_test.go`、
 - `/avatar/{id}` 带 ETag 与 `Cache-Control: private, no-cache`
 - `/avatar/me` 返回 `no-store`（该 URL 不区分用户，任何缓存都会串号）
 
+## 对端实现的硬性要求
+
+这几条不是建议——做错了会在宿主侧表现成「看起来能用，实际半残」。
+
+### `/fetch`
+
+1. **只取字节，不落库。** 直接返回上游的 XML，不要调用对端自己的
+   `Service.FetchFeed`。那条路径会 ingest 条目、下载媒体、写 entries 表，
+   结果是同一条内容在两个库各存一份，而且对端的 entries 里会混进它从未
+   订阅过的源。
+2. **URL 必须过 SSRF 校验。** 宿主虽然也校验，但对端不能依赖它：这条
+   端点本质上是把自己变成跳板，谁能拿到签名谁就能让它访问任意地址。
+   回环、私网、链路本地（含 `169.254.169.254`）一律拒绝，返回 400。
+3. **不跟随重定向。** 跟随会把目标变成重定向后的地址，绕过第 2 条。
+4. **响应体设上限**（建议 32MB），超出返回 502。
+5. **上游非 2xx 时把状态码带回来**，宿主会写进 `error_msg`。
+
+### `/avatar/{hash}`
+
+1. **hash 必须严格校验为 32 位十六进制。** 它会被拼进上游 URL，不校验
+   就是路径穿越（`../../etc/passwd`）。
+2. **必须透传 304。** 宿主用 `If-None-Match` / `If-Modified-Since` 做增量
+   刷新；对端吞掉 304 自己回 200，每次刷新都会重新下载整张图。
+3. **必须透传上游真实的 `Content-Type` / `ETag` / `Last-Modified`。**
+   宿主用 ETag 判断是否有变化，编造一个会让缓存永远失效。
+4. **尺寸取 `s` 参数并自行夹紧。** 宿主已经把 `gravatar.default_size`
+   限制在 16–512，但对端不该假设——它是公开契约的一部分，任何签名持有者
+   都能传任意值。
+5. **不跟随重定向**，理由同 `/fetch`。
+
+### 两条通路共同
+
+- **认证走 Ed25519 签名**，与 `/hub/*` 同一把密钥、同一套待签消息，
+  不要再引入 Bearer token。同一个对端有两套凭据是上一版的设计缺陷。
+- **错误响应必须带 `request_id`。** 宿主把它写进 `error_msg`，
+  没有它就只能靠时间戳对日志。
+- **429 时给 `Retry-After`。** 静默排队会让宿主把「被限流」看成「慢」。
+
 ## 不适合交给 extension 的部分
 
 以下仍由 HomeHub 自己做，不要搬：
@@ -341,17 +379,26 @@ HomeHub 侧覆盖这些行为（`internal/service/gravatar_source_test.go`、
   `web/static/uploads/rss_img`），可通过 `SetImageCache` 替换。远程预下载
   的接入方式与建议契约见 [rss-architecture.md](rss-architecture.md) 第 5 节。
 
-## 待补的能力
+## 已做与待补
 
-按收益排序：
+已做：
+
+- **能力探测**：`ExtensionHubStatus` 会真的打一次 `/fetch` 与
+  `/avatar/000…`（无参数，无副作用），根据返回码与 `Content-Type`
+  判断对端有没有实现。判据是「不是 404、也不是 SPA 兜底的 HTML」——
+  很多部署会把未知路径交给前端路由，返回 `200 text/html`，光看状态码
+  会误判成「有」。
+- **失败退避**：429 时把 `Retry-After` 写进 `error_msg`，下一个间隔再试。
+- **并发限制**：打到 `/fetch` 的并发固定为 2，见
+  [hub-integration.md](hub-integration.md) §5.1。
+
+待补：
 
 1. **图片处理远程化**：已预留 `RSSImageCache` 接口；下一步在 `/fetch`
    响应中增加 `images` 元数据或新增 `/prefetch` 端点，由 HomeHub 侧实现
    远程 `RSSImageCache` 拉取并登记。建议契约见
    [rss-architecture.md](rss-architecture.md#5-给-homehub-extension-远程预下载的适配)
-2. **健康检查**：HomeHub 启动时探测 extension 可达性，配置错误尽早暴露
-3. **失败退避**：当前只记 `error_msg`，下一轮按固定间隔重试
-4. **结果缓存**：HomeHub 侧不做 HTTP 缓存，每次 `Fetch` 都真发请求
+2. **结果缓存**：HomeHub 侧不做 HTTP 缓存，每次 `Fetch` 都真发请求
 
 ## 不要做的事
 
