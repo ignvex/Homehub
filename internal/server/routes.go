@@ -11,7 +11,44 @@ import (
 	"github.com/ignvex/HomeHub/internal/model"
 )
 
+// 静态资源的缓存策略。
+//
+// 两档，依据是文件名是否带内容哈希：
+//
+//   - `web/dist/assets/*` 由 vite 产出，文件名里含内容哈希（如
+//     `index-D3emB2dI.js`），内容一变文件名就变。它们可以永久缓存——
+//     旧文件即使不再被引用也无害，因为新页面指向的是新名字。
+//   - `index.html` 引用这些名字，**它自己绝不能被长期缓存**。
+//     否则浏览器会拿着一份指向旧 JS 的 index.html 一直不发请求，
+//     改完前端刷新页面看到的还是旧代码；而当旧 JS 已被下一次构建
+//     删除时，页面直接 404 白屏。
+//
+// 之前两者都靠浏览器启发式缓存，表现是“改完没生效，要强刷”。
+const (
+	// assetsCacheControl 用于带内容哈希的构建产物。
+	//
+	// immutable 告诉浏览器：即使用户按刷新，也不要重新验证这个 URL。
+	assetsCacheControl = "public, max-age=31536000, immutable"
+	// htmlCacheControl 用于 index.html 与 SPA 回落的 HTML 响应。
+	//
+	// no-cache 不是“不缓存”，而是“每次使用前都验证”——配合
+	// Last-Modified 走 304，代价只是一个请求，换来的是永远拿到
+	// 当前版本。
+	htmlCacheControl = "no-cache"
+)
+
+// staticCacheControl 为请求路径选择缓存策略。
+func staticCacheControl(path string) string {
+	// 只认 /assets/ 前缀：dist 根目录下的文件（favicon.svg 等）名字
+	// 不含哈希，不能当 immutable 缓存。
+	if strings.HasPrefix(path, "/assets/") {
+		return assetsCacheControl
+	}
+	return htmlCacheControl
+}
+
 func serveSPA(c *gin.Context) {
+	c.Header("Cache-Control", htmlCacheControl)
 	c.File("web/dist/index.html")
 }
 
@@ -24,6 +61,7 @@ func registerSPAFallback(r *gin.Engine) {
 		}
 		// SPA 静态资源：带扩展名的请求从 dist 目录返回（JS/CSS/图片/favicon 等）
 		if filepath.Ext(path) != "" {
+			c.Header("Cache-Control", staticCacheControl(path))
 			c.File("web/dist" + path)
 			return
 		}

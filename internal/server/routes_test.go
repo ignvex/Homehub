@@ -206,3 +206,56 @@ func TestConfigGroupMountsAdminMiddleware(t *testing.T) {
 			"注册片段:\n%s", window)
 	}
 }
+
+// TestStaticAssetsCachePolicy 锁住静态资源的两档缓存策略。
+//
+// 背景：index.html 与构建产物原本都没有 Cache-Control，靠浏览器启发式
+// 缓存。结果改完前端刷新页面仍是旧代码；更糟的情况是旧 JS 已被下一次
+// 构建删除、而浏览器还拿着一份指向它的 index.html，页面直接白屏。
+//
+// 这里的断言防的就是这两件事：
+//   - index.html 必须每次验证（no-cache），不能长期缓存；
+//   - /assets/ 下的哈希命名产物必须 immutable，不能每次重新下载。
+func TestStaticAssetsCachePolicy(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/assets/index-D3emB2dI.js", assetsCacheControl},
+		{"/assets/index-CY7hc-XF.css", assetsCacheControl},
+		{"/favicon.svg", htmlCacheControl},
+		{"//", htmlCacheControl},
+	}
+	for _, c := range cases {
+		if got := staticCacheControl(c.path); got != c.want {
+			t.Errorf("staticCacheControl(%q) = %q，期望 %q", c.path, got, c.want)
+		}
+	}
+}
+
+// TestIndexHTMLIsNotLongCached 确认 SPA 入口真的带上了 no-cache 头。
+//
+// 只测纯函数不够：头部是否真的写进了响应，取决于 serveSPA 有没有调用
+// 它。这条用真实请求验证，避免「函数改了但没接上」。
+func TestIndexHTMLIsNotLongCached(t *testing.T) {
+	// serveSPA 用的是相对工作目录的 "web/dist/index.html"，而 go test
+	// 在包目录下运行。切到仓库根，否则这里会因为找不到文件而 404，
+	// 掩盖掉真正要验证的头部逻辑。
+	t.Chdir("../..")
+
+	// 没有构建产物时跳过，避免干净检出上假失败。
+	if _, err := os.Stat("web/dist/index.html"); err != nil {
+		t.Skip("web/dist 不存在，跳过静态资源断言")
+	}
+
+	r := newTestEngine()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / 状态码 = %d，期望 200", w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); got != htmlCacheControl {
+		t.Errorf("GET / 的 Cache-Control = %q，期望 %q", got, htmlCacheControl)
+	}
+}
