@@ -664,3 +664,46 @@ a:focus-visible,
   .modal-body,
   .modal-footer { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
+
+/* ============ 磁力链接复制（MagnetCopyButton）============ */
+/* 复制失败时就地展开已全选的输入框。
+ *
+ * 不用 window.prompt：浏览器会静默拦截它（用户勾选过「阻止此页面创建
+ * 更多对话框」后尤其如此），表现就是「点了没反应」。输入框失焦或按
+ * Esc 即收起，不改变条目本身的高度结构。 */
+.magnet-manual {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 240px;
+  max-width: 55vw;
+}
+.magnet-manual-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+.magnet-manual-close:hover {
+  background: color-mix(in srgb, var(--color-interactive) 12%, transparent);
+  color: var(--color-text);
+}
+.magnet-manual-input {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}

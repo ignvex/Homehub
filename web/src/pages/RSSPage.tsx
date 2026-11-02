@@ -578,7 +578,7 @@ export function RSSPage() {
                     className="rss-magnet"
                     url={entry.magnet_url}
                     title={entry.title}
-                    onCopied={ok => setMessage(ok ? '磁力链接已复制' : '自动复制失败，已展开链接供手动复制')}
+                    onCopied={ok => setMessage(ok ? '磁力链接已复制' : '自动复制不可用，已选中链接，按 Ctrl+C 复制')}
                   />}
                 </article>)}
               </div>}

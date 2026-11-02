@@ -396,16 +396,17 @@
 }
 .rss-entry-content-empty.is-error { color: var(--color-error); }
 
-/* 磁力按钮：点击复制链接，不再直接唤起本地 BT 客户端 */
+/* 磁力按钮：点击复制链接，不再直接唤起本地 BT 客户端。
+ * 用 <a> 承载是为了保留右键「复制链接地址」，也便于扩展识别 magnet 链接。 */
 .rss-magnet {
   flex: none;
   display: grid;
   place-items: center;
   width: 26px;
   height: 26px;
-  /* button 默认带边框、内边距与系统字体，不重置会破坏方框对齐 */
   padding: 0;
   border: 0;
+  text-decoration: none;
   font-family: inherit;
   cursor: pointer;
   border-radius: var(--radius-control);
