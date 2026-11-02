@@ -229,6 +229,10 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             同一个标题在一屏里出现两次，占掉的正是内容的高度。 */}
         <header className="shell-header">
           <button className="shell-menu" onClick={() => setOpen(true)} aria-label="打开导航">☰</button>
+          {/* 只显示页面名。曾在这里叠了一个 eyebrow（「运行概览」「内容订阅」），
+              它与右边的标题重复表达同一件事，纯占位；正文里的同名大标题块
+              也已经删掉，所以这里是页面上唯一的位置提示。 */}
+          <strong className="shell-header-title">{meta.title}</strong>
           <div className="shell-header-actions">
             <ThemeToggle />
             <a href="/">返回首页</a>
