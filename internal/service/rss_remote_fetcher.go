@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/hubclient"
 	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/mmcdole/gofeed"
 )
@@ -33,6 +34,21 @@ import (
 //   - JSON：{"feed": "<原始 XML 字符串>"} 或直接是 gofeed 的 JSON 结构
 //
 // 失败约定：非 2xx 视为抓取失败，错误信息会写入 rss_feeds.error_msg。
+
+// remoteExtensionConcurrency 限制同时打到 Extension 的 /fetch 请求数。
+//
+// 与 rss.fetch_concurrency 不是一回事：后者是本地抓取时同时处理几个源，
+// 每个源一次 HTTP 往返即可；代抓时每个源还多一层 Extension 内部排队，
+// 而 /fetch 是同步阻塞的。按本地并发（默认 4）一起打过去，Extension 那边
+// 只会排队甚至 429，宿主看到的却只是「慢」。
+//
+// 2 是保守值：Extension 自己的 rss.fetch_concurrency 也有限制，两层并发
+// 相乘才是它真实承受的压力。真要更快，应当调高 Extension 侧的并发上限，
+// 而不是把这里放开。
+const remoteExtensionConcurrency = 2
+
+// remoteExtensionSlots 是进程级信号量，跨 autoFetcher 重建仍然有效。
+var remoteExtensionSlots = make(chan struct{}, remoteExtensionConcurrency)
 
 // remoteFetcher 通过 HomeHub Extension 抓取订阅源。
 //
@@ -74,6 +90,14 @@ func (f *remoteFetcher) Fetch(ctx context.Context, feedURL string) (*gofeed.Feed
 		return nil, fmt.Errorf("extension 连接不可用: %w", err)
 	}
 
+	// 拿到槽位才发请求。ctx 取消时立即放弃，避免在关停期间卡住。
+	select {
+	case remoteExtensionSlots <- struct{}{}:
+		defer func() { <-remoteExtensionSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	q := url.Values{}
 	q.Set("url", feedURL)
 
@@ -85,9 +109,14 @@ func (f *remoteFetcher) Fetch(ctx context.Context, feedURL string) (*gofeed.Feed
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 限制读取量，避免异常响应把错误信息撑爆
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("extension 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		// 走统一错误结构而不是「状态码 + 前 512 字节」。
+		//
+		// 后者会把 JSON 原文写进 error_msg：既占掉 rss_feeds.error_msg 的
+		// 1024 字符预算，也丢掉两个关键信息——协议错误码与 request_id。
+		// 没有 request_id 就没法和 Extension 的日志对上，「为什么这条失败」
+		// 只能靠时间戳猜。
+		apiErr := hubclient.ErrorFromResponse(resp)
+		return nil, fmt.Errorf("extension 抓取失败: %w", apiErr)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20)) // 上限 32MB
