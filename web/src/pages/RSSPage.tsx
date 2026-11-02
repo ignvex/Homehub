@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react'
 import { ConfirmDialog, Modal, Notice, PageState, Pagination } from '@/components/WorkspaceUI'
 import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup } from '@/lib/rss'
+import { RSSFeedManager, RSSGroupManager } from '@/pages/RSSManage'
 import { extensionHubApi, type RemoteSubscription } from '@/lib/extensionHub'
+import { MagnetCopyButton } from '@/components/MagnetCopyButton'
 import { isUsableTimestamp, relativeTime } from '@/lib/format'
 
 const perPage = 20
@@ -35,6 +37,17 @@ const emptyFeedDraft: DraftFeed = {
   fetch_now: false,
 }
 
+/** 抓取方式的选项。
+ *
+ * 标签只写「本机 / Extension」：它上面的 legend 已经叫「抓取」，
+ * 下拉里再写「本机抓取」「交给 Extension」等于同一句话读三遍。
+ * note 解释后果而不是重复名称——选错这一项会改变条目存在哪一侧。
+ */
+const fetchModes: { value: FetchBy; label: string; note: string }[] = [
+  { value: 'local', label: '本机', note: 'HomeHub 抓取，条目存在这里' },
+  { value: 'extension', label: 'Extension', note: '对端抓取，去 Extension 阅读' },
+]
+
 export function RSSPage() {
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
   const [groups, setGroups] = useState<RSSGroup[]>([])
@@ -53,8 +66,10 @@ export function RSSPage() {
   const [remoteByURL, setRemoteByURL] = useState<Record<string, RemoteSubscription>>({})
 
   const [feedDraft, setFeedDraft] = useState<DraftFeed | null>(null)
+  // 两个管理窗口分开开关：它们操作的单位不同，同时打开只会互相遮挡。
   const [showGroups, setShowGroups] = useState(false)
-  // 独立的「创建分组」弹窗：与分组管理分开，后者是列表 + 重命名/删除。
+  const [showFeeds, setShowFeeds] = useState(false)
+  // 「创建分组」快入口：只输一个名字，不打开完整的管理窗口。
   const [showNewGroup, setShowNewGroup] = useState(false)
   // 拖拽中在外部订阅源；null 表示没在拖。用 state 而不是 dataTransfer
   // 是因为 dragOver 阶段读不到 data（浏览器出于安全只允许在 drop 时读），
@@ -64,15 +79,20 @@ export function RSSPage() {
   // null = 没悬停在任何落点上。只用于视觉高亮。
   const [dropTarget, setDropTarget] = useState<number | 'loose' | null>(null)
   const [newGroup, setNewGroup] = useState('')
-  const [editGroup, setEditGroup] = useState<RSSGroup | null>(null)
   const [pendingDeleteFeed, setPendingDeleteFeed] = useState<RSSFeed | null>(null)
-  const [pendingDeleteGroup, setPendingDeleteGroup] = useState<RSSGroup | null>(null)
 
   // ---------- 数据加载 ----------
   /** loadFeeds 拉取订阅源与分组。
    *
-   * silent 为真时不切 loading 态——首屏之外的刷新（拖拽分组、改名）
-   * 若也切一次，整个页面会闪成「正在读取订阅源」，看起来像重载了。
+   * silent 为真时连 loading 态都不切——首屏之外的刷新（拖拽分组、
+   * 管理窗口里的每次点击）不该让列表闪一下。
+   *
+   * 这里只负责置位，不判断「要不要置位」：真正的闸门在渲染处——
+   * `if (loading && !feeds.length)`。那一条是「分组管理动不了」的根因
+   * 修复：管理窗口每次添加/移出都会经 run() 调到这里，若渲染处无条件
+   * 按 loading 早退，整棵树会被换成加载页——包括打开中的弹窗。React
+   * 卸载后弹窗的展开状态、选中项全部丢失，用户看到的就是「点一下
+   * 窗口闪没了，回来又原样」。
    */
   async function loadFeeds(silent = false) {
     if (!silent) setLoading(true)
@@ -83,6 +103,10 @@ export function RSSPage() {
       ])
       setFeeds(feedList ?? [])
       setGroups(groupList ?? [])
+      // 选中的订阅源或分组可能已被删除（包括刚在管理窗口里批量删掉的）。
+      // 不清理的话右侧会一直键在一个已不存在的对象上，标题也还挂着。
+      setSelectedGroup(current => current && (groupList ?? []).some(g => g.id === current) ? current : null)
+      setSelectedFeed(current => current && (feedList ?? []).some(f => f.id === current) ? current : null)
       setError('')
       // 远端状态是侧栏状态点与计数的依据，单独拉、失败不阻塞列表。
       void loadRemote()
@@ -143,12 +167,17 @@ export function RSSPage() {
   useEffect(() => { void loadFeeds() }, [])
   useEffect(() => { void loadEntries(selectedFeed, selectedGroup, page) }, [selectedFeed, selectedGroup, page])
 
-  async function run(action: () => Promise<unknown>, success: string, reloadEntries = false) {
+  /** run 执行一次写操作并刷新列表。
+   *
+   * silentReload 供弹窗内的操作使用：列表刷新不该把整页（连同正在
+   * 交互的弹窗）换掉，也不该让列表自己在每次点击后闪一下。
+   */
+  async function run(action: () => Promise<unknown>, success: string, reloadEntries = false, silentReload = false) {
     setBusy(true)
     try {
       await action()
       setMessage(success)
-      await loadFeeds()
+      await loadFeeds(silentReload)
       if (reloadEntries) await loadEntries()
       return true
     } catch (cause) {
@@ -158,6 +187,10 @@ export function RSSPage() {
       setBusy(false)
     }
   }
+
+  /** runSilent 是弹窗内部使用的 run：刷新列表但不切 loading、不闪列表。 */
+  const runSilent = (action: () => Promise<unknown>, success: string) =>
+    run(action, success, false, true)
 
   // ---------- 订阅源 ----------
   async function saveFeed(event: FormEvent) {
@@ -270,28 +303,42 @@ export function RSSPage() {
     }
   }
 
-  async function addGroup(event: FormEvent) {
-    event.preventDefault()
-    const name = newGroup.trim()
-    if (!name) return
-    const saved = await run(() => rssApi.createGroup(name), '分组已创建')
-    if (saved) setNewGroup('')
-  }
-
-  async function saveGroup(event: FormEvent) {
-    event.preventDefault()
-    if (!editGroup) return
-    const saved = await run(() => rssApi.updateGroup(editGroup.id, { name: editGroup.name.trim() }), '分组已更新')
-    if (saved) setEditGroup(null)
-  }
-
-  async function removeGroup() {
-    if (!pendingDeleteGroup) return
-    const id = pendingDeleteGroup.id
-    const saved = await run(() => rssApi.deleteGroup(id), '分组已删除，其下订阅源已移回未分组', true)
-    if (saved) {
-      if (selectedGroup === id) { setSelectedGroup(null); setPage(1) }
-      setPendingDeleteGroup(null)
+  /** deleteFeeds 批量删除：**逐条串行**执行并汇总结果。
+   *
+   * 两个理由：
+   *  1. 并发会破坏孤儿回收。每条删除都要在同一条 NOT EXISTS 里判断
+   *     「还有没有别的源收录这条内容」。两个源共享一条内容时并发删除，
+   *     各自都看不到对方未提交的关联行，于是两边都判定「还有人引用」
+   *     而保留——留下一批没人引用的孤儿条目。串行没有这个窗口。
+   *  2. 删除本来就是每条一个事务，要的是「删掉了哪些、哪些没删掉」
+   *     这种不完全成功的结果，而不是全有全无。串行才能如实汇总。
+   *
+   * 不用后端批量端点：合并成一个大事务只会把失败范围扩大。
+   */
+  async function deleteFeeds(ids: number[]) {
+    if (!ids.length) return
+    setBusy(true)
+    const failed: number[] = []
+    try {
+      for (const id of ids) {
+        try {
+          await rssApi.deleteFeed(id)
+        } catch {
+          failed.push(id)
+        }
+      }
+      const done = ids.length - failed.length
+      if (failed.length) {
+        setError(`删除未全部完成：成功 ${done} 个，失败 ${failed.length} 个，可重试`)
+        setMessage('')
+      } else {
+        setMessage(`已删除 ${done} 个订阅源`)
+        setError('')
+      }
+      await loadFeeds(true)
+      await loadEntries()
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -336,7 +383,7 @@ export function RSSPage() {
     return feedIDs.map(id => feeds.find(feed => feed.id === id)?.title || `#${id}`).join('、')
   }
 
-  if (loading) return <PageState kind="loading" title="正在读取订阅源" />
+  if (loading && !feeds.length) return <PageState kind="loading" title="正在读取订阅源" />
   if (error && !feeds.length) {
     return <PageState
       kind="error"
@@ -373,6 +420,15 @@ export function RSSPage() {
           <button type="button" className="rss-tool" onClick={() => setShowGroups(true)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
             分组管理
+          </button>
+          {/* 紧跟在分组管理之后：两者是同一组管理的两个视角，
+              一个按组下手、一个按源下手。 */}
+          <button type="button" className="rss-tool" onClick={() => setShowFeeds(true)} disabled={!feeds.length}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              <path d="M8 6v12M15 6v12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" opacity=".45" />
+            </svg>
+            订阅管理
           </button>
           <span className="rss-tool-sep" aria-hidden="true" />
           <button
@@ -516,12 +572,14 @@ export function RSSPage() {
                         <span className="rss-entry-source">{feedTitles(entry.feed_ids)}</span>
                       </>}
                     </div>
-                    {entry.content && <details className="rss-entry-detail">
-                      <summary>展开正文</summary>
-                      <div className="rss-entry-content" dangerouslySetInnerHTML={{ __html: entry.content }} />
-                    </details>}
+                    {hasBody(entry) && <EntryContent entryID={entry.id} inline={entry.content} />}
                   </div>
-                  {entry.magnet_url && <a className="rss-magnet" href={entry.magnet_url} title="磁力链接" aria-label={`磁力链接：${entry.title}`}>🧲</a>}
+                  {entry.magnet_url && <MagnetCopyButton
+                    className="rss-magnet"
+                    url={entry.magnet_url}
+                    title={entry.title}
+                    onCopied={ok => setMessage(ok ? '磁力链接已复制' : '自动复制失败，已展开链接供手动复制')}
+                  />}
                 </article>)}
               </div>}
           <Pagination page={page} perPage={perPage} total={total} disabled={entriesLoading} onChange={setPage} />
@@ -576,26 +634,40 @@ export function RSSPage() {
 
         <fieldset className="rss-form-group">
           <legend>抓取</legend>
-          <label className="form-field">执行者
-            <select
-              value={feedDraft?.fetch_by ?? 'local'}
-              onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_by: event.target.value as FetchBy } : draft)}
-            >
-              <option value="local">本机抓取</option>
-              <option value="extension">交给 Extension</option>
-            </select>
-          </label>
-          <label className="form-field">间隔（秒）
-            <input type="number" min="60" value={feedDraft?.fetch_interval ?? 3600} onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_interval: Number(event.target.value) } : draft)} required />
-          </label>
-          <label className="choice-tile form-field--wide">
-            <input
-              type="checkbox"
-              checked={feedDraft?.fetch_enabled ?? true}
-              onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_enabled: event.target.checked } : draft)}
-            />
-            <span>参与后台调度（取消勾选＝暂停抓取，但不删这个源）</span>
-          </label>
+          {/* 两个选项直接摆在面板里，而不是折在下拉里：这是整个弹窗
+              里唯一会改变「条目存在哪一侧」的决定，藏起来不合适。 */}
+          <div className="rss-fetch-modes form-field--wide" role="radiogroup" aria-label="抓取方式">
+            {fetchModes.map(mode => {
+              const selected = (feedDraft?.fetch_by ?? 'local') === mode.value
+              return <label key={mode.value} className={`rss-fetch-mode${selected ? ' is-selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="fetch_by"
+                  value={mode.value}
+                  checked={selected}
+                  onChange={() => setFeedDraft(draft => draft ? { ...draft, fetch_by: mode.value } : draft)}
+                />
+                <span className="rss-fetch-mode-text">
+                  <strong>{mode.label}</strong>
+                  <small>{mode.note}</small>
+                </span>
+              </label>
+            })}
+          </div>
+
+          <div className="rss-fetch-row form-field--wide">
+            <label className="form-field">间隔（秒）
+              <input type="number" min="60" value={feedDraft?.fetch_interval ?? 3600} onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_interval: Number(event.target.value) } : draft)} required />
+            </label>
+            <label className="choice-tile rss-fetch-schedule">
+              <input
+                type="checkbox"
+                checked={feedDraft?.fetch_enabled ?? true}
+                onChange={event => setFeedDraft(draft => draft ? { ...draft, fetch_enabled: event.target.checked } : draft)}
+              />
+              <span>参与后台调度（取消勾选＝暂停抓取，但不删这个源）</span>
+            </label>
+          </div>
 
           <p className="rss-form-hint form-field--wide">
             {feedDraft?.fetch_by === 'extension'
@@ -675,48 +747,28 @@ export function RSSPage() {
       </form>
     </Modal>
 
-    {/* ---------- 分组管理弹窗 ---------- */}
-    <Modal
-      open={showGroups}
-      title="管理分组"
-      description="分组用于整理订阅源；删除分组时其下订阅源会移回未分组。"
-      onClose={() => !busy && setShowGroups(false)}
-      footer={<button className="button button--quiet" type="button" onClick={() => setShowGroups(false)} disabled={busy}>关闭</button>}
-    >
-      <form className="form-grid" onSubmit={addGroup} style={{ marginBottom: 'var(--space-5)' }}>
-        <label className="form-field" style={{ gridColumn: '1 / -1' }}>新建分组
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <input value={newGroup} onChange={event => setNewGroup(event.target.value)} placeholder="分组名称" maxLength={100} />
-            <button className="button button--primary" disabled={busy || !newGroup.trim()}>创建</button>
-          </div>
-        </label>
-      </form>
-      {groups.length === 0
-        ? <p className="confirm-copy">还没有分组。创建后可以在添加订阅源时选择。</p>
-        : <div className="rss-group-list">
-          {groups.map(group => <div className="rss-group-row" key={group.id}>
-            <strong>{group.name}</strong>
-            <small>{feeds.filter(feed => feed.group_id === group.id).length} 个源</small>
-            <button className="icon-button" aria-label={`重命名分组 ${group.name}`} onClick={() => setEditGroup({ ...group })}>✎</button>
-            <button className="icon-button" aria-label={`删除分组 ${group.name}`} onClick={() => setPendingDeleteGroup(group)}>×</button>
-          </div>)}
-        </div>}
-    </Modal>
+    {/* ---------- 订阅管理：多选后批量改属性 ---------- */}
+    {/* runSilent 包一层：管理窗口里的每次点击都要 silent 刷新，
+        否则列表闪一下、弹窗内的展开与选中状态也会被重渲染打断。 */}
+    <RSSFeedManager
+      open={showFeeds}
+      feeds={feeds}
+      groups={groups}
+      busy={busy}
+      onClose={() => setShowFeeds(false)}
+      run={runSilent}
+      deleteFeeds={deleteFeeds}
+    />
 
-    {/* ---------- 重命名分组 ---------- */}
-    <Modal
-      open={editGroup !== null}
-      title="重命名分组"
-      onClose={() => !busy && setEditGroup(null)}
-      footer={<>
-        <button className="button button--quiet" type="button" onClick={() => setEditGroup(null)} disabled={busy}>取消</button>
-        <button className="button button--primary" type="submit" form="rss-group-form" disabled={busy}>{busy ? '保存中...' : '保存'}</button>
-      </>}
-    >
-      <form id="rss-group-form" className="form-grid" onSubmit={saveGroup}>
-        <label className="form-field form-field--wide">分组名称<input autoFocus value={editGroup?.name ?? ''} onChange={event => setEditGroup(group => group ? { ...group, name: event.target.value } : group)} required maxLength={100} /></label>
-      </form>
-    </Modal>
+    {/* ---------- 分组管理：按组增删订阅源 ---------- */}
+    <RSSGroupManager
+      open={showGroups}
+      feeds={feeds}
+      groups={groups}
+      busy={busy}
+      onClose={() => setShowGroups(false)}
+      run={runSilent}
+    />
 
     <ConfirmDialog
       open={pendingDeleteFeed !== null}
@@ -727,16 +779,6 @@ export function RSSPage() {
       busy={busy}
       onClose={() => setPendingDeleteFeed(null)}
       onConfirm={() => void removeFeed()}
-    />
-    <ConfirmDialog
-      open={pendingDeleteGroup !== null}
-      title="删除分组"
-      description={`将删除分组「${pendingDeleteGroup?.name ?? ''}」，其下订阅源会移回未分组。`}
-      confirmLabel="删除"
-      danger
-      busy={busy}
-      onClose={() => setPendingDeleteGroup(null)}
-      onConfirm={() => void removeGroup()}
     />
   </div>
 }
@@ -803,4 +845,135 @@ function FeedNavItem({ feed, active, remote, dragging, onSelect, onDragStart, on
     </span>
     <span className="rss-nav-count">{meta}</span>
   </button>
+}
+
+/** deferImages 把正文里的图片推迟到进入视口再请求。
+ *
+ * 这是分段加载的第二段：正文 HTML 到达后先渲染文字，img 的 src 暂存到
+ * data-src，由 useLazyImages 在图片滚进视口时才写回。文章带几十张图时，
+ * 展开的瞬间不会同时打满连接，也不会把正文排版挤到图片加载完才出现。
+ */
+function deferImages(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  for (const img of Array.from(doc.body.querySelectorAll('img[src]'))) {
+    const src = img.getAttribute('src')
+    if (!src) continue
+    img.setAttribute('data-src', src)
+    img.removeAttribute('src')
+    img.setAttribute('loading', 'lazy')
+    img.setAttribute('decoding', 'async')
+  }
+  return doc.body.innerHTML
+}
+
+/** useLazyImages 观察正文容器里的待加载图片，进入视口时恢复 src。 */
+function useLazyImages(containerRef: RefObject<HTMLDivElement | null>, active: boolean) {
+  useEffect(() => {
+    const container = containerRef.current
+    if (!active || !container) return
+    const images = Array.from(container.querySelectorAll<HTMLImageElement>('img[data-src]'))
+    if (!images.length) return
+
+    const reveal = (img: HTMLImageElement) => {
+      const src = img.dataset.src
+      if (!src) return
+      // 占位样式（opacity 0 + 最小高度）要留到 img 真正加载完：
+      // 提前撤掉会让正文在下载途中先跳一次高度，加载完再跳一次。
+      const settle = () => img.removeAttribute('data-src')
+      img.addEventListener('load', settle, { once: true })
+      img.addEventListener('error', () => {
+        // 失败也要撤掉占位，否则正文里会留下一条永远空白的 64px。
+        if (!img.alt) img.alt = '图片加载失败'
+        settle()
+      }, { once: true })
+      img.src = src
+    }
+
+    // 没有 IntersectionObserver 时直接全部加载：宁可一次性请求，
+    // 也不要留下一片永远空着的图框。
+    if (typeof IntersectionObserver === 'undefined') {
+      images.forEach(reveal)
+      return
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const img = entry.target as HTMLImageElement
+        observer.unobserve(img)
+        reveal(img)
+      }
+    }, { rootMargin: '200px 0px' })
+    images.forEach(img => observer.observe(img))
+    return () => observer.disconnect()
+  }, [containerRef, active])
+}
+
+/** hasBody 判断这条条目是否有正文可展开。
+ *
+ * 优先用服务端给的 has_content；缺失时（前端先上线、后端还是旧版本，
+ * 或浏览器撞上旧响应缓存）退回按正文/摘要是否存在推断。
+ * 少这一次兜底，两边版本错开的那一刻「展开正文」会静默消失。 */
+function hasBody(entry: RSSEntry): boolean {
+  return entry.has_content ?? Boolean(entry.content || entry.excerpt)
+}
+
+/** EntryContent 是条目的正文折叠区。
+ *
+ * 点击展开才请求 GET /rss/entries/:id/content——列表里只带摘要，
+ * 正文可能几十上百 KB。加载成功后按「文本先、图片后」的顺序渲染。
+ * 一次加载会记住结果，收起再展开不重复请求。
+ *
+ * inline 是旧版列表接口已经下发的正文：有它就直接用，不发请求。
+ */
+function EntryContent({ entryID, inline }: { entryID: number; inline?: string }) {
+  const [open, setOpen] = useState(false)
+  // 惰性初始化：只有旧接口才会带 inline，不必在每次渲染里解析 HTML。
+  const [html, setHtml] = useState(() => (inline ? deferImages(inline) : ''))
+  const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(Boolean(inline))
+  const [error, setError] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  // 快速连点展开/收起会进两次 load，这里挡住并发的第二个请求。
+  const loadingRef = useRef(false)
+
+  async function load() {
+    if (loaded || loadingRef.current) return
+    loadingRef.current = true
+    // 重试时先清掉上一次的错误：否则「正在读取」会被旧错误挡住，
+    // 看起来像点了没反应。
+    setError('')
+    setLoading(true)
+    try {
+      const data = await rssApi.entryContent(entryID)
+      setHtml(deferImages(data.content ?? ''))
+      setLoaded(true)
+      setError('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '正文加载失败')
+    } finally {
+      loadingRef.current = false
+      setLoading(false)
+    }
+  }
+
+  useLazyImages(containerRef, open && loaded)
+
+  return <details
+    className="rss-entry-detail"
+    onToggle={event => {
+      const next = event.currentTarget.open
+      setOpen(next)
+      if (next) void load()
+    }}
+  >
+    <summary>{open ? '收起正文' : '展开正文'}</summary>
+    {error
+      ? <p className="rss-entry-content-empty is-error">{error}</p>
+      : !loaded && loading
+        ? <p className="rss-entry-content-empty">正在读取正文…</p>
+        : loaded && (html.trim()
+          ? <div ref={containerRef} className="rss-entry-content" dangerouslySetInnerHTML={{ __html: html }} />
+          : <p className="rss-entry-content-empty">这条没有可显示的正文，可以打开原文查看。</p>)}
+  </details>
 }

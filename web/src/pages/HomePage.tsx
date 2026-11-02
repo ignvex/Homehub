@@ -4,6 +4,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
 import { homeApi, type AuthStatus, type BackgroundSettings, type Bookmark, type BookmarkGroup, type MediaAsset, type RSSEntry, type RSSFeed } from '@/lib/home'
 import { absoluteDate, hostnameOf, isUsableTimestamp, plainSummary, relativeTime } from '@/lib/format'
+import { MagnetCopyButton } from '@/components/MagnetCopyButton'
 import { getWebUIConfig } from '@/lib/webui'
 import { mediaURL } from '@/lib/media'
 
@@ -88,8 +89,9 @@ function LinkArrow() {
 
 /** 订阅条目行：标题 + 摘要 + 元信息。摘要不截断行数，完整展示。 */
 function FeedEntryRow({ entry }: { entry: RSSEntry }) {
-  // 正文解析成本不低，条目不变时不重算
-  const summary = useMemo(() => plainSummary(entry.content), [entry.content])
+  // 新接口给 excerpt（服务端已剥成纯文本）；旧接口只给 content，
+  // 那时退回本地解析——否则首页卡片会在版本错开时集体变空。
+  const summary = entry.excerpt ?? plainSummary(entry.content)
   return <li>
     <a className="feed-item" href={entry.link} target="_blank" rel="noreferrer">
       <span className="feed-item-title">{entry.title}</span>
@@ -101,7 +103,7 @@ function FeedEntryRow({ entry }: { entry: RSSEntry }) {
         </time>
       </span>
     </a>
-    {entry.magnet_url && <a className="feed-magnet" href={entry.magnet_url} aria-label={`磁力链接：${entry.title}`} title="磁力链接">🧲</a>}
+    {entry.magnet_url && <MagnetCopyButton className="feed-magnet" url={entry.magnet_url} title={entry.title} />}
   </li>
 }
 

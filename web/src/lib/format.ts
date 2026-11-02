@@ -56,12 +56,9 @@ export function absoluteDate(value?: string): string {
 /**
  * 从条目正文 HTML 中提取纯文本摘要，用于列表预览。
  *
- * 用 DOMParser 而不是正则：正则容易在嵌套标签、HTML 实体和属性里的
- * 尖括号上出错，留下 “<span” 之类的碎片。解析失败时退回空串，
- * 让调用方直接不显示摘要。
- *
- * maxLength 是字符数上限而非行数——显示时不做行数截断，窄栏下
- * 由行数自然撑开，保证摘要读完。
+ * 服务端已改为在列表接口下发 `excerpt`（见 service.excerptFromHTML），
+ * 正常路径不再需要前端解析 HTML。这里保留一份同语义的实现，
+ * 供需要即时处理未入库 HTML 的调用方使用。
  */
 export function plainSummary(html?: string, maxLength = 300): string {
   if (!html) return ''

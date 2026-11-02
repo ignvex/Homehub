@@ -650,6 +650,7 @@ html[data-theme="dark"] .home-header {
   white-space: nowrap;
 }
 .meta-dot { opacity: .55; }
+/* 磁力按钮：点击复制链接，不再直接唤起本地 BT 客户端 */
 .feed-magnet {
   flex: none;
   width: 30px;
@@ -657,13 +658,23 @@ html[data-theme="dark"] .home-header {
   margin-top: var(--space-4);
   display: grid;
   place-items: center;
+  /* button 默认带边框、内边距与系统字体，不重置会破坏方框对齐 */
+  padding: 0;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
   border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   font-size: var(--text-md);
-  text-decoration: none;
   transition: background .15s ease, transform .15s ease;
 }
 .feed-magnet:hover { background: var(--color-accent); transform: scale(1.08); }
+/* 复制成功：换成绿色对钩，避免用户反复点击确认是否命中 */
+.feed-magnet.is-copied {
+  background: var(--color-success);
+  color: #fffdf4;
+  transform: none;
+}
 .feed-empty {
   flex: 1;
   margin: var(--space-6) 0;
