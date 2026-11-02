@@ -299,7 +299,19 @@ export function RSSPage() {
         description="添加 RSS 或 Atom 链接后，抓取到的文章会出现在这里。"
         action={<button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button>}
       />
-      : <div className={`rss-layout${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
+      : <>
+        {/* 展开把手：贴着左侧导航栏与内容区的交界，垂直居中。
+            放在 rss-layout 之外是因为它要相对视口定位——放在里面会被
+            内容区的 padding 挡住，或者像之前那样压住「全部条目」标题。 */}
+        {sidebarCollapsed && <button
+          type="button"
+          className="rss-sidebar-reopen"
+          onClick={toggleSidebar}
+          title="展开订阅源栏"
+        >
+          订阅源
+        </button>}
+        <div className={`rss-layout${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
         {/* ---------- 左栏 ---------- */}
         <aside className="rss-sidebar" aria-label="订阅源导航">
           <div className="rss-sidebar-head">
@@ -408,15 +420,6 @@ export function RSSPage() {
 
         {/* ---------- 右栏 ---------- */}
         <section className="rss-main" aria-label="订阅条目">
-          {sidebarCollapsed && <button
-            type="button"
-            className="rss-sidebar-reopen"
-            onClick={toggleSidebar}
-            title="展开订阅源栏"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            订阅源
-          </button>}
           <header className="rss-main-head">
             <div>
               <h2>{heading}</h2>
@@ -470,7 +473,8 @@ export function RSSPage() {
               </div>}
           <Pagination page={page} perPage={perPage} total={total} disabled={entriesLoading} onChange={setPage} />
         </section>
-      </div>}
+        </div>
+      </>}
 
 
     {/* ---------- 订阅源弹窗：基本信息 + 抓取设置 ---------- */}

@@ -37,31 +37,44 @@
 }
 /* 收起后浮在右栏左上角的小按钮，用于重新展开。
    单独定位是因为侧栏本身已经宽度为 0，按钮没地方放。 */
-/* 收起后右栏左上角的展开按钮。做成胶囊浮标：比图标明显，
-   又不至于像一条工具栏占掉阅读空间。 */
+/* 收起侧栏后的「展开」把手。
+ *
+ * 贴在左侧导航栏与内容区的交界处，垂直居中，像抽屉的拉手。
+ * 用 fixed 而不是 absolute：absolute 会随页面滚走，500 条的长列表
+ * 滚到中间就再也找不到展开入口了。
+ *
+ * left 用 --shell-side：它正好等于左侧导航栏的宽度，于是把手紧贴
+ * 那条绿色与米色的分界。侧栏本身折叠时 --shell-side 不变（那是外层
+ * 导航，与此处折叠的订阅源栏无关），所以位置稳定。
+ *
+ * 文字竖排：横排的胶囊至少要 90px 宽，会伸进内容区。
+ * writing-mode 让中文正立自上而下读，正是竖标签的写法。
+ */
 .rss-sidebar-reopen {
-  position: absolute;
-  top: var(--space-4);
-  left: var(--space-4);
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 30px;
-  padding: 0 var(--space-4) 0 var(--space-3);
+  position: fixed;
+  top: 50%;
+  left: var(--shell-side);
+  z-index: 15;
+  transform: translateY(-50%);
+  padding: var(--space-4) var(--space-2);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
+  border-left: 0;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
   background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: .18em;
+  line-height: 1;
+  writing-mode: vertical-rl;
   cursor: pointer;
 }
 .rss-sidebar-reopen:hover {
-  border-color: var(--color-border-strong);
-  color: var(--color-text);
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: var(--color-primary-hover);
 }
-.rss-sidebar-reopen svg { width: 14px; height: 14px; }
 .rss-sidebar-reopen:hover { color: var(--color-text); border-color: var(--color-border-strong); }
 
 
@@ -259,7 +272,6 @@
 
 /* ============ 右栏：条目流 ============ */
 .rss-main {
-  position: relative; /* 收起侧栏后的「展开」按钮定位在左上角 */
   display: flex;
   flex-direction: column;
   min-width: 0;
