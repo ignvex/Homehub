@@ -121,7 +121,7 @@ export function SettingsPage() {
       const info = await extensionHubApi.setKey(keyDraft)
       setKeyInfo(info)
       setKeyDraft('')
-      setMessage('私钥已存入数据库，所有实例重启后自动共用')
+      setMessage('私钥已写入 config.json（单行 base64）')
       setError('')
       await probeHub()
     } catch (cause) {
@@ -619,12 +619,12 @@ export function SettingsPage() {
 
             <div style={{ display: 'grid', gap: 8 }}>
               <label className="form-field" style={{ margin: 0 }}>
-                把私钥存入数据库（多实例共用同一个库时只需配置一次）
+                粘贴私钥
                 <textarea
                   value={keyDraft}
                   onChange={event => setKeyDraft(event.target.value)}
                   spellCheck={false}
-                  placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"
+                  placeholder="一行 base64（44 字符），或直接的 PKCS#8 PEM"
                   style={{
                     minHeight: 96,
                     fontFamily: 'ui-monospace,monospace',
@@ -656,7 +656,8 @@ export function SettingsPage() {
                   清空输入
                 </button>
                 <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                  接受 PKCS#8 PEM、base64 种子或私钥原文。入库前会自签自验，读接口永不返回私钥。
+                  接受 base64 种子、完整私钥的 base64，或 PKCS#8 PEM；保存后会规范成一行 44 字符。
+                  写入前自签自验，读接口永不返回私钥。
                 </span>
               </div>
             </div>
