@@ -34,7 +34,7 @@ Extension 只由 `extension` 一段配置描述，认证只有 Ed25519 签名一
   "extension": {
     "enabled": true,
     "base_url": "https://ext.example.com/api/v1",
-    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+    "private_key_pem": "<44 字符 base64 种子>",
     "features": { "hub": true, "fetch": false, "avatar": false },
     "proxy_names": [],
     "timeout_seconds": 30
@@ -50,24 +50,46 @@ Extension 只由 `extension` 一段配置描述，认证只有 Ed25519 签名一
 外部代理反而更慢，很多代理也不转发内网地址。这与全局 `proxy.default`
 是两个独立的东西。
 
-`private_key_pem` 写在这里而不是单独的文件或数据库：`config.json` 本身
-已是最高敏感度的文件（0600、gitignore、备份清单必有它），再拆一处只会
-增加运维负担。Web 端设置页可以粘贴写入，但读取接口永不返回私钥内容。
+`private_key_pem` 建议写成**一行 base64 种子**（44 字符）。PEM 是四行文本，
+进 JSON 要转义换行，粘进 `config.json` 后既难读也容易在复制过程中混入
+不可见字符。三种形态都接受：
+
+| 形态 | 长度 | 来源 |
+| --- | --- | --- |
+| `base64(32 字节种子)` | 44 | 设置页保存时规范成这样，推荐 |
+| `base64(64 字节私钥)` | 88 | `openssl` 导出私钥后直接 base64 |
+| PKCS#8 PEM | 多行 | 直接粘贴 `openssl genpkey` 的输出 |
+
+种子足以还原完整私钥（`ed25519.NewKeyFromSeed`），不损失任何能力。
+
+私钥写在这里而不是单独的文件或数据库：`config.json` 本身已是最高敏感度
+的文件（0600、gitignore、备份清单必有它），再拆一处只会增加运维负担。
+程序在加载时会把它收紧到 0600。Web 端设置页可以粘贴写入，但读取接口
+永不返回私钥内容。
 
 ### 2.1 生成并部署密钥
 
+推荐用一条命令直接产出可粘贴的两串（各自一行）：
+
 ```bash
-openssl genpkey -algorithm ed25519 -out extension-hub.key
-openssl pkey -in extension-hub.key -pubout -out extension-hub.pub
-chmod 600 extension-hub.key
+# 私钥（44 字符 base64 种子）与公钥（PKIX PEM）
+openssl genpkey -algorithm ed25519 -out /tmp/hub.key
+openssl pkey -in /tmp/hub.key -outform DER | tail -c 32 | base64 -w0; echo
+openssl pkey -in /tmp/hub.key -pubout
+rm -f /tmp/hub.key
 ```
 
-私钥留在 HomeHub 主机上；公钥放到 Extension 主机的
+第一行输出粘进 `extension.private_key_pem`，第二段粘到 Extension 主机的
 `auth.hub.public_key_path`（默认 `/etc/hhe/homehub.pub`）并重启 Extension。
 
-私钥只在本进程内读取：不写日志、不入库、不下发前端。`enabled` 与两个路径
-任一变化时客户端会重建；私钥**内容**变化也会重读——客户端记下文件的
-`mtime` 与大小，所以直接用同名覆盖文件完成轮换即可，不需要重启。
+也可以在设置页直接粘贴 `openssl genpkey` 产生的 PEM：保存时会自动规范成
+单行 base64，之后 `config.json` 里就只剩那 44 个字符。
+
+私钥只在本进程内读取：不写日志、不入库、不下发前端。客户端按
+`base_url` + 私钥**内容指纹**缓存，任一变化即重建——所以轮换就是改配置
+里那一行，热重载后立即生效，不需要重启服务。
+
+轮换时记住同步更新 Extension 侧的公钥，否则新私钥签出的请求会一律 401。
 
 > 校验发生在每次调用前，不是进程启动时一次。这与 Extension 侧「公钥启动时
 > 读一次」不同：那边漏读的代价是重启一次，这边漏读的代价是一直签出 401
