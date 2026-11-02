@@ -1797,14 +1797,14 @@ const docTemplate = `{
                 }
             },
             "delete": {
-                "description": "删除后若配置了 private_key_path 会回退到文件；两处都没有则无法签名",
+                "description": "清空 config.json 的 extension.private_key_pem；清空后无法签名，需先关闭 extension.enabled",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Extension 对接"
                 ],
-                "summary": "移除数据库里的签名私钥",
+                "summary": "移除签名私钥",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -3669,37 +3669,7 @@ const docTemplate = `{
             }
         },
         "config.BookmarkConfig": {
-            "type": "object",
-            "properties": {
-                "proxy_names": {
-                    "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                }
-            }
-        },
-        "config.ExtensionHubConfig": {
-            "type": "object",
-            "properties": {
-                "base_url": {
-                    "description": "BaseURL 是 Extension 的 API 根，必须包含版本前缀，例如\n` + "`" + `https://ext.example.com/api/v1` + "`" + `。端点路径会拼在它后面。",
-                    "type": "string"
-                },
-                "enabled": {
-                    "description": "Enabled 是否启用对接。默认 false。",
-                    "type": "boolean"
-                },
-                "private_key_path": {
-                    "description": "PrivateKeyPath 是宿主 Ed25519 私钥（PKCS#8 PEM）的路径。\n私钥只在本进程内读取，不写入日志、不入库、不下发到前端。",
-                    "type": "string"
-                },
-                "timeout_seconds": {
-                    "description": "TimeoutSeconds 单次请求超时（秒），默认 30。\n同步抓取端点 /refresh 另有 2 分钟的固定预算，不受这里约束。",
-                    "type": "integer"
-                }
-            }
+            "type": "object"
         },
         "config.GravatarConfig": {
             "type": "object",
@@ -3716,24 +3686,9 @@ const docTemplate = `{
                     "description": "是否启用以 Gravatar 生成头像",
                     "type": "boolean"
                 },
-                "extension_token": {
-                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
-                    "type": "string"
-                },
-                "extension_url": {
-                    "description": "ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。\n\n为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：\nHomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=\u0026d=\u0026r=，\nextension 不反向连接、不需要数据库凭据。",
-                    "type": "string"
-                },
                 "max_bytes": {
                     "description": "MaxBytes 单张头像的大小上限（字节），默认 2MB。\n超过上限的响应直接丢弃，不截断写入缓存。",
                     "type": "integer"
-                },
-                "proxy_names": {
-                    "description": "直连模式下的代理名称列表（引用 proxy 池），空=直连",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 },
                 "rating": {
                     "description": "内容分级：g / pg / r / x",
@@ -3817,6 +3772,25 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ProxyConfig": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "description": "默认代理链（按优先级），空=直连",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "entries": {
+                    "description": "命名代理池",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.ProxyEntry"
+                    }
+                }
+            }
+        },
         "config.ProxyEntry": {
             "type": "object",
             "properties": {
@@ -3852,14 +3826,6 @@ const docTemplate = `{
                 "background_fetch_interval": {
                     "description": "后台抓取间隔（秒），默认 300",
                     "type": "integer"
-                },
-                "extension_token": {
-                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
-                    "type": "string"
-                },
-                "extension_url": {
-                    "description": "ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。\n\n为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：\nHomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。",
-                    "type": "string"
                 },
                 "fetch_concurrency": {
                     "description": "FetchConcurrency 同时抓取的订阅源数量，默认 4。\n单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。",
@@ -3904,13 +3870,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/config.PikPakConfig"
                         }
                     ]
-                },
-                "proxy_names": {
-                    "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 },
                 "retention_count": {
                     "description": "每个订阅源保留条目数，默认 5000",
@@ -4887,17 +4846,17 @@ const docTemplate = `{
         "service.ExtensionHubKeyInfo": {
             "type": "object",
             "properties": {
-                "file_path": {
-                    "description": "FilePath 是回退来源的路径，仅当配置里填了才有。",
-                    "type": "string"
+                "broken": {
+                    "description": "Broken 为真表示配置里的 PEM 存在但解析不了。\n与「未配置」分开：两者的修法不同（一个要重新粘贴，一个要先配）。",
+                    "type": "boolean"
+                },
+                "configured": {
+                    "description": "Configured 是 Source 的布尔形式，前端直接用这个。",
+                    "type": "boolean"
                 },
                 "fingerprint": {
                     "description": "Fingerprint 是公钥的 SHA-256 前 16 位，便于在日志里核对。",
                     "type": "string"
-                },
-                "in_database": {
-                    "description": "InDatabase 为真表示库里有一行密钥，删掉它会把来源退回文件。",
-                    "type": "boolean"
                 },
                 "public_key": {
                     "type": "string"
@@ -4907,10 +4866,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "source": {
-                    "description": "database / file / none",
-                    "type": "string"
-                },
-                "updated_at": {
+                    "description": "Source 只有两个取值：config（已配置）与 none（未配置）。",
                     "type": "string"
                 }
             }
@@ -4993,6 +4949,9 @@ const docTemplate = `{
                 "authenticated": {
                     "type": "boolean"
                 },
+                "avatar_available": {
+                    "type": "boolean"
+                },
                 "base_url": {
                     "type": "string"
                 },
@@ -5009,16 +4968,16 @@ const docTemplate = `{
                 "error_message": {
                     "type": "string"
                 },
+                "fetch_available": {
+                    "description": "Capabilities 记录对端是否真的实现了 /fetch 与 /avatar。\n\n声明式配置（extension.features）只能表达「我想用」，不能证明\n「对端有」。开着一个对端没实现的开关时，表现是每次抓取/头像都失败，\n而错误看起来像上游故障。这里用一次无副作用的探测把答案摊开。\n\n两条都探，不论 features 是否已开启：开关打开前就应当能看到\n「对端到底有没有」，否则只能靠打开后失败来发现。探测本身是\n无参数 GET，代价接近一个 RTT。",
+                    "type": "boolean"
+                },
                 "key_fingerprint": {
                     "description": "KeyFingerprint 是公钥的 SHA-256 前 16 位，用来在不暴露公钥全串的\n场合核对身份（例如日志、工单）。私钥永远不会出现在任何响应里。",
                     "type": "string"
                 },
                 "key_source": {
-                    "description": "KeySource 是这把密钥的来处：database / file / none。\n多实例共用数据库时，靠它确认「用的到底是共享那份还是本机文件」。",
-                    "type": "string"
-                },
-                "key_updated_at": {
-                    "description": "KeyUpdatedAt 只在来源为数据库时有值。",
+                    "description": "KeySource 是这把密钥的来处：config / none。",
                     "type": "string"
                 },
                 "public_key": {
@@ -5093,6 +5052,26 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "updated": {
+                    "type": "integer"
+                }
+            }
+        },
+        "service.ExtensionUpdate": {
+            "type": "object",
+            "properties": {
+                "base_url": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "proxy_names": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "timeout_seconds": {
                     "type": "integer"
                 }
             }
@@ -5263,28 +5242,25 @@ const docTemplate = `{
                 "database": {
                     "$ref": "#/definitions/service.SafeDatabaseConfig"
                 },
-                "extension_hub": {
-                    "description": "ExtensionHub 含私钥**路径**而不是内容。路径本身不是秘密，\n而设置页需要它才能显示当前指向哪个文件。",
+                "extension": {
+                    "description": "Extension 含连接参数，但**绝不含私钥内容**。",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/config.ExtensionHubConfig"
+                            "$ref": "#/definitions/service.SafeExtensionConfig"
                         }
                     ]
                 },
                 "gravatar": {
-                    "$ref": "#/definitions/service.SafeGravatarConfig"
+                    "$ref": "#/definitions/config.GravatarConfig"
                 },
                 "log": {
                     "$ref": "#/definitions/config.LogConfig"
                 },
                 "proxy": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/service.SafeProxyEntry"
-                    }
+                    "$ref": "#/definitions/service.SafeProxyConfig"
                 },
                 "rss": {
-                    "$ref": "#/definitions/service.SafeRSSConfig"
+                    "$ref": "#/definitions/config.RSSConfig"
                 },
                 "server": {
                     "$ref": "#/definitions/config.ServerConfig"
@@ -5314,50 +5290,43 @@ const docTemplate = `{
                 }
             }
         },
-        "service.SafeGravatarConfig": {
+        "service.SafeExtensionConfig": {
             "type": "object",
             "properties": {
-                "default_size": {
-                    "description": "头像缓存尺寸（像素），默认 256，范围 16-512",
-                    "type": "integer"
-                },
-                "default_style": {
-                    "description": "默认头像风格：identicon / mp / robohash / retro / wavatar / blank / 404",
+                "base_url": {
                     "type": "string"
                 },
                 "enabled": {
-                    "description": "是否启用以 Gravatar 生成头像",
                     "type": "boolean"
                 },
-                "extension_token": {
-                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
-                    "type": "string"
-                },
-                "extension_token_set": {
+                "private_key_set": {
                     "type": "boolean"
-                },
-                "extension_url": {
-                    "description": "ExtensionURL 外部图片代理服务地址（如 http://homehub-extension:8090）。\n\n为空时直接从 Gravatar 官方下载（默认）；非空时全部交给 extension：\nHomeHub 单向发起 GET {ExtensionURL}/avatar/{hash}?s=\u0026d=\u0026r=，\nextension 不反向连接、不需要数据库凭据。",
-                    "type": "string"
-                },
-                "max_bytes": {
-                    "description": "MaxBytes 单张头像的大小上限（字节），默认 2MB。\n超过上限的响应直接丢弃，不截断写入缓存。",
-                    "type": "integer"
                 },
                 "proxy_names": {
-                    "description": "直连模式下的代理名称列表（引用 proxy 池），空=直连",
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "rating": {
-                    "description": "内容分级：g / pg / r / x",
-                    "type": "string"
-                },
                 "timeout_seconds": {
-                    "description": "TimeoutSeconds 单次上游请求超时（秒），默认 10。",
                     "type": "integer"
+                }
+            }
+        },
+        "service.SafeProxyConfig": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.SafeProxyEntry"
+                    }
                 }
             }
         },
@@ -5371,89 +5340,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "service.SafeRSSConfig": {
-            "type": "object",
-            "properties": {
-                "background_fetch_enabled": {
-                    "description": "是否启用后台定时抓取，默认 true",
-                    "type": "boolean"
-                },
-                "background_fetch_interval": {
-                    "description": "后台抓取间隔（秒），默认 300",
-                    "type": "integer"
-                },
-                "extension_token": {
-                    "description": "ExtensionToken 调用 extension 时的 Bearer Token，留空则不带认证头。",
-                    "type": "string"
-                },
-                "extension_token_set": {
-                    "type": "boolean"
-                },
-                "extension_url": {
-                    "description": "ExtensionURL 外部抓取服务地址（如 http://homehub-extension:8090）。\n\n为空时由 HomeHub 自己抓取（默认）。非空时把所有 RSS 抓取交给该服务：\nHomeHub 单向发起 GET {ExtensionURL}/fetch?url=...，extension 不反向连接。",
-                    "type": "string"
-                },
-                "fetch_concurrency": {
-                    "description": "FetchConcurrency 同时抓取的订阅源数量，默认 4。\n单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。",
-                    "type": "integer"
-                },
-                "fetch_timeout_seconds": {
-                    "description": "FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。\n超时只影响该订阅源，其他订阅源继续抓取。",
-                    "type": "integer"
-                },
-                "image_allow_private_hosts": {
-                    "description": "ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。\n仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。",
-                    "type": "boolean"
-                },
-                "image_cache_concurrency": {
-                    "description": "ImageCacheConcurrency 图片并发下载数，默认 6。",
-                    "type": "integer"
-                },
-                "image_cache_enabled": {
-                    "description": "ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。\n关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。",
-                    "type": "boolean"
-                },
-                "image_cleanup_enabled": {
-                    "description": "ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。",
-                    "type": "boolean"
-                },
-                "image_cleanup_interval_hours": {
-                    "description": "ImageCleanupIntervalHours 后台清理间隔（小时），默认 24。",
-                    "type": "integer"
-                },
-                "image_max_bytes": {
-                    "description": "ImageMaxBytes 单张图片的大小上限（字节），默认 128MB。\n超过上限的图片会被丢弃，而不是截断后写坏文件。\n上限放到 2GB 是为高分辨率原图留余量；真正的约束是抓取预算，\n单张图太大时会先撞上 fetch_timeout_seconds。",
-                    "type": "integer"
-                },
-                "image_retention_days": {
-                    "description": "ImageRetentionDays 无引用图片的保留天数，默认 30。\n只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。",
-                    "type": "integer"
-                },
-                "pikpak": {
-                    "description": "PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，\n锁定标记仍然可用（锁定本身不依赖 PikPak）。",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/config.PikPakConfig"
-                        }
-                    ]
-                },
-                "proxy_names": {
-                    "description": "代理名称列表（按优先级排列，fallback 链），空=直连",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "retention_count": {
-                    "description": "每个订阅源保留条目数，默认 5000",
-                    "type": "integer"
-                },
-                "user_agent": {
-                    "description": "自定义 User-Agent，空则默认 Chrome 150",
                     "type": "string"
                 }
             }
@@ -5614,11 +5500,11 @@ const docTemplate = `{
                 "database": {
                     "$ref": "#/definitions/service.DatabaseUpdate"
                 },
-                "extension_hub": {
-                    "description": "ExtensionHub 只接受路径与开关；私钥内容永远不会经过这里。",
+                "extension": {
+                    "description": "Extension 只接受连接参数；私钥走单独的 setKey 端点，不进这个结构体。",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/config.ExtensionHubConfig"
+                            "$ref": "#/definitions/service.ExtensionUpdate"
                         }
                     ]
                 },
@@ -5629,10 +5515,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/service.LogUpdate"
                 },
                 "proxy": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/config.ProxyEntry"
-                    }
+                    "$ref": "#/definitions/config.ProxyConfig"
                 },
                 "rss": {
                     "$ref": "#/definitions/config.RSSConfig"

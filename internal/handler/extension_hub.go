@@ -311,10 +311,10 @@ func ExtensionHubSetKey(c *gin.Context) {
 	Success(c, info)
 }
 
-// ExtensionHubDeleteKey 移除数据库里的私钥，来源退回 private_key_path。
+// ExtensionHubDeleteKey 清空 config.json 里的签名私钥。
 //
-//	@Summary		移除数据库里的签名私钥
-//	@Description	删除后若配置了 private_key_path 会回退到文件；两处都没有则无法签名
+//	@Summary		移除签名私钥
+//	@Description	清空 config.json 的 extension.private_key_pem；清空后无法签名，需先关闭 extension.enabled
 //	@Tags			Extension 对接
 //	@Produce		json
 //	@Success		200	{object}	Response
