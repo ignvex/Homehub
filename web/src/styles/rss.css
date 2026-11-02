@@ -12,16 +12,26 @@
   align-items: start;
   transition: grid-template-columns var(--dur-fast) ease;
 }
-/* 收起订阅源栏：右栏吃掉全部宽度。用 0fr 而不是 display:none，
-   否则过渡会跳变（display 不可动画）。 */
+/* 收起订阅源栏：左栏收窄到 44px，正好容下切换按钮。
+ *
+ * 不收成 0：那样按钮没地方待，只能浮到内容区上面去挡标题，
+ * 而「与折叠按钮同一行、换个箭头方向」才是这里想要的交互。
+ * 44px 是 26px 按钮 + 两侧内边距。 */
 .rss-layout.is-sidebar-collapsed {
-  grid-template-columns: 0 minmax(0, 1fr);
-  gap: 0;
+  grid-template-columns: 44px minmax(0, 1fr);
 }
+.rss-layout.is-sidebar-collapsed .rss-sidebar-head {
+  justify-content: center;
+  padding-inline: var(--space-2);
+}
+.rss-layout.is-sidebar-collapsed .rss-sidebar-head strong,
+.rss-layout.is-sidebar-collapsed .rss-nav,
+.rss-layout.is-sidebar-collapsed .rss-sidebar-foot {
+  display: none;
+}
+/* 收起后不再需要「能点开」的提示，指示器与摘要也一起收掉 */
 .rss-layout.is-sidebar-collapsed .rss-sidebar {
-  border-width: 0;
-  opacity: 0;
-  pointer-events: none;
+  overflow: visible;
 }
 
 /* ============ 左栏：订阅源导航 ============ */
@@ -37,98 +47,6 @@
 }
 /* 收起后浮在右栏左上角的小按钮，用于重新展开。
    单独定位是因为侧栏本身已经宽度为 0，按钮没地方放。 */
-/* 收起侧栏后的「展开」把手。
- *
- * 贴在左侧导航栏与内容区的交界处，垂直居中，像抽屉的拉手。
- * 用 fixed 而不是 absolute：absolute 会随页面滚走，500 条的长列表
- * 滚到中间就再也找不到展开入口了。
- *
- * left 用 --shell-side：它正好等于左侧导航栏的宽度，于是把手紧贴
- * 那条绿色与米色的分界。侧栏本身折叠时 --shell-side 不变（那是外层
- * 导航，与此处折叠的订阅源栏无关），所以位置稳定。
- *
- * 文字竖排：横排的胶囊至少要 90px 宽，会伸进内容区。
- * writing-mode 让中文正立自上而下读，正是竖标签的写法。
- */
-.rss-sidebar-reopen {
-  position: fixed;
-  top: 50%;
-  left: var(--shell-side);
-  z-index: 15;
-  transform: translateY(-50%);
-  padding: var(--space-4) var(--space-2);
-  border: 1px solid var(--color-border);
-  border-left: 0;
-  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
-  background: var(--color-surface);
-  box-shadow: var(--shadow-md);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  letter-spacing: .18em;
-  line-height: 1;
-  writing-mode: vertical-rl;
-  cursor: pointer;
-}
-.rss-sidebar-reopen:hover {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
-  color: var(--color-primary-hover);
-}
-.rss-sidebar-reopen:hover { color: var(--color-text); border-color: var(--color-border-strong); }
-
-
-.rss-sidebar-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--panel-head-pad-y) var(--panel-head-pad-x);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-muted);
-}
-/* 侧栏头部的图标按钮（分组管理、收起）。
-   文字按钮在 272px 的侧栏里会把标题挤掉，所以统一用 26px 图标。 */
-.rss-sidebar-head-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-.rss-sidebar-icon {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-.rss-sidebar-icon:hover {
-  background: color-mix(in srgb, var(--color-interactive) 10%, transparent);
-  color: var(--color-text);
-}
-.rss-sidebar-icon svg { width: 16px; height: 16px; }
-.rss-sidebar-head strong {
-  font-size: var(--text-2xs);
-  font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
-}
-.rss-sidebar-head button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-link);
-  font-size: var(--text-2xs);
-  font-weight: 650;
-  cursor: pointer;
-}
-.rss-sidebar-head button:hover { color: var(--color-interactive); }
-
 /* 侧栏底部：添加订阅源是列表的自然延伸，放在这里比放在页面顶部
    更符合「先看已有，再加新的」这一动作顺序。 */
 .rss-sidebar-foot {

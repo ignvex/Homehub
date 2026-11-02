@@ -303,21 +303,15 @@ export function RSSPage() {
         {/* 展开把手：贴着左侧导航栏与内容区的交界，垂直居中。
             放在 rss-layout 之外是因为它要相对视口定位——放在里面会被
             内容区的 padding 挡住，或者像之前那样压住「全部条目」标题。 */}
-        {sidebarCollapsed && <button
-          type="button"
-          className="rss-sidebar-reopen"
-          onClick={toggleSidebar}
-          title="展开订阅源栏"
-        >
-          订阅源
-        </button>}
         <div className={`rss-layout${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}>
         {/* ---------- 左栏 ---------- */}
         <aside className="rss-sidebar" aria-label="订阅源导航">
+          {/* 收起时这一格收窄成 44px，只留右侧的切换按钮——
+              按钮因此始终待在同一行、同一位置，只是箭头换个方向。 */}
           <div className="rss-sidebar-head">
             <strong>订阅源</strong>
             <div className="rss-sidebar-head-actions">
-              <button
+              {!sidebarCollapsed && <button
                 type="button"
                 className="rss-sidebar-icon"
                 onClick={() => setShowGroups(true)}
@@ -325,15 +319,19 @@ export function RSSPage() {
                 title="管理分组"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-              </button>
+              </button>}
               <button
                 type="button"
-                className="rss-sidebar-icon"
+                className="rss-sidebar-icon rss-sidebar-toggle"
                 onClick={toggleSidebar}
-                aria-label="收起订阅源栏"
-                title="收起，让条目占满宽度"
+                aria-expanded={!sidebarCollapsed}
+                aria-label={sidebarCollapsed ? '展开订阅源栏' : '收起订阅源栏'}
+                title={sidebarCollapsed ? '展开订阅源栏' : '收起，让条目占满宽度'}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  {/* 与收起方向相反：收起是 ‹，展开是 › */}
+                  <path d={sidebarCollapsed ? 'm10 6 6 6-6 6' : 'm14 6-6 6 6 6'} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             </div>
           </div>
