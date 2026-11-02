@@ -338,3 +338,58 @@ func TestValidateAvatarImageKeepsInvalidForNonHTML(t *testing.T) {
 		t.Fatalf("应归入 ErrAvatarInvalid，实际 %v", err)
 	}
 }
+
+// TestDirectAvatarSourceHintsProxyOnTimeout 确认超时且未配代理时带上提示。
+//
+// 这个组合很容易踩：部署在必须经代理出网的环境里，gravatar.proxy_names
+// 忘了填。原始错误只有 "context deadline exceeded"，看不出是网络不通还是
+// 没配代理，排查会先怀疑 Gravatar 挂了。提示要能指回配置项。
+func TestDirectAvatarSourceHintsProxyOnTimeout(t *testing.T) {
+	// 能连上但永不响应，制造一个确定性的超时。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	src := &directAvatarSource{
+		client:          &http.Client{Timeout: 100 * time.Millisecond},
+		baseURL:         upstream.URL,
+		proxyConfigured: false,
+	}
+
+	_, _, err := src.Fetch(context.Background(), avatarRequest{Hash: "abc", Style: "identicon", Rating: "g", Size: 256}, nil)
+	if err == nil {
+		t.Fatal("期望超时错误")
+	}
+	if !errors.Is(err, ErrAvatarUpstream) {
+		t.Errorf("错误应可识别为上游故障，实际 %v", err)
+	}
+	if !strings.Contains(err.Error(), "gravatar.proxy_names") {
+		t.Errorf("提示应指向配置项 gravatar.proxy_names，实际: %v", err)
+	}
+}
+
+// TestDirectAvatarSourceNoHintWhenProxyConfigured 确认配了代理时不加这条提示。
+//
+// 配了代理还超时，原因在别处（代理本身不通、目标站点封锁）。
+// 这时继续提示"去配代理"只会把人引向错误方向。
+func TestDirectAvatarSourceNoHintWhenProxyConfigured(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	src := &directAvatarSource{
+		client:          &http.Client{Timeout: 100 * time.Millisecond},
+		baseURL:         upstream.URL,
+		proxyConfigured: true,
+	}
+
+	_, _, err := src.Fetch(context.Background(), avatarRequest{Hash: "abc", Style: "identicon", Rating: "g", Size: 256}, nil)
+	if err == nil {
+		t.Fatal("期望超时错误")
+	}
+	if strings.Contains(err.Error(), "gravatar.proxy_names") {
+		t.Errorf("已配代理时不应提示去配代理，实际: %v", err)
+	}
+}

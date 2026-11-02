@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -140,7 +141,8 @@ func newAvatarSource(cfg *config.Config) avatarSource {
 				return nil
 			},
 		},
-		baseURL: gravatarDefaultBaseURL,
+		baseURL:         gravatarDefaultBaseURL,
+		proxyConfigured: len(config.ResolveProxy(proxyNames)) > 0,
 	}
 }
 
@@ -151,6 +153,27 @@ func newAvatarSource(cfg *config.Config) avatarSource {
 type directAvatarSource struct {
 	client  *http.Client
 	baseURL string
+	// proxyConfigured 记录本次直连是否配了代理。
+	//
+	// 只用于失败时的诊断提示：超时且无代理，几乎总是配置漏了，
+	// 而不是 Gravatar 挂了。
+	proxyConfigured bool
+}
+
+// isTimeoutError 判断错误是否为超时。
+//
+// 超时在 Go 里有三种包装形式：context.DeadlineExceeded、
+// net.Error.Timeout()、以及 http.Client.Timeout 触发的 url.Error。
+// 逐个判断，不依赖错误字符串匹配。
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func (s *directAvatarSource) Key() string {
@@ -175,6 +198,15 @@ func (s *directAvatarSource) Fetch(ctx context.Context, req avatarRequest, known
 
 	resp, err := s.client.Do(httpReq)
 	if err != nil {
+		// 超时且没配代理时补一句指向配置的提示。
+		//
+		// 这个组合很常见：部署在需要代理才能出网的环境里，
+		// gravatar.proxy_names 忘了填。日志里只有一句
+		// "context deadline exceeded"，看不出是网络不通还是没配代理，
+		// 排查往往会先去怀疑 Gravatar 挂了。
+		if !s.proxyConfigured && isTimeoutError(err) {
+			return nil, false, fmt.Errorf("%w: %v（gravatar.proxy_names 为空，当前为直连；若本机需经代理出网，请在配置的 proxy 池中定义代理并让 gravatar 引用它）", ErrAvatarUpstream, err)
+		}
 		return nil, false, fmt.Errorf("%w: %v", ErrAvatarUpstream, err)
 	}
 	defer resp.Body.Close()
