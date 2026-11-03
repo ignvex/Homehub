@@ -7,6 +7,9 @@ bin/
 # 仅匹配仓库根目录的编译产物；不能写裸 `homehub`，
 # 否则会把入口目录 cmd/homehub/ 一并忽略掉。
 /homehub
+# dist/ 是发布布局（二进制 + 前端产物 + 上传目录），体积大且可由源码重建。
+# 需要分发二进制时走 GitHub Releases，不要提交进来。
+/dist/
 
 # 数据目录
 data/
