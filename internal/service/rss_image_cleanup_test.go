@@ -88,7 +88,7 @@ func TestDeleteFeedKeepsSharedEntries(t *testing.T) {
 // TestEnforceRetentionCountsPerFeed 确认保留策略按"本源收录数"计数，
 // 删除关联时不碰其他源仍在用的条目。
 func TestEnforceRetentionCountsPerFeed(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"retention_count": 2}`)
+	loadConfigWith(t, `,"rss": {"retention_unlimited": false, "retention_count": 2}`)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
@@ -120,9 +120,35 @@ func TestEnforceRetentionCountsPerFeed(t *testing.T) {
 	}
 }
 
+// TestEnforceRetentionUnlimitedByDefault 确认不写 retention_unlimited 时
+// 不执行任何清理。
+//
+// 这是默认行为：清理删的是源站已过期、再也抓不回来的条目，所以
+// “漏写配置” 绝不能等于 “开始删历史”。这里用零次 SQL 期望来证伪：
+// 只要 enforceRetention 碰了数据库，sqlmock 就会报未预期的调用。
+func TestEnforceRetentionUnlimitedByDefault(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"retention_count": 2}`)
+
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	images := &fakeImageCache{}
+	s := &RSSService{db: db, images: images}
+
+	if err := s.enforceRetention(context.Background(), 7); err != nil {
+		t.Fatalf("enforceRetention 失败: %v", err)
+	}
+	if len(images.sweeps) != 0 {
+		t.Errorf("无限存储不应触发 Sweep，实际 %v", images.sweeps)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("无限存储不应访问数据库: %v", err)
+	}
+}
+
 // TestEnforceRetentionNoopWithinLimit 确认未超限时不做任何删除。
 func TestEnforceRetentionNoopWithinLimit(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"retention_count": 10}`)
+	loadConfigWith(t, `,"rss": {"retention_unlimited": false, "retention_count": 10}`)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
@@ -328,7 +354,7 @@ func TestSweepSkipsPendingKeys(t *testing.T) {
 // 同一条内容可能被多个源收录：B 源抓到时正文已经由 A 源处理过。
 // 再清洗一遍既浪费带宽下载图片，也可能用 B 的摘要覆盖 A 的全文。
 func TestFetchFeedDoesNotOverwriteExistingContent(t *testing.T) {
-	loadConfigWith(t, `,"rss": {"image_cache_enabled": false, "retention_count": 5000}`)
+	loadConfigWith(t, `,"rss": {"image_cache_enabled": false, "retention_unlimited": false, "retention_count": 5000}`)
 
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()

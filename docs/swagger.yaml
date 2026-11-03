@@ -194,8 +194,16 @@ definitions:
           PikPak 磁力链接辅助功能。关闭时所有相关 API 返回 503，
           锁定标记仍然可用（锁定本身不依赖 PikPak）。
       retention_count:
-        description: 每个订阅源保留条目数，默认 5000
+        description: RetentionCount 是关闭无限存储时，每个订阅源保留的条目数，默认 5000。
         type: integer
+      retention_unlimited:
+        description: |-
+          RetentionUnlimited 关闭条目数量上限，默认开启。
+
+          开启时不执行任何清理，旧条目一直保留；关闭后由 RetentionCount
+          决定每个源保留多少条。默认选无限是因为清理不可逆：源站过期后
+          条目再也抓不回来，而磁盘成本远低于丢掉历史。
+        type: boolean
       user_agent:
         description: 自定义 User-Agent，空则默认 Chrome 150
         type: string

@@ -1282,11 +1282,19 @@ func (s *RSSService) itemToEntry(item *gofeed.Item, fetchedAt time.Time) model.R
 // 计数单位是"本源收录了多少条"，而不是"库里有几条"：同一条内容被多个
 // 源收录时，每个源各自保留自己的那份关联。清理时只删本源的关联行，
 // 条目本身只有变成孤儿（不再被任何源收录）才回收。
+//
+// rss.retention_unlimited 开启时（默认）直接返回：不查库、不删任何东西。
+// 这一步必须在计数之前，否则每次抓取都会白跑一次全表 count。
 func (s *RSSService) enforceRetention(ctx context.Context, feedID uint64) error {
 	retention := 5000
 	cfg := config.Get()
-	if cfg != nil && cfg.RSS.RetentionCount > 0 {
-		retention = cfg.RSS.RetentionCount
+	if cfg != nil {
+		if cfg.RSS.RetentionUnlimited {
+			return nil
+		}
+		if cfg.RSS.RetentionCount > 0 {
+			retention = cfg.RSS.RetentionCount
+		}
 	}
 
 	var count int64

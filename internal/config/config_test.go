@@ -341,3 +341,63 @@ func TestWatch_InvalidJSONKeepsOldConfig(t *testing.T) {
 		t.Errorf("热加载失败后配置被错误修改: Database.Host = %q", cfg.Database.Host)
 	}
 }
+
+// TestRetentionUnlimitedDefaultsToTrue 确认配置里不写这项时默认无限存储。
+//
+// 这条防的是"升级后开始删历史"：旧配置里只有 retention_count，
+// 如果默认值随 bool 零值落到 false，升级后的第一次抓取就会按 5000 条
+// 清理，而被删的条目源站通常已经无法重新提供。
+func TestRetentionUnlimitedDefaultsToTrue(t *testing.T) {
+	path, _ := tempJSON(t, `{
+		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
+		"auth": {"session_secret": "abcdefghijklmnopqrstuvwxyz012345"},
+		"rss": {"retention_count": 5000}
+	}`)
+
+	if err := Load(path); err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if !Get().RSS.RetentionUnlimited {
+		t.Error("未写 retention_unlimited 时应默认无限存储")
+	}
+}
+
+// TestRetentionUnlimitedExplicitFalseWins 确认显式关闭有效。
+func TestRetentionUnlimitedExplicitFalseWins(t *testing.T) {
+	path, _ := tempJSON(t, `{
+		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
+		"auth": {"session_secret": "abcdefghijklmnopqrstuvwxyz012345"},
+		"rss": {"retention_unlimited": false, "retention_count": 1234}
+	}`)
+
+	if err := Load(path); err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	cfg := Get()
+	if cfg.RSS.RetentionUnlimited {
+		t.Error("显式写 false 应关闭无限存储")
+	}
+	if cfg.RSS.RetentionCount != 1234 {
+		t.Errorf("RetentionCount = %d, want 1234", cfg.RSS.RetentionCount)
+	}
+}
+
+// TestRetentionCountRequiredWhenLimited 确认关闭无限存储后必须给出保留数量。
+//
+// 否则 0 会被 enforceRetention 当成"未配置"回退到 5000，用户看到的是
+// 自己没设过的数字，且没有任何提示。
+func TestRetentionCountRequiredWhenLimited(t *testing.T) {
+	path, _ := tempJSON(t, `{
+		"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
+		"auth": {"session_secret": "abcdefghijklmnopqrstuvwxyz012345"},
+		"rss": {"retention_unlimited": false, "retention_count": 0}
+	}`)
+
+	err := Load(path)
+	if err == nil {
+		t.Fatal("关闭无限存储且 retention_count 为 0 时应拒绝加载")
+	}
+	if !strings.Contains(err.Error(), "retention_count") {
+		t.Errorf("错误信息应指出 retention_count，实际: %v", err)
+	}
+}

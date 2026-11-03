@@ -117,6 +117,13 @@ type BookmarkConfig struct{}
 
 // RSSConfig RSS 订阅模块配置。
 type RSSConfig struct {
+	// RetentionUnlimited 关闭条目数量上限，默认开启。
+	//
+	// 开启时不执行任何清理，旧条目一直保留；关闭后由 RetentionCount
+	// 决定每个源保留多少条。默认选无限是因为清理不可逆：源站过期后
+	// 条目再也抓不回来，而磁盘成本远低于丢掉历史。
+	RetentionUnlimited bool `json:"retention_unlimited"`
+	// RetentionCount 是关闭无限存储时，每个订阅源保留的条目数，默认 5000。
 	RetentionCount          int    `json:"retention_count"`           // 每个订阅源保留条目数，默认 5000
 	BackgroundFetchEnabled  bool   `json:"background_fetch_enabled"`  // 是否启用后台定时抓取，默认 true
 	BackgroundFetchInterval int    `json:"background_fetch_interval"` // 后台抓取间隔（秒），默认 300

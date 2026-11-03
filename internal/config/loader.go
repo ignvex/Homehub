@@ -274,6 +274,8 @@ func (cfg *Config) boolFlags() []boolFlag {
 		{"rss", "background_fetch_enabled", &cfg.RSS.BackgroundFetchEnabled, true},
 		{"rss", "image_cache_enabled", &cfg.RSS.ImageCacheEnabled, true},
 		{"rss", "image_cleanup_enabled", &cfg.RSS.ImageCleanupEnabled, true},
+		// 默认不限存储：清理不可逆，漏写这一项不应该默默开始删历史条目。
+		{"rss", "retention_unlimited", &cfg.RSS.RetentionUnlimited, true},
 		// 下面两项默认关闭：开启会额外消耗资源，交给用户主动选择。
 		{"balance_monitor", "enabled", &cfg.BalanceMonitor.Enabled, false},
 		{"log", "db_writer", &cfg.Log.DBWriter, false},
@@ -461,6 +463,11 @@ func validate(cfg *Config) error {
 	// RSS 抓取参数校验
 	if cfg.RSS.FetchConcurrency < 1 || cfg.RSS.FetchConcurrency > 32 {
 		errs = append(errs, "rss.fetch_concurrency 必须在 1-32 之间")
+	}
+	// 只有关掉无限存储时，保留数量才有意义；此时 0 或负数会被
+	// enforceRetention 当成「未配置」回退到 5000，与用户预期不符。
+	if !cfg.RSS.RetentionUnlimited && cfg.RSS.RetentionCount < 1 {
+		errs = append(errs, "关闭 rss.retention_unlimited 时 retention_count 必须大于 0")
 	}
 	if cfg.RSS.FetchTimeoutSeconds < 5 || cfg.RSS.FetchTimeoutSeconds > 600 {
 		errs = append(errs, "rss.fetch_timeout_seconds 必须在 5-600 之间")

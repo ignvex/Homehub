@@ -307,3 +307,46 @@ func TestUpdateRejectsBaseURLWithoutVersionPrefix(t *testing.T) {
 	}
 	_ = path
 }
+
+// TestUpdatePersistsRetentionUnlimited 确认设置页能关掉无限存储并落盘。
+//
+// 无限存储默认开启，所以"关掉"必须是显式写 false 才能覆盖默认值。
+// 若保存路径丢掉这个字段，重新加载后又会回到 true——界面上会表现为
+// "保存了但重启后又变回无限"，这是最难解释的一类 bug。
+func TestUpdatePersistsRetentionUnlimited(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+
+	err := NewConfigService().Update(UpdateConfigRequest{
+		RSS: &config.RSSConfig{
+			RetentionUnlimited:        false,
+			RetentionCount:            1234,
+			BackgroundFetchEnabled:    true,
+			BackgroundFetchInterval:   300,
+			FetchConcurrency:          4,
+			FetchTimeoutSeconds:       30,
+			ImageCacheEnabled:         true,
+			ImageCacheConcurrency:     6,
+			ImageMaxBytes:             128 * 1024 * 1024,
+			ImageCleanupEnabled:       true,
+			ImageRetentionDays:        30,
+			ImageCleanupIntervalHours: 24,
+		},
+	})
+	if err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+
+	raw := readConfigJSON(t, path)
+	rss := raw["rss"].(map[string]any)
+	if got, ok := rss["retention_unlimited"].(bool); !ok || got {
+		t.Fatalf("retention_unlimited 应写为 false，实际 %v", rss["retention_unlimited"])
+	}
+	if got := rss["retention_count"].(float64); got != 1234 {
+		t.Fatalf("retention_count = %v, want 1234", got)
+	}
+
+	// 重新加载后仍应是关闭状态，而不是被默认值覆盖回 true。
+	if config.Get().RSS.RetentionUnlimited {
+		t.Fatal("重新加载后无限存储不该被默认值重新打开")
+	}
+}

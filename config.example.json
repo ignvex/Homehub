@@ -66,8 +66,10 @@
         ]
     },
     "rss": {
+        "_comment_retention": "默认无限存储：不自动删旧条目。关闭 retention_unlimited 后才按 retention_count 每源保留。源站过期后旧条目抓不回来，所以默认不删。",
         "background_fetch_enabled": true,
         "background_fetch_interval": 300,
+        "retention_unlimited": true,
         "retention_count": 5000,
         "user_agent": "",
         "fetch_concurrency": 4,
