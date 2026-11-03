@@ -22,6 +22,8 @@ export interface GravatarConfig {
 }
 
 export interface RSSConfig {
+  /** 关闭条目数量上限。默认开启，开启时 retention_count 不生效。 */
+  retention_unlimited: boolean
   retention_count: number
   background_fetch_enabled: boolean
   background_fetch_interval: number
@@ -222,6 +224,7 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
     },
     bookmark: {},
     rss: {
+      retention_unlimited: raw.rss?.retention_unlimited ?? true,
       retention_count: raw.rss?.retention_count ?? 5000,
       background_fetch_enabled: raw.rss?.background_fetch_enabled ?? true,
       background_fetch_interval: raw.rss?.background_fetch_interval ?? 300,

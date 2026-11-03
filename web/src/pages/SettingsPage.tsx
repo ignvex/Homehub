@@ -433,8 +433,18 @@ export function SettingsPage() {
           onReset={() => { patch(current => ({ ...current, rss: config.rss })); setSecrets(current => clearSecrets('rss', current)) }}
         >
           <div className="form-grid form-grid--three">
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.rss.retention_unlimited}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, retention_unlimited: event.target.checked } }))} />
+              <span>无限存储（不自动删旧条目）</span>
+            </label>
             <Field label="保留条数">
-              <input type="number" min="1" value={draft.rss.retention_count} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, retention_count: Number(event.target.value) } }))} />
+              <input type="number" min="1" value={draft.rss.retention_count}
+                disabled={draft.rss.retention_unlimited}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, retention_count: Number(event.target.value) } }))} />
+              <small>{draft.rss.retention_unlimited
+                ? '无限存储已开启，这一项不生效'
+                : '每个订阅源最多保留的条目数，超出的从最旧的开始删'}</small>
             </Field>
             <Field label="后台抓取间隔（秒）">
               <input type="number" min="60" value={draft.rss.background_fetch_interval} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_interval: Number(event.target.value) } }))} />
@@ -463,6 +473,37 @@ export function SettingsPage() {
             <label className="choice-tile">
               <input type="checkbox" checked={draft.rss.image_cleanup_enabled} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_enabled: event.target.checked } }))} />
               <span>自动清理无引用图片</span>
+            </label>
+            <Field label="User-Agent">
+              <input type="text" placeholder="留空则用内置 Chrome UA" value={draft.rss.user_agent}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, user_agent: event.target.value } }))} />
+              <small>部分源会按 UA 返回不同内容；留空即可</small>
+            </Field>
+            <Field label="图片并发">
+              <input type="number" min="1" max="32" value={draft.rss.image_cache_concurrency}
+                disabled={!draft.rss.image_cache_enabled}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cache_concurrency: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="单张图片上限（MB）">
+              <input type="number" min="1" max="2048" value={Math.round(draft.rss.image_max_bytes / 1048576)}
+                disabled={!draft.rss.image_cache_enabled}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_max_bytes: Number(event.target.value) * 1048576 } }))} />
+              <small>超过上限的图直接丢弃，不截断</small>
+            </Field>
+            <Field label="无引用图片保留（天）">
+              <input type="number" min="1" max="3650" value={draft.rss.image_retention_days}
+                disabled={!draft.rss.image_cleanup_enabled}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_retention_days: Number(event.target.value) } }))} />
+            </Field>
+            <Field label="图片清理间隔（小时）">
+              <input type="number" min="1" max="168" value={draft.rss.image_cleanup_interval_hours}
+                disabled={!draft.rss.image_cleanup_enabled}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_interval_hours: Number(event.target.value) } }))} />
+            </Field>
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.rss.image_allow_private_hosts}
+                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_allow_private_hosts: event.target.checked } }))} />
+              <span>允许缓存内网图片（降低 SSRF 防护）</span>
             </label>
           </div>
         </Section>
