@@ -307,3 +307,43 @@ func TestPasteCreateIsRateLimitedPerIP(t *testing.T) {
 		t.Fatal("其他 IP 不应被连带限流")
 	}
 }
+
+// TestRSSReadStateRoutesAreLoginOnly 锁住阅读状态端点的权限门槛。
+//
+// 已读/星标是个人数据，5 级只读用户也必须能用；挂到 contentWrite（3 级）
+// 组下会让只读用户永远无法标记已读。这里断言它们注册在 rssRead 组上，
+// 并且未登录时仍被 401 拦下。
+func TestRSSReadStateRoutesAreLoginOnly(t *testing.T) {
+	src, err := os.ReadFile("routes.go")
+	if err != nil {
+		t.Fatalf("读取 routes.go 失败: %v", err)
+	}
+	for _, line := range []string{
+		`rssRead.PUT("/entries/:id/read"`,
+		`rssRead.DELETE("/entries/:id/read"`,
+		`rssRead.PUT("/entries/:id/star"`,
+		`rssRead.DELETE("/entries/:id/star"`,
+		`rssRead.POST("/entries/mark-read"`,
+		`rssRead.GET("/unread-counts"`,
+	} {
+		if !strings.Contains(string(src), line) {
+			t.Errorf("阅读状态路由应注册在登录即可的 rssRead 组: 缺少 %s", line)
+		}
+	}
+
+	r := newTestEngine()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPut, "/api/v1/rss/entries/1/read"},
+		{http.MethodDelete, "/api/v1/rss/entries/1/read"},
+		{http.MethodPut, "/api/v1/rss/entries/1/star"},
+		{http.MethodDelete, "/api/v1/rss/entries/1/star"},
+		{http.MethodPost, "/api/v1/rss/entries/mark-read"},
+		{http.MethodGet, "/api/v1/rss/unread-counts"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}")))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 未登录时状态码 = %d，期望 401", tc.method, tc.path, w.Code)
+		}
+	}
+}

@@ -69,6 +69,9 @@ func TestDeleteFeedKeepsSharedEntries(t *testing.T) {
 	// 6. 只删孤儿条目的图片引用
 	mock.ExpectExec(`DELETE FROM "rss_image_refs" WHERE entry_id IN`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 孤儿条目的已读/星标状态随条目一并删除。
+	mock.ExpectExec(`DELETE FROM "rss_entry_states" WHERE entry_id IN`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	images := &fakeImageCache{}
@@ -415,6 +418,9 @@ func TestPurgeOrphanEntriesIgnoresStillReferenced(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(12))
 	mock.ExpectExec(`DELETE FROM "rss_image_refs" WHERE entry_id IN`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 孤儿条目的已读/星标状态随条目一并删除。
+	mock.ExpectExec(`DELETE FROM "rss_entry_states" WHERE entry_id IN`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	s := &RSSService{db: db}
@@ -443,6 +449,9 @@ func TestPurgeOrphanEntriesIsSingleStatement(t *testing.T) {
 	mock.ExpectQuery(`DELETE FROM rss_entries WHERE id IN`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(12))
 	mock.ExpectExec(`DELETE FROM "rss_image_refs"`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 孤儿条目的已读/星标状态随条目一并删除。
+	mock.ExpectExec(`DELETE FROM "rss_entry_states" WHERE entry_id IN`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -533,6 +542,9 @@ func TestFetchFeedDropsRefsAndPurgesOrphansWhenFeedDeleted(t *testing.T) {
 	mock.ExpectQuery(`DELETE FROM rss_entries WHERE id IN .*NOT EXISTS.*RETURNING id`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(11))
 	mock.ExpectExec(`DELETE FROM "rss_image_refs" WHERE entry_id IN`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 孤儿条目的已读/星标状态随条目一并删除。
+	mock.ExpectExec(`DELETE FROM "rss_entry_states" WHERE entry_id IN`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	images := &fakeImageCache{}

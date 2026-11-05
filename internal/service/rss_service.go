@@ -40,6 +40,8 @@ var (
 	// 万一上游把空列表当成「无条件」传下来，那一次请求就能改光整张表。
 	// 这条拒绕把那个可能性变成一次 400。
 	ErrRSSBatchEmpty = errors.New("未选中任何订阅源")
+	// ErrRSSBadStateFilter 表示条目列表的 state 筛选值不在白名单内。
+	ErrRSSBadStateFilter = errors.New("无效的阅读状态筛选条件")
 )
 
 // RSSService RSS 订阅业务服务。
@@ -498,6 +500,11 @@ func (s *RSSService) purgeOrphanEntries(tx *gorm.DB, entryIDs []uint64) error {
 	if err := tx.Unscoped().Where("entry_id IN ?", orphans).Delete(&model.RSSImageRef{}).Error; err != nil {
 		return fmt.Errorf("删除孤儿条目的图片引用失败: %w", err)
 	}
+	// 各用户对这些条目的已读/星标状态。没有外键，不删就永久残留；
+	// 同一 link 重新出现时条目会拿到新 id，旧状态也对不上了。
+	if err := tx.Where("entry_id IN ?", orphans).Delete(&model.RSSEntryState{}).Error; err != nil {
+		return fmt.Errorf("删除孤儿条目的阅读状态失败: %w", err)
+	}
 	return nil
 }
 
@@ -564,6 +571,10 @@ type RSSEntryView struct {
 	PikPakTaskID   string     `json:"pikpak_task_id,omitempty"`
 	PikPakError    string     `json:"pikpak_error,omitempty"`
 	PikPakSavedAt  *time.Time `json:"pikpak_saved_at,omitempty"`
+
+	// IsRead / IsStarred 是**当前用户**的阅读状态。
+	IsRead    bool `json:"is_read"`
+	IsStarred bool `json:"is_starred"`
 }
 
 // entryListColumns 是列表查询取的列。
@@ -604,6 +615,8 @@ type entryListRow struct {
 	PikPakTaskID   string     `gorm:"column:pikpak_task_id"`
 	PikPakError    string     `gorm:"column:pikpak_error"`
 	PikPakSavedAt  *time.Time `gorm:"column:pikpak_saved_at"`
+	IsRead         bool       `gorm:"column:is_read"`
+	IsStarred      bool       `gorm:"column:is_starred"`
 }
 
 // EntryContent 按 ID 取单条正文 HTML。
@@ -645,6 +658,15 @@ type EntryFilter struct {
 	//   "pikpak_saved"  已成功提交到 PikPak
 	//   "pikpak_failed" 提交失败
 	Magnet string
+	// UserID 是当前用户；is_read / is_starred 按它计算。
+	// 为 0 时所有条目都视为未读、未加星（不会匹配任何状态行）。
+	UserID uint64
+	// State 阅读状态筛选：
+	//   ""         不过滤
+	//   "unread"   当前用户未读
+	//   "read"     当前用户已读
+	//   "starred"  当前用户已加星
+	State string
 }
 
 // ListEntries 按条件分页查询条目，按发布时间倒序。
@@ -676,6 +698,16 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 		return nil, 0, fmt.Errorf("%w %q", ErrRSSBadMagnetFilter, f.Magnet)
 	} else if cond != "" {
 		baseQuery = baseQuery.Where(cond)
+	}
+
+	// 阅读状态维度。(user_id, entry_id) 是主键，LEFT JOIN 最多命中一行，
+	// 不会把条目复制成多行，下面的 GROUP BY 与计数都不受影响。
+	if cond, ok := entryStateCondition(f.State); !ok {
+		return nil, 0, fmt.Errorf("%w %q", ErrRSSBadStateFilter, f.State)
+	} else if cond != "" {
+		baseQuery = baseQuery.
+			Joins("LEFT JOIN rss_entry_states AS st ON st.entry_id = e.id AND st.user_id = ?", f.UserID).
+			Where(cond)
 	}
 
 	// 统计总数用独立会话。
@@ -723,9 +755,12 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 	// Table + Scan 不经过模型，GORM 不会自动补软删除条件（原先是
 	// model.RSSEntry 的 Find 带的）。漏掉它会在两步查询之间刚好被
 	// 删除的条目上返回已删除内容——虽然主查询已经过滤过一遍。
+	//
+	// 已读/星标在这一步用 LEFT JOIN 一次带出，而不是逐条再查（N+1）。
 	if err := s.db.Table("rss_entries").
-		Select(entryListColumns).
-		Where("id IN ? AND deleted_at IS NULL", ids).
+		Select(entryListColumns+entryStateColumns).
+		Joins("LEFT JOIN rss_entry_states AS st ON st.entry_id = rss_entries.id AND st.user_id = ?", f.UserID).
+		Where("rss_entries.id IN ? AND rss_entries.deleted_at IS NULL", ids).
 		Scan(&entries).Error; err != nil {
 		return nil, 0, fmt.Errorf("查询条目详情失败: %w", err)
 	}
@@ -775,6 +810,8 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 			PikPakTaskID:   entry.PikPakTaskID,
 			PikPakError:    entry.PikPakError,
 			PikPakSavedAt:  entry.PikPakSavedAt,
+			IsRead:         entry.IsRead,
+			IsStarred:      entry.IsStarred,
 		})
 	}
 	return views, total, nil

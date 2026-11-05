@@ -338,10 +338,13 @@ func RSSFetchAll(c *gin.Context) {
 // RSSListEntries 获取指定订阅源的条目列表。
 //
 //	@Summary		获取 RSS 条目列表
-//	@Description	分页获取 RSS 订阅条目，可按订阅源筛选
+//	@Description	分页获取 RSS 订阅条目，可按订阅源、分组、磁力与阅读状态筛选。每条带当前用户的 is_read / is_starred
 //	@Tags			RSS 订阅
 //	@Produce		json
 //	@Param			feed_id		query		int		false	"订阅源 ID 筛选"
+//	@Param			group_id	query		int		false	"分组 ID 筛选"
+//	@Param			magnet		query		string	false	"磁力筛选：has/locked/unlocked/pikpak_saved/pikpak_failed"
+//	@Param			state		query		string	false	"阅读状态筛选：unread/read/starred（缺省全部）"
 //	@Param			page		query		int		false	"页码（默认 1）"
 //	@Param			per_page	query		int		false	"每页数量（默认 20，上限 100）"
 //	@Success		200			{object}	Response	"条目列表（含分页信息）"
@@ -373,15 +376,19 @@ func RSSListEntries(c *gin.Context) {
 	perPage := queryInt(c, "per_page", 20)
 	// magnet 维度筛选：has / locked / unlocked / pikpak_saved / pikpak_failed。
 	magnet := c.Query("magnet")
+	// state 维度筛选：unread / read / starred（按当前用户）。
+	state := c.Query("state")
 
 	entries, total, err := svc.RSS.ListEntries(service.EntryFilter{
 		FeedID: feedID, GroupID: groupID,
 		Page: page, PerPage: perPage,
 		Magnet: magnet,
+		UserID: getCurrentUserID(c),
+		State:  state,
 	})
 	if err != nil {
 		// 非法筛选条件是客户端问题，不该报 500。
-		if errors.Is(err, service.ErrRSSBadMagnetFilter) {
+		if errors.Is(err, service.ErrRSSBadMagnetFilter) || errors.Is(err, service.ErrRSSBadStateFilter) {
 			FailBadRequest(c, err.Error())
 			return
 		}

@@ -394,6 +394,10 @@ func (s *AuthService) DeleteUser(targetID uint64, operator *model.User) error {
 		if err := tx.Unscoped().Where("user_id = ?", targetID).Delete(&model.AvatarCache{}).Error; err != nil {
 			return fmt.Errorf("清除用户头像缓存失败: %w", err)
 		}
+		// 删除 RSS 阅读状态（已读/星标是个人数据，没有外键，不删会永久残留）
+		if err := tx.Where("user_id = ?", targetID).Delete(&model.RSSEntryState{}).Error; err != nil {
+			return fmt.Errorf("清除用户阅读状态失败: %w", err)
+		}
 		// 删除用户
 		if err := tx.Delete(&model.User{}, targetID).Error; err != nil {
 			return fmt.Errorf("删除用户失败: %w", err)

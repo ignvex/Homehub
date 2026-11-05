@@ -23,6 +23,7 @@ func AutoMigrateModels() []any {
 		&RSSImage{},
 		&RSSImageSource{},
 		&RSSImageRef{},
+		&RSSEntryState{},
 		&Todo{},
 		&BalanceTarget{},
 	}

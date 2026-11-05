@@ -64,7 +64,8 @@ swag init -g cmd/homehub/main.go --parseDependency --parseInternal -o docs
 - 默认单测用 `sqlmock`（`internal/testutil.NewMockDB`），不需要真实数据库
 - 真实 PostgreSQL 用例由 `HOMEHUB_TEST_DB` 启用，未设置时 **自动 skip**
 - 集成测试各自建独立 schema，用完 DROP 自己的 schema：
-  `it_database`、`it_service`、`it_service_feed`、`it_service_sort`
+  `it_database`、`it_service`、`it_service_feed`、`it_service_sort`、
+  `it_service_state`
 - **绝不在 `public` 里建删表**。所有 DDL 必须带 schema 前缀——`search_path`
   里有 `public` 兜底，裸写 `DROP TABLE users` 会一路找到并删掉真表
 - 本地 DSN 见 `.codewhale/local-env.md`

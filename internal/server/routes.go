@@ -215,6 +215,14 @@ func registerRoutes(r *gin.Engine) {
 			rssRead.GET("/groups/:id", handler.RSSGetGroup)
 			rssRead.GET("/pikpak", handler.RSSPikPakStatus)
 			rssRead.GET("/schedule", handler.RSSSchedule)
+
+			// 阅读状态是个人数据而不是内容写：登录即可，5 级只读用户也能标记。
+			rssRead.PUT("/entries/:id/read", handler.RSSMarkEntryRead)
+			rssRead.DELETE("/entries/:id/read", handler.RSSMarkEntryUnread)
+			rssRead.PUT("/entries/:id/star", handler.RSSStarEntry)
+			rssRead.DELETE("/entries/:id/star", handler.RSSUnstarEntry)
+			rssRead.POST("/entries/mark-read", handler.RSSMarkEntriesRead)
+			rssRead.GET("/unread-counts", handler.RSSUnreadCounts)
 		}
 
 		rssWrite := contentWrite.Group("/rss")

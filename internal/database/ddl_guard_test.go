@@ -54,6 +54,7 @@ var homeHubTables = map[string]struct{}{
 	"rss_images":        {},
 	"rss_image_sources": {},
 	"rss_image_refs":    {},
+	"rss_entry_states":  {},
 	"todos":             {},
 	"pastes":            {},
 	"balance_targets":   {},
