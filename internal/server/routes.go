@@ -143,6 +143,9 @@ func registerRoutes(r *gin.Engine) {
 		// 放在公开组里就成了绕开它的旁路。
 		authRequired.GET("/search", handler.SearchAll)
 
+		// 书签导出：书签列表本身公开，但整库导出只给登录用户。
+		authRequired.GET("/bookmarks/export", handler.BookmarkExport)
+
 		// 认证
 		authRequired.POST("/auth/logout", handler.AuthLogout)
 		authRequired.POST("/auth/change-password", handler.AuthChangePassword)
@@ -173,6 +176,7 @@ func registerRoutes(r *gin.Engine) {
 			b.PUT("/:id", handler.BookmarkUpdate)
 			b.DELETE("/:id", handler.BookmarkDelete)
 			b.POST("/reorder", handler.BookmarkReorder)
+			b.POST("/import", handler.BookmarkImport)
 		}
 
 		// 配置管理（管理员）——可改数据库连接与 session_secret，必须限制角色

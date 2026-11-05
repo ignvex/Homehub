@@ -347,3 +347,22 @@ func TestRSSReadStateRoutesAreLoginOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestImportExportRoutesRequireAuth 确认导入导出端点都在认证之后。
+//
+// 书签列表是公开读的；整库导出若误挂到 publicAPI，就成了匿名下载全部书签。
+func TestImportExportRoutesRequireAuth(t *testing.T) {
+	r := newTestEngine()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/bookmarks/export"},
+		{http.MethodPost, "/api/v1/bookmarks/import"},
+		{http.MethodGet, "/api/v1/rss/opml"},
+		{http.MethodPost, "/api/v1/rss/opml"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 未登录时状态码 = %d，期望 401", tc.method, tc.path, w.Code)
+		}
+	}
+}
