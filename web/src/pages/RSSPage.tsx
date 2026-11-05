@@ -98,6 +98,10 @@ export function RSSPage() {
   const [selectedIndex, setSelectedIndex] = useState(-1)
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const entryRefs = useRef(new Map<number, HTMLElement>())
+  // 最新的条目状态：快捷键与点击拿到的 entry 可能是上一次渲染的快照，
+  // 连按 m 时若按快照判断，同一条会被重复计数。
+  const latestEntries = useRef<RSSEntry[]>([])
+  latestEntries.current = entries
   const [confirmMarkAll, setConfirmMarkAll] = useState(false)
   const [opmlResult, setOpmlResult] = useState<OPMLImportResult | null>(null)
   const selectedFeed = Number(feedParam) > 0 ? Number(feedParam) : null
@@ -225,8 +229,10 @@ export function RSSPage() {
   }
 
   /** setEntryRead 乐观更新已读状态；请求失败时回滚列表与计数。 */
-  async function setEntryRead(entry: RSSEntry, read: boolean) {
+  async function setEntryRead(snapshot: RSSEntry, read: boolean) {
+    const entry = latestEntries.current.find(item => item.id === snapshot.id) ?? snapshot
     if (isEntryRead(entry) === read) return
+    latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_read: read } : item)
     patchEntry(entry.id, { is_read: read })
     adjustCounts(entry, read ? -1 : 1)
     try {
@@ -240,8 +246,10 @@ export function RSSPage() {
   }
 
   /** toggleStar 乐观切换星标；失败回滚。 */
-  async function toggleStar(entry: RSSEntry) {
+  async function toggleStar(snapshot: RSSEntry) {
+    const entry = latestEntries.current.find(item => item.id === snapshot.id) ?? snapshot
     const next = !entry.is_starred
+    latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_starred: next } : item)
     patchEntry(entry.id, { is_starred: next })
     try {
       await rssApi.setStarred(entry.id, next)
