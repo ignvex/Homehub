@@ -69,6 +69,11 @@ type LogConfig struct {
 	Level    string `json:"level"`     // 日志级别：debug / info / warn / error，默认 "info"
 	Format   string `json:"format"`    // 日志格式：json / colored，默认 "json"
 	DBWriter bool   `json:"db_writer"` // 是否将日志写入数据库，默认 true
+	// RetentionDays 数据库日志保留天数，0 表示不限，默认 30，范围 0-3650。
+	//
+	// 0 是有意义的值（不清理），所以「键缺失」与「显式写 0」要区分，
+	// 见 loader.go 的 zeroableInts。
+	RetentionDays int `json:"retention_days"`
 }
 
 // ProxyEntry 代理服务器配置条目。

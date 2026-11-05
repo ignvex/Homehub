@@ -121,6 +121,7 @@ func createDefaultConfig(path string) error {
 	applyDefaults(&cfg)
 	// 无原始 JSON：所有开关取 fallback（模块默认启用）
 	applyBoolDefaults(nil, &cfg)
+	applyZeroableIntDefaults(nil, &cfg)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -284,6 +285,48 @@ func (cfg *Config) boolFlags() []boolFlag {
 	}
 }
 
+// intFlag 描述一个「0 有含义、缺失另有默认值」的整数配置。
+//
+// 与 boolFlag 同理：int 零值无法区分「没写」与「写了 0」。
+type intFlag struct {
+	section  string
+	field    string
+	target   *int
+	fallback int
+}
+
+// zeroableInts 汇总所有需要区分「缺失」与「显式 0」的整数项。
+func (cfg *Config) zeroableInts() []intFlag {
+	return []intFlag{
+		// 0 = 不清理；漏写时按 30 天清理，避免日志表无限增长。
+		{"log", "retention_days", &cfg.Log.RetentionDays, 30},
+	}
+}
+
+// applyZeroableIntDefaults 为缺失的整数项填入默认值，显式值（含 0）保留。
+func applyZeroableIntDefaults(raw map[string]json.RawMessage, cfg *Config) {
+	for _, f := range cfg.zeroableInts() {
+		if raw != nil && sectionHasKey(raw, f.section, f.field) {
+			continue
+		}
+		*f.target = f.fallback
+	}
+}
+
+// sectionHasKey 判断原始 JSON 的 section 段里是否写了 field 键。
+func sectionHasKey(raw map[string]json.RawMessage, section, field string) bool {
+	body, ok := raw[section]
+	if !ok {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return false
+	}
+	_, ok = fields[field]
+	return ok
+}
+
 // applyBoolDefaults 为缺失的布尔开关填入默认值。
 //
 // raw 为 nil 表示没有原始 JSON（新建配置文件），全部使用 fallback；
@@ -322,6 +365,7 @@ func applyExplicitBoolOverrides(data []byte, cfg *Config) {
 		return // 已通过结构体解析，这里失败说明数据异常，交给后续校验
 	}
 	applyBoolDefaults(raw, cfg)
+	applyZeroableIntDefaults(raw, cfg)
 }
 
 func applyBackgroundDefaults(background *BackgroundConfig) {
@@ -373,6 +417,9 @@ func validate(cfg *Config) error {
 	}
 	if !slices.Contains(validLogFormats, strings.ToLower(cfg.Log.Format)) {
 		errs = append(errs, "log.format 必须为 json/colored 之一")
+	}
+	if cfg.Log.RetentionDays < 0 || cfg.Log.RetentionDays > 3650 {
+		errs = append(errs, "log.retention_days 必须在 0-3650 之间（0 表示不限）")
 	}
 
 	validateBackground := func(path string, background BackgroundConfig) {

@@ -401,3 +401,43 @@ func TestRetentionCountRequiredWhenLimited(t *testing.T) {
 		t.Errorf("错误信息应指出 retention_count，实际: %v", err)
 	}
 }
+
+const retentionBase = `"database": {"host": "127.0.0.1", "port": 5432, "user": "u", "dbname": "d"},
+		"auth": {"session_secret": "abcdefghijklmnopqrstuvwxyz012345"}`
+
+// TestLogRetentionDaysDefaultsTo30 确认漏写时按 30 天清理。
+//
+// 日志表是写最频繁的表；不写这一项就无限增长，是最差的默认。
+func TestLogRetentionDaysDefaultsTo30(t *testing.T) {
+	path, _ := tempJSON(t, `{`+retentionBase+`, "log": {"level": "info"}}`)
+	if err := Load(path); err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if got := Get().Log.RetentionDays; got != 30 {
+		t.Errorf("RetentionDays = %d，期望默认 30", got)
+	}
+}
+
+// TestLogRetentionDaysExplicitZeroMeansUnlimited 防的是「写了 0 被当成没写」。
+//
+// 0 的含义是「不清理」；若被默认值覆盖成 30，用户明确要保留的日志会被删。
+func TestLogRetentionDaysExplicitZeroMeansUnlimited(t *testing.T) {
+	path, _ := tempJSON(t, `{`+retentionBase+`, "log": {"retention_days": 0}}`)
+	if err := Load(path); err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if got := Get().Log.RetentionDays; got != 0 {
+		t.Errorf("RetentionDays = %d，显式 0 应保留", got)
+	}
+}
+
+// TestLogRetentionDaysRangeValidated 确认越界值被拒绝。
+func TestLogRetentionDaysRangeValidated(t *testing.T) {
+	for _, v := range []string{"-1", "3651"} {
+		path, _ := tempJSON(t, `{`+retentionBase+`, "log": {"retention_days": `+v+`}}`)
+		err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "retention_days") {
+			t.Errorf("retention_days=%s 应被拒绝并指出字段，got %v", v, err)
+		}
+	}
+}

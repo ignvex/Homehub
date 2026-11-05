@@ -350,3 +350,26 @@ func TestUpdatePersistsRetentionUnlimited(t *testing.T) {
 		t.Fatal("重新加载后无限存储不该被默认值重新打开")
 	}
 }
+
+// TestUpdateWritesLogRetentionDays 确认设置页能改日志保留期，且 0 能落盘。
+//
+// LogUpdate 是逐字段白名单；新字段不登记就会被静默丢弃，界面显示
+// 「已保存」而文件没变。0（不限）是最容易丢的值。
+func TestUpdateWritesLogRetentionDays(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+
+	zero := 0
+	if err := NewConfigService().Update(UpdateConfigRequest{
+		Log: &LogUpdate{RetentionDays: &zero},
+	}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+
+	after := readConfigJSON(t, path)
+	if got, ok := after["log"].(map[string]any)["retention_days"]; !ok || got != float64(0) {
+		t.Fatalf("log.retention_days 应写入 0，实际 %v (存在=%v)", got, ok)
+	}
+	if got := config.Get().Log.RetentionDays; got != 0 {
+		t.Fatalf("热加载后 RetentionDays = %d，期望 0", got)
+	}
+}

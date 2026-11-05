@@ -187,6 +187,8 @@ type LogUpdate struct {
 	Level    *string `json:"level,omitempty"`
 	Format   *string `json:"format,omitempty"`
 	DBWriter *bool   `json:"db_writer,omitempty"`
+	// RetentionDays 数据库日志保留天数，0 表示不限。
+	RetentionDays *int `json:"retention_days,omitempty"`
 }
 
 // Update 将 Web 端的部分更新应用到 config.json。
@@ -251,6 +253,9 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 			}
 			if req.Log.DBWriter != nil {
 				logMap["db_writer"] = *req.Log.DBWriter
+			}
+			if req.Log.RetentionDays != nil {
+				logMap["retention_days"] = *req.Log.RetentionDays
 			}
 		}
 		if req.WebUI != nil {
