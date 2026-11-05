@@ -12,11 +12,13 @@ import (
 // ============================================================
 
 const (
-	CodeSuccess          = 0     // 成功
-	CodeBadRequest       = 10001 // 请求参数错误
-	CodeUnauthorized     = 10003 // 未认证
-	CodeNotFound         = 10005 // 资源不存在
-	CodeInternalError    = 10007 // 服务器内部错误
+	CodeSuccess       = 0     // 成功
+	CodeBadRequest    = 10001 // 请求参数错误
+	CodeUnauthorized  = 10003 // 未认证
+	CodeNotFound      = 10005 // 资源不存在
+	CodeInternalError = 10007 // 服务器内部错误
+	// CodeTooManyRequests 与 middleware.tooManyRequestsCode 一致（不能互相 import）。
+	CodeTooManyRequests  = 10009 // 请求过于频繁
 	CodeAuthFailed       = 20001 // 用户名或密码错误
 	CodePasswordTooWeak  = 20003 // 密码强度不足
 	CodeGroupNotFound    = 50001 // 书签分组不存在

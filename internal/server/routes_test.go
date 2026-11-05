@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ignvex/HomeHub/internal/handler"
+	"github.com/ignvex/HomeHub/internal/service"
 )
 
 // newTestEngine 构建与生产一致的路由表（不含静态资源与 swagger）。
@@ -271,5 +273,37 @@ func TestSearchRequiresAuth(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/search?q=x", nil))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("/search 未登录时状态码 = %d，期望 401", w.Code)
+	}
+}
+
+// TestPasteCreateIsRateLimitedPerIP 确认匿名粘贴接口真的挂了限流。
+//
+// 限流器本身在 middleware 包里有单测；这里防的是「中间件写好了
+// 但没挂到路由上」。超出每分钟 10 次后必须 429，且换一个 IP 不受影响。
+func TestPasteCreateIsRateLimitedPerIP(t *testing.T) {
+	handler.Init(&service.Services{})
+	t.Cleanup(func() { handler.Init(nil) })
+	r := newTestEngine()
+
+	post := func(ip string) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = ip + ":40000"
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	const ip = "198.51.100.77"
+	for i := range 10 {
+		if code := post(ip); code == http.StatusTooManyRequests {
+			t.Fatalf("第 %d 次就被限流", i+1)
+		}
+	}
+	if code := post(ip); code != http.StatusTooManyRequests {
+		t.Fatalf("第 11 次状态码 = %d，期望 429", code)
+	}
+	if code := post("198.51.100.78"); code == http.StatusTooManyRequests {
+		t.Fatal("其他 IP 不应被连带限流")
 	}
 }

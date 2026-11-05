@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/handler"
@@ -69,6 +70,16 @@ func registerSPAFallback(r *gin.Engine) {
 	})
 }
 
+// 路由级限流器。进程内只有一个路由表，包级变量即可；测试每次
+// registerRoutes 都会共享它们，用不同 RemoteAddr 隔离即可。
+var (
+	// pasteCreateLimiter：每 IP 每分钟 10 次匿名粘贴。
+	pasteCreateLimiter = middleware.NewRateLimiter(10, time.Minute)
+	// loginRequestLimiter：每 IP 每分钟 30 次登录请求，限制 bcrypt 的 CPU 开销。
+	// 失败锁定是另一道闸，在 handler 里。
+	loginRequestLimiter = middleware.NewRateLimiter(30, time.Minute)
+)
+
 // registerRoutes 向 Gin 引擎注册所有路由。
 //
 // 路由分为两组：
@@ -97,7 +108,9 @@ func registerRoutes(r *gin.Engine) {
 	auth := api.Group("/auth")
 	auth.Use(middleware.AuthOptional())
 	{
-		auth.POST("/login", handler.AuthLogin)
+		// 每次登录都要跑一次 bcrypt：先按 IP 限请求速率，再由 handler
+		// 按失败次数锁定（见 handler/auth.go）。
+		auth.POST("/login", middleware.RateLimitByIP(loginRequestLimiter), handler.AuthLogin)
 		auth.GET("/status", handler.AuthStatus)
 	}
 
@@ -113,7 +126,8 @@ func registerRoutes(r *gin.Engine) {
 
 		// 剪贴板（公开读写，无需认证）
 		publicAPI.GET("/pastes", handler.PasteList)
-		publicAPI.POST("/pastes", handler.PasteCreate)
+		// 匿名可写：按 IP 限流，挡住脚本灌库。
+		publicAPI.POST("/pastes", middleware.RateLimitByIP(pasteCreateLimiter), handler.PasteCreate)
 		publicAPI.GET("/pastes/:id", handler.PasteGet)
 		publicAPI.DELETE("/pastes/:id", handler.PasteDelete)
 	}
