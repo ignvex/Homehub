@@ -543,6 +543,7 @@ export function RSSPage() {
                       remote={remoteByURL[feed.url]}
                       onSelect={() => selectFeed(feed.id)}
                       dragging={draggingFeed === feed.id}
+                      draggable={canWrite}
                       onDragStart={() => setDraggingFeed(feed.id)}
                       onDragEnd={() => { setDraggingFeed(null); setDropTarget(null) }}
                     />)}
@@ -576,6 +577,7 @@ export function RSSPage() {
                   remote={remoteByURL[feed.url]}
                   onSelect={() => selectFeed(feed.id)}
                   dragging={draggingFeed === feed.id}
+                  draggable={canWrite}
                   onDragStart={() => setDraggingFeed(feed.id)}
                   onDragEnd={() => { setDraggingFeed(null); setDropTarget(null) }}
                 />)}
@@ -849,9 +851,11 @@ export function RSSPage() {
  * 侧栏是导航，不是控制台——把操作塞进这里会挤掉标题，而且每行
  * 五个可点区域，误触比操作本身更常发生。
  */
-function FeedNavItem({ feed, active, remote, dragging, onSelect, onDragStart, onDragEnd }: {
+function FeedNavItem({ feed, active, remote, dragging, draggable, onSelect, onDragStart, onDragEnd }: {
   feed: RSSFeed
   active: boolean
+  /** 只有内容写权限（≤3 级）才能拖拽归组。 */
+  draggable: boolean
   remote?: RemoteSubscription
   /** 这一项正在被拖拽。 */
   dragging: boolean
@@ -885,10 +889,10 @@ function FeedNavItem({ feed, active, remote, dragging, onSelect, onDragStart, on
 
   return <button
     type="button"
-    className={`rss-nav-item rss-draggable${active ? ' is-active' : ''}${dragging ? ' is-dragging' : ''}`}
+    className={`rss-nav-item${draggable ? ' rss-draggable' : ''}${active ? ' is-active' : ''}${dragging ? ' is-dragging' : ''}`}
     onClick={onSelect}
     title={hint || title}
-    draggable
+    draggable={draggable}
     onDragStart={event => {
       // 不设 data 也能拖，但部分浏览器（Safari）要求至少设一项才启动。
       event.dataTransfer.setData('text/plain', String(feed.id))
