@@ -622,6 +622,17 @@ html[data-theme="dark"] .home-header {
 .feed-item:hover { background: color-mix(in srgb, var(--color-interactive) 8%, transparent); }
 .feed-item:hover::before { opacity: .9; }
 .feed-item:hover .feed-item-title { color: var(--color-interactive); }
+/* 未读：标题前一个强调色小圆点。只做轻提示，首页不是阅读器。 */
+.feed-item.is-unread .feed-item-title::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--space-3);
+  border-radius: var(--radius-circle);
+  background: var(--color-interactive);
+  vertical-align: middle;
+}
 .feed-item-title {
   /* 不截断：标题有几行就显示几行，避免关键信息被省略号吞掉 */
   font-size: var(--text-lg);

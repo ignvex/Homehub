@@ -98,8 +98,9 @@ function FeedEntryRow({ entry }: { entry: RSSEntry }) {
   // 那时退回本地解析——否则首页卡片会在版本错开时集体变空。
   const summary = entry.excerpt ?? plainSummary(entry.content)
   return <li>
-    <a className="feed-item" href={entry.link} target="_blank" rel="noreferrer">
-      <span className="feed-item-title">{entry.title}</span>
+    {/* is_read 缺失（旧后端）时按已读处理，不给整张卡片都加未读标记。 */}
+    <a className={`feed-item${entry.is_read === false ? ' is-unread' : ''}`} href={entry.link} target="_blank" rel="noreferrer">
+      <span className="feed-item-title">{entry.is_read === false && <span className="visually-hidden">未读：</span>}{entry.title}</span>
       {summary && <span className="feed-item-summary">{summary}</span>}
       <span className="feed-item-meta">
         {entry.author && <><span className="feed-item-author">{entry.author}</span><span className="meta-dot" aria-hidden="true">·</span></>}
