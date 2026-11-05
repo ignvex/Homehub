@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -30,6 +31,13 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	idleTimeout       = 120 * time.Second
 )
+
+// Go 内置的 MIME 表没有 .webmanifest，文件服务会退回到系统的 mime.types；
+// 精简容器镜像里常常没有这个文件，manifest 就会按内容嗅探成 text/plain，
+// 浏览器随之拒绝把应用识别为可安装的 PWA。包初始化时补登记一次。
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // newHTTPServer 构造带超时设置的 http.Server。
 func newHTTPServer(addr string, h http.Handler) *http.Server {

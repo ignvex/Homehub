@@ -1,6 +1,7 @@
 package server
 
 import (
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,5 +64,12 @@ func TestClientIPIgnoresForwardedHeadersByDefault(t *testing.T) {
 func TestNewEngineRejectsInvalidProxy(t *testing.T) {
 	if _, err := newEngine([]string{"not-an-ip"}); err == nil {
 		t.Error("非法 trusted_proxies 应返回错误")
+	}
+}
+
+// TestWebManifestMIMEType 确认 manifest 的 MIME 不依赖宿主机的 /etc/mime.types。
+func TestWebManifestMIMEType(t *testing.T) {
+	if got := mime.TypeByExtension(".webmanifest"); got != "application/manifest+json" {
+		t.Fatalf(".webmanifest MIME = %q, want application/manifest+json", got)
 	}
 }
