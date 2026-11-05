@@ -56,6 +56,14 @@ export const todoStatuses: { value: TodoStatus; label: string }[] = [
   { value: 'paused', label: '已暂停' },
 ]
 
+/** 状态徽章的色调。待办页与搜索结果共用。 */
+export const todoStatusTone: Record<TodoStatus, 'neutral' | 'success' | 'warning' | 'info'> = { planned: 'neutral', pending: 'warning', in_progress: 'info', completed: 'success', paused: 'neutral' }
+
+/** todoStatusLabel 返回状态的中文名；未知值原样返回。 */
+export function todoStatusLabel(status: string): string {
+  return todoStatuses.find(item => item.value === status)?.label ?? status
+}
+
 export const todosApi = {
   list: (status: TodoStatus | '', sort: TodoSort, owner: TodoOwner = '') => {
     const query = new URLSearchParams({ sort })

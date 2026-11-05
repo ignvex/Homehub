@@ -724,9 +724,16 @@ a:focus-visible,
   border-bottom: 1px solid var(--color-divider);
 }
 .result-row:hover { background: color-mix(in srgb, var(--color-interactive) 6%, transparent); }
-.result-row span {
+/* 只管直接子级：嵌在里面的状态徽章要保留自己的色调。 */
+.result-row > span {
   color: var(--color-text-secondary);
   font-size: var(--text-xs);
+}
+.result-row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
 }
 .result-list > div:last-child .result-row { border-bottom: 0; }
 

@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { PageState, Pagination } from '@/components/WorkspaceUI'
+import { PageState, Pagination, StatusBadge } from '@/components/WorkspaceUI'
 import { useHotkeys } from '@/hooks/useHotkeys'
 import { errorMessage } from '@/hooks/useNotice'
 import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
 import { isAbortError } from '@/lib/api'
 import { SEARCH_INPUT_ID, searchApi, type SearchResult, type SearchScope } from '@/lib/search'
 import { rssApi, type RSSFeed } from '@/lib/rss'
+import { todoStatusLabel, todoStatusTone, type TodoStatus } from '@/lib/todos'
+import { formatDateTime } from '@/lib/types'
+import { relativeTime } from '@/lib/format'
 
 const scopes: { value: SearchScope; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'bookmarks', label: '书签' },
   { value: 'rss', label: 'RSS' },
+  { value: 'todos', label: '待办' },
+  { value: 'pastes', label: '剪贴板' },
 ]
 
 const perPage = 20
@@ -142,7 +147,11 @@ export function SearchPage() {
 
   const bookmarks = result?.bookmarks ?? []
   const entries = result?.rss_entries ?? []
-  const hitCount = (result?.bookmarks_total ?? 0) + (result?.rss_entries_total ?? 0)
+  const todos = result?.todos ?? []
+  const pastes = result?.pastes ?? []
+  const hitCount = (result?.bookmarks_total ?? 0) + (result?.rss_entries_total ?? 0) + (result?.todos_total ?? 0) + (result?.pastes_total ?? 0)
+  // 订阅源筛选只作用于 RSS；其余范围下禁用，免得看起来像能限定书签或待办。
+  const feedFilterApplies = scope === 'all' || scope === 'rss'
 
   return <div className="business-page">
     <div className="page-toolbar page-toolbar--end">
@@ -156,14 +165,14 @@ export function SearchPage() {
         autoFocus
         value={query}
         onChange={event => setQuery(event.target.value)}
-        placeholder="搜索书签、RSS 标题与正文"
+        placeholder="搜索书签、RSS、待办与剪贴板"
         aria-label="搜索关键词"
         required
       />
       <select value={scope} onChange={event => { setPage(1); setScopeParam(event.target.value) }} aria-label="搜索范围">
         {scopes.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
-      <select value={feedId} onChange={event => { setPage(1); setFeedId(Number(event.target.value)) }} aria-label="限定订阅源">
+      <select value={feedId} disabled={!feedFilterApplies} onChange={event => { setPage(1); setFeedId(Number(event.target.value)) }} aria-label="限定订阅源">
         <option value={0}>所有订阅源</option>
         {feeds.map(feed => <option key={feed.id} value={feed.id}>{feed.title || feed.url}</option>)}
       </select>
@@ -190,7 +199,7 @@ export function SearchPage() {
         ? <PageState
           kind="empty"
           title="输入关键词开始检索"
-          description="书签匹配标题、URL 与分组名；RSS 条目匹配标题、正文与作者。"
+          description="书签匹配标题、URL 与分组名；RSS 条目匹配标题、正文与作者；待办匹配标题与说明；剪贴板只匹配未过期的内容。"
         />
         : hitCount === 0
           ? <PageState
@@ -231,10 +240,38 @@ export function SearchPage() {
               </div>
             </section>}
 
+            {todos.length > 0 && <section className="data-panel">
+              <header className="data-panel-head">
+                <div><h2>待办</h2><p>共 {result.todos_total} 条</p></div>
+              </header>
+              <div className="result-list">
+                {todos.map(item => <a className="result-row" key={item.id} href="/todos">
+                  <strong><Highlight text={item.title} query={result.query} /></strong>
+                  <span className="result-row-meta">
+                    <StatusBadge tone={todoStatusTone[item.status as TodoStatus] ?? 'neutral'}>{todoStatusLabel(item.status)}</StatusBadge>
+                    {item.due_date ? `截止 ${formatDateTime(item.due_date)}` : '未设截止日期'}
+                  </span>
+                  {item.snippet && <span><Highlight text={item.snippet} query={result.query} /></span>}
+                </a>)}
+              </div>
+            </section>}
+
+            {pastes.length > 0 && <section className="data-panel">
+              <header className="data-panel-head">
+                <div><h2>剪贴板</h2><p>共 {result.pastes_total} 条</p></div>
+              </header>
+              <div className="result-list">
+                {pastes.map(item => <a className="result-row" key={item.id} href={`/paste/${encodeURIComponent(item.public_id)}`}>
+                  <strong><Highlight text={item.snippet} query={result.query} /></strong>
+                  <span>创建于 {relativeTime(item.created_at) || formatDateTime(item.created_at)} · {formatDateTime(item.expires_at)} 过期</span>
+                </a>)}
+              </div>
+            </section>}
+
             <Pagination
               page={page}
               perPage={result.per_page || perPage}
-              total={Math.max(result.bookmarks_total, result.rss_entries_total)}
+              total={Math.max(result.bookmarks_total, result.rss_entries_total, result.todos_total ?? 0, result.pastes_total ?? 0)}
               disabled={loading}
               onChange={setPage}
             />

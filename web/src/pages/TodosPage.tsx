@@ -6,12 +6,11 @@ import { errorMessage, useNotice } from '@/hooks/useNotice'
 import { useQueryState } from '@/hooks/useQueryState'
 import { useAuth } from '@/lib/auth'
 import { CONTENT_WRITE_LEVEL, LEVEL_MEMBER, hasLevel } from '@/lib/permissions'
-import { todosApi, todoStatuses, type Todo, type TodoOwner, type TodoSort, type TodoStatus, type UserBrief } from '@/lib/todos'
+import { todosApi, todoStatusLabel, todoStatusTone, todoStatuses, type Todo, type TodoOwner, type TodoSort, type TodoStatus, type UserBrief } from '@/lib/todos'
 import { formatDateTime } from '@/lib/types'
 
 /** priority 以字符串保存草稿，避免清空输入框时 Number('') 变成 0 被静默提交。 */
 const emptyDraft = { title: '', description: '', priority: '0', due_date: '', assignee_id: '' }
-const statusTone: Record<TodoStatus, 'neutral' | 'success' | 'warning' | 'info'> = { planned: 'neutral', pending: 'warning', in_progress: 'info', completed: 'success', paused: 'neutral' }
 const sortValues: TodoSort[] = ['priority', 'due_date', 'created_at']
 const owners: { value: TodoOwner; label: string }[] = [
   { value: '', label: '全部' },
@@ -131,10 +130,9 @@ export function TodosPage() {
       ? <PageState kind="empty" title="没有符合条件的待办" description={canCreate ? '新建一项任务，或调整筛选条件。' : '调整筛选条件试试。'} action={canCreate ? <button className="button button--primary" onClick={() => openDraft({ ...emptyDraft })}>新建待办</button> : undefined} />
       : <div className="table-wrap"><table className="data-table"><thead><tr><th>任务</th><th>状态</th><th>优先级</th><th>截止日期</th><th>创建者</th><th>负责人</th>{anyActionable && <th>操作</th>}</tr></thead><tbody>{items.map((item, index) => {
         const can = permissions(item)
-        const label = todoStatuses.find(option => option.value === item.status)?.label
         return <tr key={item.id}>
           <td data-label="任务"><strong>{item.title}</strong>{item.description && <p className="table-subtext">{item.description}</p>}</td>
-          <td data-label="状态">{can.status && <select value={item.status} disabled={busy} onChange={event => void run(() => todosApi.updateStatus(item.id, event.target.value as TodoStatus), '任务状态已更新')} aria-label={`${item.title}的状态`}>{todoStatuses.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}<StatusBadge tone={statusTone[item.status]}>{label}</StatusBadge></td>
+          <td data-label="状态">{can.status && <select value={item.status} disabled={busy} onChange={event => void run(() => todosApi.updateStatus(item.id, event.target.value as TodoStatus), '任务状态已更新')} aria-label={`${item.title}的状态`}>{todoStatuses.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}<StatusBadge tone={todoStatusTone[item.status]}>{todoStatusLabel(item.status)}</StatusBadge></td>
           <td data-label="优先级">{item.priority}</td>
           <td data-label="截止日期">{item.due_date ? formatDateTime(item.due_date) : '未设置'}</td>
           <td data-label="创建者"><UserTag user={item.creator} empty="未知" /></td>
