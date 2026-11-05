@@ -41,6 +41,24 @@ func newHTTPServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
+// newEngine 创建 Gin 引擎并设置可信代理。
+//
+// Gin 默认信任所有来源的 X-Forwarded-For，c.ClientIP() 会采用客户端
+// 自己写的值，按 IP 的限流与登录锁定就形同虚设。这里把默认改为
+// 「谁都不信」：trustedProxies 为空时 ClientIP 只取 TCP 直连地址。
+func newEngine(trustedProxies []string) (*gin.Engine, error) {
+	r := gin.New()
+	// 传 nil 表示不信任任何代理；空切片同样处理，避免 Gin 内部的歧义。
+	var proxies []string
+	if len(trustedProxies) > 0 {
+		proxies = trustedProxies
+	}
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		return nil, fmt.Errorf("server.trusted_proxies 无效: %w", err)
+	}
+	return r, nil
+}
+
 // Run 启动 HTTP 服务并阻塞，直至收到 SIGINT/SIGTERM 后优雅关闭。
 //
 // 启动序列：
@@ -64,7 +82,10 @@ func Run() error {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	r := gin.New()
+	r, err := newEngine(cfg.Server.TrustedProxies)
+	if err != nil {
+		return err
+	}
 
 	// 全局中间件
 	r.Use(gin.Recovery())

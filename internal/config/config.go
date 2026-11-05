@@ -17,6 +17,15 @@ import (
 type ServerConfig struct {
 	Host string `json:"host"` // 监听地址，默认 "0.0.0.0"
 	Port int    `json:"port"` // 监听端口，默认 8080
+
+	// TrustedProxies 可信反向代理的 IP 或 CIDR。
+	//
+	// 为空（默认）时不信任任何转发头（X-Forwarded-For / X-Real-IP），
+	// 客户端 IP 一律取 TCP 直连地址。部署在反向代理后面时必须填上
+	// 代理的地址，否则所有请求看起来都来自代理，按 IP 的限流与登录
+	// 锁定会把全体用户当成同一个人；反过来，若信任所有来源，客户端
+	// 伪造 X-Forwarded-For 就能绕过这两道闸。
+	TrustedProxies []string `json:"trusted_proxies"`
 }
 
 // DatabaseConfig 数据库连接配置。

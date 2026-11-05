@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -383,6 +384,16 @@ func applyBackgroundDefaults(background *BackgroundConfig) {
 	}
 }
 
+// validProxyAddr 判断 s 是否为合法的 IP 或 CIDR。
+func validProxyAddr(s string) bool {
+	if strings.Contains(s, "/") {
+		_, err := netip.ParsePrefix(s)
+		return err == nil
+	}
+	_, err := netip.ParseAddr(s)
+	return err == nil
+}
+
 // validate 校验配置的必填字段和取值范围。
 //
 // 返回聚合错误，一次性报告所有不合法项。
@@ -391,6 +402,11 @@ func validate(cfg *Config) error {
 
 	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
 		errs = append(errs, "server.port 必须在 1-65535 之间")
+	}
+	for _, p := range cfg.Server.TrustedProxies {
+		if !validProxyAddr(p) {
+			errs = append(errs, fmt.Sprintf("server.trusted_proxies 含非法地址 %q，应为 IP 或 CIDR", p))
+		}
 	}
 
 	if cfg.Database.Host == "" {

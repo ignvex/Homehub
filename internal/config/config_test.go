@@ -441,3 +441,24 @@ func TestLogRetentionDaysRangeValidated(t *testing.T) {
 		}
 	}
 }
+
+// TestTrustedProxiesValidated 确认 trusted_proxies 只接受 IP / CIDR。
+//
+// 非法值若被静默忽略，部署者会以为配置生效，实际上限流仍按代理地址计。
+func TestTrustedProxiesValidated(t *testing.T) {
+	ok := `{` + retentionBase + `, "server": {"trusted_proxies": ["10.0.0.1", "172.16.0.0/12", "::1"]}}`
+	path, _ := tempJSON(t, ok)
+	if err := Load(path); err != nil {
+		t.Fatalf("合法地址被拒: %v", err)
+	}
+	if got := Get().Server.TrustedProxies; len(got) != 3 {
+		t.Errorf("TrustedProxies = %v", got)
+	}
+	for _, v := range []string{`"nginx"`, `"10.0.0.0/33"`, `"1.2.3"`} {
+		path, _ := tempJSON(t, `{`+retentionBase+`, "server": {"trusted_proxies": [`+v+`]}}`)
+		err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "trusted_proxies") {
+			t.Errorf("trusted_proxies=%s 应被拒绝, got %v", v, err)
+		}
+	}
+}
