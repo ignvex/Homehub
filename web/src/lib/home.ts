@@ -21,6 +21,8 @@ export const homeApi = {
   auth: () => api.get<AuthStatus>('/auth/status'),
   bookmarks: () => api.get<BookmarkGroup[]>('/bookmark-groups'),
   feeds: () => api.get<RSSFeed[]>('/rss/feeds'),
-  entries: () => api.get<RSSPage>('/rss/entries?page=1&per_page=50'),
+  /** 单个订阅源的最新条目。首页每张卡片各取一次，避免全局前 N 条被少数活跃源占满。 */
+  feedEntries: (feedID: number, perPage: number, init?: RequestInit) =>
+    api.get<RSSPage>(`/rss/entries?page=1&per_page=${perPage}&feed_id=${feedID}`, init),
   logout: () => api.post<void>('/auth/logout'),
 }

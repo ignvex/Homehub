@@ -5,6 +5,8 @@ import { UserAvatar } from '@/components/UserAvatar'
 import { homeApi, type AuthStatus, type BackgroundSettings, type Bookmark, type BookmarkGroup, type MediaAsset, type RSSEntry, type RSSFeed } from '@/lib/home'
 import { absoluteDate, hostnameOf, isUsableTimestamp, plainSummary, relativeTime } from '@/lib/format'
 import { MagnetCopyButton } from '@/components/MagnetCopyButton'
+import { PageState } from '@/components/WorkspaceUI'
+import { isAbortError } from '@/lib/api'
 import { getWebUIConfig } from '@/lib/webui'
 import { useAuth } from '@/lib/auth'
 import { useNavigate } from '@/lib/navigation'
@@ -335,7 +337,10 @@ export function HomePage() {
   const navigate = useNavigate()
   const [groups, setGroups] = useState<BookmarkGroup[]>([])
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
-  const [entries, setEntries] = useState<RSSEntry[]>([])
+  // 每个订阅源各自的条目；'error' 表示该源读取失败。
+  const [entriesByFeed, setEntriesByFeed] = useState<Record<number, RSSEntry[] | 'error'>>({})
+  const [loadError, setLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
   const [background, setBackground] = useState(fallbackBackground)
   const [assets, setAssets] = useState<MediaAsset[]>([])
   const [backgroundIndex, setBackgroundIndex] = useState(0)
@@ -347,30 +352,32 @@ export function HomePage() {
   const searchRef = useRef<HTMLInputElement>(null)
   const customizeButtonRef = useRef<HTMLButtonElement>(null)
 
-  // 并行加载所有数据（公开端点不需要登录）
+  // 背景配置单独加载：失败时保持默认渐变背景，不影响内容区。
   useEffect(() => {
     let cancelled = false
-    Promise.allSettled([
-      getWebUIConfig(),
-      homeApi.bookmarks(),
-      homeApi.feeds(),
-      homeApi.entries(),
-    ]).then(([webuiResult, groupsResult, feedsResult, entriesResult]) => {
-      if (cancelled) return
-      if (webuiResult.status === 'fulfilled') {
-        setBackground(webuiResult.value.home.background)
-        setAssets(webuiResult.value.home.assets)
-      }
-      if (groupsResult.status === 'fulfilled') setGroups(groupsResult.value || [])
-      if (feedsResult.status === 'fulfilled') setFeeds(feedsResult.value || [])
-      if (entriesResult.status === 'fulfilled') {
-        setEntries(entriesResult.value.list || [])
-      }
-      setLoading(false)
-    })
-    // 认证状态由 App 的 AuthContext 统一维护（含页面重新可见时的刷新），这里不再重复请求。
+    getWebUIConfig()
+      .then(config => { if (!cancelled) { setBackground(config.home.background); setAssets(config.home.assets) } })
+      .catch(() => undefined)
     return () => { cancelled = true }
   }, [])
+
+  // 书签与订阅源（公开端点不需要登录）。认证状态由 App 的 AuthContext 统一维护，这里不再重复请求。
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    Promise.allSettled([homeApi.bookmarks(), homeApi.feeds()]).then(([groupsResult, feedsResult]) => {
+      if (cancelled) return
+      const failed: string[] = []
+      if (groupsResult.status === 'fulfilled') setGroups(groupsResult.value || [])
+      else failed.push('书签')
+      if (feedsResult.status === 'fulfilled') setFeeds(feedsResult.value || [])
+      else failed.push('订阅')
+      // 失败与「真的没有内容」必须区分：否则网络出错时首页会显示「这个首页还空着」。
+      setLoadError(failed.length ? `${failed.join('与')}读取失败，请检查网络后重试。` : '')
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [reloadKey])
 
   const selectedAssets = useMemo(
     () => background.selected_asset_ids
@@ -425,6 +432,23 @@ export function HomePage() {
 
   const loggedIn = auth.logged_in
   const hasContent = visibleGroups.length > 0 || visibleFeeds.length > 0
+
+  // 每张订阅卡片单独请求自己的最新 N 条（并发）。全局取前 50 条再按源过滤
+  // 会让更新少的源永远拿不到条目，误报「还没有已抓取的文章」。
+  const visibleFeedKey = visibleFeeds.map(feed => feed.id).join(',')
+  useEffect(() => {
+    if (!visibleFeedKey) return
+    const ids = visibleFeedKey.split(',').map(Number)
+    const controller = new AbortController()
+    Promise.all(ids.map(id => homeApi.feedEntries(id, MAX_ENTRIES_PER_FEED, { signal: controller.signal })
+      .then(result => [id, result.list ?? []] as const)
+      .catch(cause => [id, isAbortError(cause) ? null : 'error'] as const)))
+      .then(results => {
+        if (controller.signal.aborted) return
+        setEntriesByFeed(Object.fromEntries(results.filter(([, value]) => value !== null)) as Record<number, RSSEntry[] | 'error'>)
+      })
+    return () => controller.abort()
+  }, [visibleFeedKey, reloadKey])
 
   function updatePreferences(next: Preferences) {
     setPreferences(next)
@@ -515,7 +539,8 @@ export function HomePage() {
         </form>
       </section>
 
-      {loading ? <HomeSkeleton /> : hasContent ? <>
+      {loading ? <HomeSkeleton /> : loadError && !hasContent ? <PageState kind="error" title="首页内容读取失败" description={loadError} action={<button type="button" className="home-cta home-cta--primary" onClick={() => setReloadKey(key => key + 1)}>重试</button>} /> : hasContent ? <>
+        {loadError && <PageState kind="error" title="部分内容读取失败" description={loadError} action={<button type="button" className="home-cta home-cta--primary" onClick={() => setReloadKey(key => key + 1)}>重试</button>} />}
         {visibleGroups.length > 0 && <section className="home-block" aria-labelledby="home-bookmarks-title">
           <header className="block-head">
             {/* 区块名仅供辅助技术，视觉上只留管理入口 */}
@@ -557,9 +582,8 @@ export function HomePage() {
           </header>
           <div className="feed-grid">
             {visibleFeeds.map(feed => {
-              const feedEntries = entries
-                .filter(entry => entry.feed_ids?.includes(feed.id))
-                .slice(0, MAX_ENTRIES_PER_FEED)
+              const feedState = entriesByFeed[feed.id]
+              const feedEntries = Array.isArray(feedState) ? feedState.slice(0, MAX_ENTRIES_PER_FEED) : []
               const feedLink = feed.site_url || feed.url
               const feedName = feed.title || '未命名订阅'
               return <article className="feed-card" key={feed.id}>
@@ -572,11 +596,15 @@ export function HomePage() {
                     <LinkArrow />
                   </a>
                 </header>
-                {feedEntries.length
-                  ? <ul className="feed-list">
-                    {feedEntries.map(entry => <FeedEntryRow key={entry.id} entry={entry} />)}
-                  </ul>
-                  : <p className="feed-empty">这个订阅还没有已抓取的文章。</p>}
+                {feedState === undefined
+                  ? <p className="feed-empty" role="status">正在读取…</p>
+                  : feedState === 'error'
+                    ? <p className="feed-empty" role="alert">条目读取失败。<button type="button" className="feed-retry" onClick={() => setReloadKey(key => key + 1)}>重试</button></p>
+                    : feedEntries.length
+                      ? <ul className="feed-list">
+                        {feedEntries.map(entry => <FeedEntryRow key={entry.id} entry={entry} />)}
+                      </ul>
+                      : <p className="feed-empty">这个订阅还没有已抓取的文章。</p>}
               </article>
             })}
           </div>

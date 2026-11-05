@@ -673,8 +673,18 @@ html[data-theme="dark"] .home-header {
 /* 复制成功：换成绿色对钩，避免用户反复点击确认是否命中 */
 .feed-magnet.is-copied {
   background: var(--color-success);
-  color: #fffdf4;
+  color: var(--color-nav-text);
   transform: none;
+}
+.feed-retry {
+  margin-left: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-link);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 .feed-empty {
   flex: 1;
