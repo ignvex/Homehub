@@ -238,6 +238,7 @@ a:focus-visible,
   border-radius: var(--radius-panel);
   background: var(--color-surface);
 }
+.data-panel-body { padding: var(--panel-body-pad); }
 .data-panel-head {
   display: flex;
   align-items: center;
