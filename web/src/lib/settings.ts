@@ -75,7 +75,8 @@ export interface SafeConfig {
   server: { host: string; port: number }
   database: { host: string; port: number; user: string; dbname: string; sslmode: string }
   auth: { username: string }
-  log: { level: string; format: string; db_writer: boolean }
+  /** retention_days：数据库日志保留天数，0 表示永久保留，范围 0–3650。 */
+  log: { level: string; format: string; db_writer: boolean; retention_days: number }
   background: BackgroundSettings
   proxy: ProxyConfig
   gravatar: GravatarConfig
@@ -183,7 +184,7 @@ interface BackendSafeConfig {
   server: SafeConfig['server']
   database: SafeConfig['database']
   auth: SafeConfig['auth']
-  log: SafeConfig['log']
+  log: Omit<SafeConfig['log'], 'retention_days'> & { retention_days?: number }
   webui?: {
     home?: { background?: BackgroundSettings }
     login?: { background?: BackgroundSettings; layout?: string }
@@ -208,7 +209,7 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
     server: raw.server,
     database: raw.database,
     auth: raw.auth,
-    log: raw.log,
+    log: { ...raw.log, retention_days: raw.log.retention_days ?? 30 },
     background: raw.webui?.home?.background ?? defaultBackground,
     proxy: {
       entries: raw.proxy?.entries ?? [],

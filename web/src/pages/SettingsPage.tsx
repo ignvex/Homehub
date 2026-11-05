@@ -339,7 +339,7 @@ export function SettingsPage() {
         <Section
           section="log"
           title="日志"
-          description="日志级别与输出格式，改动即时生效。"
+          description="日志级别、输出格式与数据库日志保留期，改动即时生效。"
           dirty={dirty('log')}
           saving={saving === 'log'}
           onSave={event => void saveSection('log', event)}
@@ -364,6 +364,11 @@ export function SettingsPage() {
               <input type="checkbox" checked={draft.log.db_writer} onChange={event => patch(current => ({ ...current, log: { ...current.log, db_writer: event.target.checked } }))} />
               <span>日志写入数据库</span>
             </label>
+            <Field label="数据库日志保留天数">
+              <NumberInput min="0" max="3650" step="1" value={draft.log.retention_days}
+                onChange={value => patch(current => ({ ...current, log: { ...current.log, retention_days: value } }))} />
+              <span className="settings-hint">超过天数的数据库日志会被自动删除；0 表示永久保留。</span>
+            </Field>
           </div>
         </Section>
 
