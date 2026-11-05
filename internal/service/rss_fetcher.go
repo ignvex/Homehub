@@ -200,6 +200,14 @@ func buildRSSHTTPClientWith(cfg *config.Config, allowPrivate bool) *req.Client {
 // 代理的固有边界；重定向仍逐跳校验。SOCKS5 的拨号目标就是目标地址，
 // 校验照常生效。
 func guardDial(transport *http.Transport) *http.Transport {
+	return guardDialWith(transport, imageAllowPrivate)
+}
+
+// guardDialWith 与 guardDial 相同，但由调用方决定何时放行内网。
+//
+// allowPrivate 在每次建连时调用（支持热更新）；为 nil 表示永不放行。
+// 不同出网模块各有自己的开关，不能共用图片缓存那一个。
+func guardDialWith(transport *http.Transport, allowPrivate func() bool) *http.Transport {
 	if transport.Proxy != nil {
 		return transport
 	}
@@ -211,7 +219,7 @@ func guardDial(transport *http.Transport) *http.Transport {
 	}
 
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if imageAllowPrivate() {
+		if allowPrivate != nil && allowPrivate() {
 			return base(ctx, network, addr)
 		}
 

@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,4 +294,74 @@ func writeBalanceConfig(t *testing.T) string {
 		t.Fatalf("写入配置失败: %v", err)
 	}
 	return path
+}
+
+// TestBalanceFetchRejectsLoopbackTarget 防的是借余额查询探测内网。
+//
+// base_url 由编辑者填写，HomeHub 会带着 Authorization 头去请求它。
+// 不拦截的话，一个 3 级账号就能让服务端访问 127.0.0.1 上的任意服务。
+func TestBalanceFetchRejectsLoopbackTarget(t *testing.T) {
+	loadConfigWith(t, `,"balance_monitor": {"enabled": true}`)
+
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Write([]byte(`{"is_available": true, "balance_infos": []}`))
+	}))
+	defer srv.Close()
+
+	svc := NewBalanceService(nil)
+	_, _, err := svc.fetchDeepSeek(&model.BalanceTarget{Name: "x", Type: "deepseek", BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("指向 127.0.0.1 的监控点应被拒绝")
+	}
+	if hit {
+		t.Fatal("请求不应到达回环地址上的服务")
+	}
+}
+
+// TestBalanceFetchAllowsLoopbackWhenExplicitlyEnabled 确认开关真的放行。
+//
+// 自建中转跑在内网是正当场景；开关若不生效，用户只能关掉整个模块。
+func TestBalanceFetchAllowsLoopbackWhenExplicitlyEnabled(t *testing.T) {
+	loadConfigWith(t, `,"balance_monitor": {"enabled": true, "allow_private_hosts": true}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"is_available": true, "balance_infos": [{"currency": "CNY", "total_balance": "1.5"}]}`))
+	}))
+	defer srv.Close()
+
+	svc := NewBalanceService(nil)
+	got, _, err := svc.fetchDeepSeek(&model.BalanceTarget{Name: "x", Type: "deepseek", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("显式放行后应能访问: %v", err)
+	}
+	if got != 1.5 {
+		t.Fatalf("余额 = %v，期望 1.5", got)
+	}
+}
+
+// TestBalanceErrorOmitsResponseBody 防的是把对方响应体回显到前端。
+//
+// 错误会写进 last_error 并原样返回给浏览器；响应体内容不受控。
+func TestBalanceErrorOmitsResponseBody(t *testing.T) {
+	loadConfigWith(t, `,"balance_monitor": {"enabled": true, "allow_private_hosts": true}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("internal-admin-panel-secret"))
+	}))
+	defer srv.Close()
+
+	svc := NewBalanceService(nil)
+	_, _, err := svc.fetchDeepSeek(&model.BalanceTarget{Name: "x", Type: "deepseek", BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("403 应返回错误")
+	}
+	if strings.Contains(err.Error(), "internal-admin-panel-secret") {
+		t.Fatalf("错误信息不应包含响应体: %v", err)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("错误信息应保留状态码: %v", err)
+	}
 }

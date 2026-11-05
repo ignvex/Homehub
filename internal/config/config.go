@@ -280,6 +280,11 @@ type BalanceTarget struct {
 type BalanceMonitorConfig struct {
 	Enabled                bool            `json:"enabled"`                  // 模块总开关
 	RefreshIntervalSeconds int             `json:"refresh_interval_seconds"` // 后台刷新间隔（秒），默认 60
+	// AllowPrivateHosts 是否允许监控点指向内网/回环/链路本地地址，默认 false。
+	//
+	// base_url 由内容编辑者填写，默认在连接层拦截内部地址，避免借余额查询
+	// 探测内网；自建中转跑在内网时再显式打开。
+	AllowPrivateHosts bool `json:"allow_private_hosts"`
 	Targets                []BalanceTarget `json:"targets"`                  // 监控点列表
 }
 

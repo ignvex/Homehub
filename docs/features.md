@@ -377,6 +377,9 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 - 目前支持的 `type`：`deepseek`
 - 每个 target 的 `api_key` **必填**（与 `enabled` 无关，缺失会导致配置校验失败）
 - `refresh_interval_seconds` 范围 10–3600
+- `allow_private_hosts`（默认 false）：默认在连接层拒绝内网/回环/链路本地
+  地址，防止借余额查询探测内网；自建中转在内网时再显式打开
+- 查询失败时错误信息只含 HTTP 状态码，对方响应体只写 debug 日志
 - 前端用 Chart.js 饼图展示
 
 配置：
@@ -396,7 +399,7 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 
 ## 全局搜索
 
-`GET /api/v1/search?q=关键词&scope=all|bookmarks|rss`
+`GET /api/v1/search?q=关键词&scope=all|bookmarks|rss`（需登录）
 
 - 使用 `ILIKE '%关键词%'`，依赖 pg_trgm GIN 索引加速
 - 索引由 `database.EnsureSearchIndexes` 在启动时自动创建；

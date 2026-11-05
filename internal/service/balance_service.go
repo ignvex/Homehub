@@ -114,10 +114,12 @@ type BalanceService struct {
 
 // NewBalanceService 创建余额监控服务实例。
 func NewBalanceService(db *gorm.DB) *BalanceService {
-	transport := &http.Transport{
+	// base_url 由编辑者填写，等同于一个可配置的出网目标：连接层校验
+	// 解析后的 IP，默认拒绝内网/回环/链路本地，防止被用来探测内网。
+	transport := guardDialWith(&http.Transport{
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     30 * time.Second,
-	}
+	}, balanceAllowPrivate)
 	client := req.C().
 		SetTimeout(15 * time.Second).
 		SetCommonHeaders(map[string]string{
@@ -131,6 +133,15 @@ func NewBalanceService(db *gorm.DB) *BalanceService {
 		client:  client,
 	}
 }
+
+// balanceAllowPrivate 返回是否放行内网监控点（热更新生效，默认 false）。
+func balanceAllowPrivate() bool {
+	cfg := config.Get()
+	return cfg != nil && cfg.BalanceMonitor.AllowPrivateHosts
+}
+
+// balanceErrorBodyLogLimit 是失败响应体写入 debug 日志的最大字符数。
+const balanceErrorBodyLogLimit = 512
 
 // ============================================================
 // 迁移：config.json → 数据库
@@ -679,7 +690,11 @@ func (s *BalanceService) fetchDeepSeek(t *model.BalanceTarget) (float64, string,
 		return 0, "", fmt.Errorf("读取响应失败: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		// 响应体不进错误信息：错误会回给前端并写进 last_error，而对方
+		// 返回什么完全不受控（可能是内网服务的页面）。截断后只留 debug 日志。
+		logger.Debug("[balance] 非 200 响应", "name", t.Name, "status", resp.StatusCode,
+			"body", model.TruncateEllipsis(string(body), balanceErrorBodyLogLimit))
+		return 0, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var dsResp deepseekBalanceResp
