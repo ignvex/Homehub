@@ -21,40 +21,105 @@ export function Notice({ message, tone = 'success', onDismiss }: { message?: str
   )
 }
 
-export function Modal({ open, title, description, children, onClose, footer, size = 'medium' }: { open: boolean; title: string; description?: string; children: ReactNode; onClose: () => void; footer?: ReactNode; size?: 'small' | 'medium' | 'large' }) {
+export interface ModalProps {
+  open: boolean
+  title: string
+  description?: string
+  children?: ReactNode
+  onClose: () => void
+  footer?: ReactNode
+  size?: 'small' | 'medium' | 'large'
+  /** 弹窗内的错误提示。弹窗处于 top layer，页面上的提示会被遮罩挡住，所以错误要画在这里。 */
+  error?: string
+  /** 提交中：Esc、遮罩、× 都不关闭。 */
+  busy?: boolean
+  /** 有未保存内容：关闭前先确认。 */
+  dirty?: boolean
+  /** false 时只能通过 footer 里的按钮关闭（Esc、遮罩、× 均无效，也不渲染 ×）。 */
+  dismissible?: boolean
+}
+
+const DIRTY_CLOSE_MESSAGE = '有未保存的更改，确定要关闭吗？'
+
+export function Modal({ open, title, description, children, onClose, footer, size = 'medium', error, busy = false, dirty = false, dismissible = true }: ModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+  const pointerDownOnDialog = useRef(false)
+  // 原生事件监听只注册一次，通过 ref 读取最新的 props。
+  const latest = useRef({ open, onClose, busy, dirty, dismissible })
+  latest.current = { open, onClose, busy, dirty, dismissible }
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
-    if (open && !dialog.open) dialog.showModal()
-    if (!open && dialog.open) dialog.close()
+    if (open && !dialog.open) {
+      returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      dialog.showModal()
+      // showModal 会聚焦第一个可聚焦元素；如果内容里有 autoFocus 元素，以它为准。
+      const preferred = dialog.querySelector<HTMLElement>('[autofocus], .modal-body :is(input, select, textarea, button):not(:disabled)')
+      preferred?.focus()
+    }
+    if (!open && dialog.open) {
+      dialog.close()
+      const target = returnFocusRef.current
+      returnFocusRef.current = null
+      if (target?.isConnected) target.focus()
+    }
   }, [open])
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
-    const cancel = (event: Event) => { event.preventDefault(); onClose() }
+    const cancel = (event: Event) => { event.preventDefault(); requestClose(latest.current) }
+    // 浏览器可能无视 preventDefault 强制关闭（连续按 Esc 的防滥用策略），此时与 props 重新对齐。
+    const closed = () => {
+      const state = latest.current
+      if (!state.open) return
+      if (state.dismissible && !state.busy && !state.dirty) state.onClose()
+      else dialog.showModal()
+    }
     dialog.addEventListener('cancel', cancel)
-    return () => dialog.removeEventListener('cancel', cancel)
-  }, [onClose])
+    dialog.addEventListener('close', closed)
+    return () => { dialog.removeEventListener('cancel', cancel); dialog.removeEventListener('close', closed) }
+  }, [])
 
   return (
-    <dialog ref={dialogRef} className={`workspace-modal workspace-modal--${size}`} onClick={event => { if (event.target === dialogRef.current) onClose() }}>
+    <dialog
+      ref={dialogRef}
+      className={`workspace-modal workspace-modal--${size}`}
+      aria-busy={busy || undefined}
+      // 只有按下与松开都落在遮罩（dialog 自身）上才关闭，避免在输入框里拖选文字、松手到外面时误关。
+      onPointerDown={event => { pointerDownOnDialog.current = event.target === dialogRef.current }}
+      onClick={event => {
+        const fromBackdrop = pointerDownOnDialog.current && event.target === dialogRef.current
+        pointerDownOnDialog.current = false
+        if (fromBackdrop) requestClose(latest.current)
+      }}
+    >
       <div className="modal-head">
         <div><h2>{title}</h2>{description && <p>{description}</p>}</div>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="关闭对话框">×</button>
+        {dismissible && <button type="button" className="icon-button" onClick={() => requestClose(latest.current)} disabled={busy} aria-label="关闭对话框">×</button>}
       </div>
-      <div className="modal-body">{children}</div>
+      {(error || children) && <div className="modal-body">
+        {error && <div className="notice notice--error modal-error" role="alert"><span>{error}</span></div>}
+        {children}
+      </div>}
       {footer && <div className="modal-footer">{footer}</div>}
     </dialog>
   )
 }
 
-export function ConfirmDialog({ open, title, description, confirmLabel = '确认', busy = false, danger = false, onConfirm, onClose }: { open: boolean; title: string; description: string; confirmLabel?: string; busy?: boolean; danger?: boolean; onConfirm: () => void; onClose: () => void }) {
+function requestClose({ onClose, busy, dirty, dismissible }: { onClose: () => void; busy: boolean; dirty: boolean; dismissible: boolean }) {
+  if (busy || !dismissible) return
+  if (dirty && !window.confirm(DIRTY_CLOSE_MESSAGE)) return
+  onClose()
+}
+
+/** 确认弹窗。description 需要自己说清楚后果，组件不再附加固定文案。 */
+export function ConfirmDialog({ open, title, description, confirmLabel = '确认', busy = false, danger = false, error, onConfirm, onClose }: { open: boolean; title: string; description: string; confirmLabel?: string; busy?: boolean; danger?: boolean; error?: string; onConfirm: () => void; onClose: () => void }) {
   return (
-    <Modal open={open} title={title} description={description} onClose={onClose} size="small" footer={<><button type="button" className="button button--quiet" onClick={onClose} disabled={busy}>取消</button><button type="button" className={`button ${danger ? 'button--danger' : 'button--primary'}`} onClick={onConfirm} disabled={busy}>{busy ? '处理中...' : confirmLabel}</button></>}>
-      <p className="confirm-copy">此操作会立即生效。</p>
+    <Modal open={open} title={title} onClose={onClose} size="small" busy={busy} error={error} footer={<><button type="button" className="button button--quiet" onClick={onClose} disabled={busy}>取消</button><button type="button" className={`button ${danger ? 'button--danger' : 'button--primary'}`} onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : confirmLabel}</button></>}>
+      <p className="confirm-copy">{description}</p>
     </Modal>
   )
 }
@@ -70,7 +135,7 @@ export function Pagination({ page, perPage, total, onChange, disabled = false }:
       <button type="button" className="button button--quiet" disabled={disabled || page >= pages} onClick={() => onChange(page + 1)}>下一页</button>
       {pages > 1 && (
         <span className="pager-jump">
-          跳至 <input type="number" className="pager-jump-input" min={1} max={pages} value={jump} onChange={e => setJump(e.target.value)} onKeyDown={e => e.key === 'Enter' && doJump()} disabled={disabled} /> 页
+          跳至 <input type="number" className="pager-jump-input" aria-label="跳转到页码" min={1} max={pages} value={jump} onChange={e => setJump(e.target.value)} onKeyDown={e => e.key === 'Enter' && doJump()} disabled={disabled} /> 页
           <button type="button" className="button button--quiet" disabled={disabled} onClick={doJump}>跳转</button>
         </span>
       )}
