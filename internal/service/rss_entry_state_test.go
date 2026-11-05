@@ -225,9 +225,9 @@ func TestUnreadCountsSingleGroupingSetsQuery(t *testing.T) {
 	}
 }
 
-// 删除用户时，阅读状态要在同一事务里清掉。没有外键，漏删就永久残留，
+// 删除用户时，阅读状态与待办归属要在同一事务里清掉。没有外键，漏删就永久残留，
 // 而且新用户若复用了 id（序列重置后），会继承别人的已读记录。
-func TestDeleteUserRemovesEntryStates(t *testing.T) {
+func TestDeleteUserRemovesEntryStatesAndTodoRefs(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
@@ -238,6 +238,9 @@ func TestDeleteUserRemovesEntryStates(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM "sessions" WHERE user_id = \$1`).WithArgs(9).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM "avatar_caches" WHERE user_id = \$1`).WithArgs(9).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`DELETE FROM "rss_entry_states" WHERE user_id = \$1`).WithArgs(9).WillReturnResult(sqlmock.NewResult(0, 3))
+	// 待办的归属引用置 NULL（同一事务）。
+	mock.ExpectExec(`UPDATE "todos" SET "created_by"=\$1,"updated_at"=\$2 WHERE created_by = \$3`).WithArgs(nil, sqlmock.AnyArg(), 9).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`UPDATE "todos" SET "assignee_id"=\$1,"updated_at"=\$2 WHERE assignee_id = \$3`).WithArgs(nil, sqlmock.AnyArg(), 9).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE "users" SET "deleted_at"`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

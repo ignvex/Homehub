@@ -146,6 +146,9 @@ func registerRoutes(r *gin.Engine) {
 		// 书签导出：书签列表本身公开，但整库导出只给登录用户。
 		authRequired.GET("/bookmarks/export", handler.BookmarkExport)
 
+		// 用户目录：只给 id 与用户名，供待办指派选择器使用。
+		authRequired.GET("/users/directory", handler.UserDirectory)
+
 		// 认证
 		authRequired.POST("/auth/logout", handler.AuthLogout)
 		authRequired.POST("/auth/change-password", handler.AuthChangePassword)
@@ -307,13 +310,17 @@ func registerRoutes(r *gin.Engine) {
 			extHubOps.DELETE("/keys/:id", handler.ExtensionHubRevokeKey)
 		}
 
-		// TODO 待办：读需登录，写需 3 级
+		// TODO 待办：读需登录，写需 4 级（member）。
+		//
+		// 4 级只能动自己创建的待办、只能改指派给自己的待办的状态；
+		// 逐条归属在 service 层按 created_by / assignee_id 校验。
 		todoRead := authRequired.Group("/todos")
 		{
 			todoRead.GET("", handler.TodoList)
 			todoRead.GET("/:id", handler.TodoGet)
 		}
-		todoWrite := contentWrite.Group("/todos")
+		todoWrite := authRequired.Group("/todos")
+		todoWrite.Use(middleware.AuthLevelRequired(model.LevelMember))
 		{
 			todoWrite.POST("", handler.TodoCreate)
 			todoWrite.PUT("/:id", handler.TodoUpdate)

@@ -366,3 +366,31 @@ func TestImportExportRoutesRequireAuth(t *testing.T) {
 		}
 	}
 }
+
+// TestTodoWriteGateIsMember 锁住待办写路由的门槛：4 级（member）。
+//
+// 门槛放宽到 4 级的前提是 service 层按归属校验；若有人把它改回
+// contentWrite（3 级），4 级用户的「我的待办」会整体 403，而改成
+// authRequired 不带等级则会让 5 级只读用户也能写。
+func TestTodoWriteGateIsMember(t *testing.T) {
+	src, err := os.ReadFile("routes.go")
+	if err != nil {
+		t.Fatalf("读取 routes.go 失败: %v", err)
+	}
+	marker := `todoWrite := authRequired.Group("/todos")`
+	i := strings.Index(string(src), marker)
+	if i == -1 {
+		t.Fatalf("未找到 %s", marker)
+	}
+	window := string(src[i : i+200])
+	if !strings.Contains(window, "AuthLevelRequired(model.LevelMember)") {
+		t.Errorf("待办写路由组应挂 AuthLevelRequired(model.LevelMember):\n%s", window)
+	}
+
+	r := newTestEngine()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/users/directory", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("/users/directory 未登录时状态码 = %d，期望 401", w.Code)
+	}
+}

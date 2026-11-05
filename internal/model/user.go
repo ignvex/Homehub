@@ -41,6 +41,14 @@ func (u User) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// UserBrief 是对外展示用的最小用户信息（指派选择器、待办的创建者/被指派者）。
+//
+// 只有 id 与用户名：邮箱、等级都不该随一条待办泄露给所有登录用户。
+type UserBrief struct {
+	ID       uint64 `json:"id"`
+	Username string `json:"username"`
+}
+
 // TableName 指定表名为 users。
 func (User) TableName() string {
 	return "users"

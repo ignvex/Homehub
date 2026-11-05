@@ -19,10 +19,10 @@ func respondTodoError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrTodoNotFound):
 		Fail(c, http.StatusNotFound, CodeNotFound, "待办不存在")
-	case errors.Is(err, service.ErrTodoBadStatus):
+	case errors.Is(err, service.ErrTodoBadStatus), errors.Is(err, service.ErrTodoBadAssignee):
 		FailBadRequest(c, err.Error())
 	case errors.Is(err, service.ErrForbidden):
-		Fail(c, http.StatusForbidden, CodeForbidden, "只能修改自己创建的待办")
+		Fail(c, http.StatusForbidden, CodeForbidden, "4 级用户只能修改自己创建的待办，被指派的待办只能改状态")
 	default:
 		FailInternal(c, fallback)
 	}
@@ -38,6 +38,8 @@ type createTodoRequest struct {
 	Description string     `json:"description" form:"description"`
 	Priority    int        `json:"priority" form:"priority"`
 	DueDate     *time.Time `json:"due_date" form:"due_date"`
+	// AssigneeID 可选，指派给某个启用中的用户。
+	AssigneeID *uint64 `json:"assignee_id" form:"assignee_id"`
 }
 
 // updateTodoRequest 更新 TODO 请求体（全部可选）。
@@ -49,6 +51,8 @@ type updateTodoRequest struct {
 	Status      *string           `json:"status"`
 	Priority    *int              `json:"priority"`
 	DueDate     optionalTimestamp `json:"due_date" swaggertype:"string" format:"date-time" extensions:"x-nullable"`
+	// AssigneeID 省略=不改，null=取消指派，值=指派给该用户。
+	AssigneeID optionalGroupID `json:"assignee_id" swaggertype:"integer" extensions:"x-nullable"`
 }
 
 // optionalString 区分字段缺失、显式 null / 空串（清空）与具体值。
@@ -111,19 +115,40 @@ type reorderTodosRequest struct {
 // TodoList 获取 TODO 列表。
 //
 //	@Summary		获取待办列表
-//	@Description	获取所有待办事项，可按状态筛选和排序
+//	@Description	获取待办事项，可按状态、被指派者、创建者筛选和排序。每条附带 creator / assignee 的 {id, username}
 //	@Tags			待办事项
 //	@Produce		json
-//	@Param			status	query		string	false	"状态筛选：planned/pending/in_progress/completed/paused"
-//	@Param			sort	query		string	false	"排序字段（默认 priority）"
-//	@Success		200		{object}	Response	"待办列表"
-//	@Failure		500		{object}	Response	"服务器内部错误"
+//	@Param			status		query		string	false	"状态筛选：planned/pending/in_progress/completed/paused"
+//	@Param			sort		query		string	false	"排序：priority（默认）/due_date/created_at"
+//	@Param			assignee	query		string	false	"me 或用户 ID：只看指派给该用户的"
+//	@Param			mine		query		string	false	"1：只看我创建的"
+//	@Success		200			{object}	Response{data=[]model.Todo}	"待办列表"
+//	@Failure		400			{object}	Response	"assignee 参数无效"
+//	@Failure		500			{object}	Response	"服务器内部错误"
 //	@Router			/todos [get]
 func TodoList(c *gin.Context) {
-	status := c.Query("status")
-	sort := c.DefaultQuery("sort", "priority")
+	filter := service.TodoFilter{
+		Status: c.Query("status"),
+		Sort:   c.DefaultQuery("sort", "priority"),
+	}
+	me := getCurrentUserID(c)
+	if a := c.Query("assignee"); a != "" {
+		if a == "me" {
+			filter.AssigneeID = &me
+		} else {
+			id, err := strconv.ParseUint(a, 10, 64)
+			if err != nil {
+				FailBadRequest(c, "assignee 只能是 me 或用户 ID")
+				return
+			}
+			filter.AssigneeID = &id
+		}
+	}
+	if c.Query("mine") == "1" || c.Query("mine") == "true" {
+		filter.CreatedBy = &me
+	}
 
-	todos, err := svc.Todo.ListTodos(status, sort)
+	todos, err := svc.Todo.ListTodos(filter)
 	if err != nil {
 		FailInternal(c, "查询待办列表失败")
 		return
@@ -175,8 +200,18 @@ func TodoCreate(c *gin.Context) {
 		return
 	}
 
-	todo, err := svc.Todo.CreateTodo(req.Title, req.Description, req.Priority, req.DueDate)
+	todo, err := svc.Todo.CreateTodo(getCurrentUser(c), service.CreateTodoInput{
+		Title:       req.Title,
+		Description: req.Description,
+		Priority:    req.Priority,
+		DueDate:     req.DueDate,
+		AssigneeID:  req.AssigneeID,
+	})
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			Fail(c, http.StatusForbidden, CodeForbidden, "权限不足")
+			return
+		}
 		FailBadRequest(c, err.Error())
 		return
 	}
@@ -195,6 +230,7 @@ func TodoCreate(c *gin.Context) {
 //	@Success		200		{object}	Response			"更新成功"
 //	@Failure		400		{object}	Response			"无效的请求参数"
 //	@Failure		500		{object}	Response			"服务器内部错误"
+//	@Failure		403	{object}	Response	"4 级越权"
 //	@Router			/todos/{id} [put]
 func TodoUpdate(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -217,12 +253,13 @@ func TodoUpdate(c *gin.Context) {
 		}
 	}
 
-	if err := svc.Todo.UpdateTodo(id, service.TodoUpdate{
+	if err := svc.Todo.UpdateTodo(getCurrentUser(c), id, service.TodoUpdate{
 		Title:       req.Title,
 		Status:      req.Status,
 		Priority:    req.Priority,
 		Description: service.Optional[string]{Set: req.Description.Set, Value: req.Description.Value},
 		DueDate:     service.Optional[time.Time]{Set: req.DueDate.Set, Value: req.DueDate.Value},
+		Assignee:    service.Optional[uint64]{Set: req.AssigneeID.Set, Value: req.AssigneeID.Value},
 	}); err != nil {
 		respondTodoError(c, err, "更新待办失败")
 		return
@@ -240,6 +277,7 @@ func TodoUpdate(c *gin.Context) {
 //	@Success		200	{object}	Response	"删除成功"
 //	@Failure		400	{object}	Response	"无效的待办 ID"
 //	@Failure		404	{object}	Response	"待办不存在"
+//	@Failure		403	{object}	Response	"4 级越权"
 //	@Router			/todos/{id} [delete]
 func TodoDelete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -248,8 +286,8 @@ func TodoDelete(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Todo.DeleteTodo(id); err != nil {
-		Fail(c, http.StatusNotFound, CodeNotFound, "待办不存在")
+	if err := svc.Todo.DeleteTodo(getCurrentUser(c), id); err != nil {
+		respondTodoError(c, err, "删除待办失败")
 		return
 	}
 	Success(c, nil)
@@ -267,6 +305,7 @@ func TodoDelete(c *gin.Context) {
 //	@Success		200		{object}	Response					"更新成功"
 //	@Failure		400		{object}	Response					"无效的状态值"
 //	@Failure		500		{object}	Response					"服务器内部错误"
+//	@Failure		403	{object}	Response	"4 级越权"
 //	@Router			/todos/{id}/status [patch]
 func TodoUpdateStatus(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -286,7 +325,7 @@ func TodoUpdateStatus(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Todo.UpdateTodo(id, service.TodoUpdate{Status: &req.Status}); err != nil {
+	if err := svc.Todo.UpdateTodo(getCurrentUser(c), id, service.TodoUpdate{Status: &req.Status}); err != nil {
 		respondTodoError(c, err, "更新状态失败")
 		return
 	}
@@ -304,6 +343,7 @@ func TodoUpdateStatus(c *gin.Context) {
 //	@Success		200		{object}	Response			"排序成功"
 //	@Failure		400		{object}	Response			"缺少 ids"
 //	@Failure		500		{object}	Response			"服务器内部错误"
+//	@Failure		403	{object}	Response	"4 级越权"
 //	@Router			/todos/reorder [post]
 func TodoReorder(c *gin.Context) {
 	var req reorderTodosRequest
@@ -312,8 +352,8 @@ func TodoReorder(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Todo.ReorderTodos(req.IDs); err != nil {
-		FailInternal(c, "更新排序失败")
+	if err := svc.Todo.ReorderTodos(getCurrentUser(c), req.IDs); err != nil {
+		respondTodoError(c, err, "更新排序失败")
 		return
 	}
 	Success(c, nil)

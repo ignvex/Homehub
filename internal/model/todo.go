@@ -18,6 +18,16 @@ type Todo struct {
 	Priority    int        `gorm:"default:0" json:"priority"`                              // 优先级，值越大越靠前
 	DueDate     *time.Time `json:"due_date,omitempty"`                                     // 截止日期（可选）
 	SortOrder   int        `gorm:"default:0" json:"sort_order"`                            // 拖拽排序
+
+	// CreatedBy 创建者。NULL 是改造前的旧数据（或创建者已被删除），
+	// 只有 3 级及以上能动它们——没有归属就没有「自己的」。
+	CreatedBy *uint64 `gorm:"index" json:"created_by"`
+	// AssigneeID 指派给谁。被指派者（4 级）可以改状态，不能改其他字段。
+	AssigneeID *uint64 `gorm:"index" json:"assignee_id"`
+
+	// Creator / Assignee 是输出时批量补上的用户摘要，不是数据库列。
+	Creator  *UserBrief `gorm:"-" json:"creator"`
+	Assignee *UserBrief `gorm:"-" json:"assignee"`
 }
 
 // TableName 指定表名。

@@ -349,3 +349,21 @@ func getCurrentUser(c *gin.Context) *model.User {
 	}
 	return user
 }
+
+// UserDirectory 返回启用中用户的 id 与用户名。
+//
+//	@Summary		用户目录
+//	@Description	返回所有启用用户的 {id, username}，供待办指派选择器使用；登录即可
+//	@Tags			用户管理
+//	@Produce		json
+//	@Success		200	{object}	Response{data=[]model.UserBrief}	"用户列表"
+//	@Failure		500	{object}	Response	"服务器内部错误"
+//	@Router			/users/directory [get]
+func UserDirectory(c *gin.Context) {
+	users, err := svc.Auth.Directory()
+	if err != nil {
+		FailInternal(c, "查询用户目录失败")
+		return
+	}
+	Success(c, users)
+}

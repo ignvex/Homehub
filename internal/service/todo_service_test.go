@@ -19,7 +19,7 @@ func TestUpdateTodoClearsDescriptionAndDueDate(t *testing.T) {
 		WithArgs("", nil, sqlmock.AnyArg(), 7).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := NewTodoService(db).UpdateTodo(7, TodoUpdate{
+	err := NewTodoService(db).UpdateTodo(editor, 7, TodoUpdate{
 		Description: Optional[string]{Set: true},
 		DueDate:     Optional[time.Time]{Set: true},
 	})
@@ -41,7 +41,7 @@ func TestUpdateTodoLeavesMissingFieldsUntouched(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	title := "新标题"
-	if err := NewTodoService(db).UpdateTodo(7, TodoUpdate{Title: &title}); err != nil {
+	if err := NewTodoService(db).UpdateTodo(editor, 7, TodoUpdate{Title: &title}); err != nil {
 		t.Fatalf("UpdateTodo 失败: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

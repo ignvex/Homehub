@@ -173,6 +173,20 @@ func (s *AuthService) ListUsers() ([]model.User, error) {
 	return users, nil
 }
 
+// Directory 返回启用中用户的 {id, username}，按用户名排序。
+//
+// 登录用户都能调用：只有这两个字段，不含邮箱与等级。
+func (s *AuthService) Directory() ([]model.UserBrief, error) {
+	users := []model.UserBrief{}
+	if err := s.db.Model(&model.User{}).Select("id", "username").
+		Where("is_active = ?", true).
+		Order("username ASC").
+		Scan(&users).Error; err != nil {
+		return nil, fmt.Errorf("查询用户目录失败: %w", err)
+	}
+	return users, nil
+}
+
 // GetUserByID 根据 ID 获取用户。
 func (s *AuthService) GetUserByID(id uint64) (*model.User, error) {
 	var user model.User
@@ -397,6 +411,14 @@ func (s *AuthService) DeleteUser(targetID uint64, operator *model.User) error {
 		// 删除 RSS 阅读状态（已读/星标是个人数据，没有外键，不删会永久残留）
 		if err := tx.Where("user_id = ?", targetID).Delete(&model.RSSEntryState{}).Error; err != nil {
 			return fmt.Errorf("清除用户阅读状态失败: %w", err)
+		}
+		// 待办的创建者/被指派者置空。置空后的旧待办只有 3 级及以上能动，
+		// 这是有意的：归属消失了，就不再有「自己的」。
+		if err := tx.Model(&model.Todo{}).Where("created_by = ?", targetID).Update("created_by", nil).Error; err != nil {
+			return fmt.Errorf("清除待办创建者失败: %w", err)
+		}
+		if err := tx.Model(&model.Todo{}).Where("assignee_id = ?", targetID).Update("assignee_id", nil).Error; err != nil {
+			return fmt.Errorf("清除待办指派失败: %w", err)
 		}
 		// 删除用户
 		if err := tx.Delete(&model.User{}, targetID).Error; err != nil {

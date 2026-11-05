@@ -23,7 +23,7 @@ func TestReorderTodosIssuesSingleCaseUpdate(t *testing.T) {
 		WithArgs(30, 1, 10, 2, 20, 3, sqlmock.AnyArg(), 30, 10, 20).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
-	if err := NewTodoService(db).ReorderTodos([]uint64{30, 10, 20}); err != nil {
+	if err := NewTodoService(db).ReorderTodos(editor, []uint64{30, 10, 20}); err != nil {
 		t.Fatalf("ReorderTodos 失败: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -69,7 +69,7 @@ func TestReorderEmptyIsNoop(t *testing.T) {
 	db, mock, cleanup := testutil.NewMockDB(t)
 	defer cleanup()
 
-	if err := NewTodoService(db).ReorderTodos(nil); err != nil {
+	if err := NewTodoService(db).ReorderTodos(editor, nil); err != nil {
 		t.Fatalf("空列表应直接返回: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -85,7 +85,7 @@ func TestCreateTodoFailsWhenMaxSortOrderQueryFails(t *testing.T) {
 
 	mock.ExpectQuery(`MAX\(sort_order\)`).WillReturnError(errors.New("boom"))
 
-	if _, err := NewTodoService(db).CreateTodo("t", "", 0, nil); err == nil {
+	if _, err := NewTodoService(db).CreateTodo(editor, CreateTodoInput{Title: "t"}); err == nil {
 		t.Fatal("查询排序值失败时应返回错误")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
