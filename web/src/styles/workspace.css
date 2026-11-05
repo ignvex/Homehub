@@ -79,8 +79,6 @@
 
 /* ============ 数据搜索 ============ */
 .search-history { flex-wrap: wrap; }
-.search-results { display: grid; gap: var(--panel-gap); }
-.search-results.is-stale { opacity: .55; transition: opacity var(--dur-base) ease; }
 
 /* ============ 用户管理 ============ */
 .user-cell {

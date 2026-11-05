@@ -631,6 +631,13 @@ a:focus-visible,
   text-overflow: ellipsis;
 }
 
+/* 翻页、刷新中保留旧内容但降低存在感，配合 aria-busy 使用 */
+.is-stale {
+  opacity: .55;
+  pointer-events: none;
+  transition: opacity var(--dur-base) ease;
+}
+
 /* ============ 结果列表 ============ */
 .search-results,
 .settings-sections {

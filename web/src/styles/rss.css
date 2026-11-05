@@ -283,11 +283,6 @@
 /* 条目 */
 /* 条目区独立滚动：页面本身不随条目数变长，
  * 左栏与工具栏始终可见。这是 qB 的基本行为。 */
-.rss-entries.is-stale {
-  opacity: .55;
-  transition: opacity var(--dur-base) ease;
-  pointer-events: none;
-}
 .rss-entries {
   display: flex;
   flex-direction: column;
