@@ -649,6 +649,32 @@ a:focus-visible,
   margin: 0;
   font-size: var(--text-sm);
 }
+/* 导入结果（components/ImportResult.tsx） */
+.import-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-3) var(--space-6);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.import-summary dt { color: var(--color-text-secondary); }
+.import-summary dd { margin: 0; font-variant-numeric: tabular-nums; }
+.import-errors {
+  display: grid;
+  gap: var(--space-3);
+  max-height: 240px;
+  margin: var(--space-5) 0 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  list-style: none;
+  font-size: var(--text-xs);
+}
+.import-errors li { display: grid; gap: var(--space-1); }
+.import-errors code { overflow-wrap: anywhere; }
+.import-errors span { color: var(--color-error); }
+
 .hotkey-then {
   color: var(--color-text-secondary);
   font-size: var(--text-2xs);

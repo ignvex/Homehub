@@ -74,6 +74,38 @@ export const api = {
   delete: <T>(path: string, init: RequestInit = {}) => request<T>(path, { ...init, method: 'DELETE' }),
 }
 
+/**
+ * downloadFile 取回一个附件响应并存盘。
+ *
+ * 不直接用 <a href download>：服务端返回 401/500 时，浏览器会把 JSON 错误体
+ * 存成一个 .opml / .html 文件，用户看不到失败原因。这里先检查状态码，
+ * 失败时按统一响应抛出 ApiRequestError。
+ */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${BASE_URL}${path}`, { credentials: 'include' })
+  } catch (cause) {
+    if (cause instanceof TypeError) throw new ApiRequestError(0, '网络不可用，请检查连接')
+    throw cause
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new ApiRequestError(response.status, body.message || `下载失败 (${response.status})`, body.code)
+  }
+  const name = /filename="?([^";]+)"?/i.exec(response.headers.get('Content-Disposition') ?? '')?.[1] || fallbackName
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  // 带 download 属性的链接会被 App 的客户端导航拦截放行（见 App.tsx）。
+  anchor.download = name
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  // 立即撤销在部分浏览器里会中断下载，留一拍再回收。
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 /** 判断是否是被 AbortController 取消的请求。 */
 export function isAbortError(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === 'AbortError'
