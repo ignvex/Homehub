@@ -3,7 +3,6 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,18 +11,29 @@ import (
 	"github.com/ignvex/HomeHub/internal/service"
 )
 
-// 登录限速：记录每个用户名的失败尝试次数和时间戳。
+// 登录失败锁定。
+//
+// 两个计数器，各管一种攻击：
+//
+//   - 按「用户名 + 客户端 IP」：同一来源对同一账号 15 分钟内失败 5 次，
+//     锁定这个组合 15 分钟。**只按用户名锁定**会让任何人在任何地方
+//     输错 5 次 admin 的密码就把真正的管理员锁在门外；绑定 IP 后，
+//     攻击者只能锁住他自己。
+//   - 按客户端 IP：同一来源 15 分钟内累计失败 20 次（不论用户名），
+//     锁定这个 IP。挡的是「每个用户名只试几次」的撞库。
+//
+// 分布式（大量 IP）爆破不在这里处理：单实例内存计数做不到，
+// 请求速率另有路由层的按 IP 令牌桶。
+// IP 取 c.ClientIP()，反向代理部署需配置 Gin 的可信代理。
 var (
-	loginAttemptsMu sync.RWMutex
-	loginAttempts   = make(map[string]*loginAttempt)
-	loginMaxRetries = 5
-	loginCooldown   = 15 * time.Minute
+	loginPairFailures = middleware.NewFailureLimiter(5, 15*time.Minute)
+	loginIPFailures   = middleware.NewFailureLimiter(20, 15*time.Minute)
 )
 
-// loginAttempt 登录尝试记录，由 loginAttemptsMu 保护并发访问。
-type loginAttempt struct {
-	count    int
-	lockedAt time.Time
+// loginPairKey 组合用户名与 IP。用 NUL 分隔：两者都不会含 NUL，
+// 不会出现 ("a|b","c") 与 ("a","b|c") 撞键。
+func loginPairKey(username, ip string) string {
+	return username + "\x00" + ip
 }
 
 // ============================================================
@@ -47,6 +57,7 @@ type loginRequest struct {
 //	@Success		200		{object}	Response{data=object}	"登录成功，返回 token"
 //	@Failure		400		{object}	Response	"请求参数错误"
 //	@Failure		401		{object}	Response	"用户名或密码错误"
+//	@Failure		429		{object}	Response	"登录尝试过多"
 //	@Router			/auth/login [post]
 func AuthLogin(c *gin.Context) {
 	var req loginRequest
@@ -55,36 +66,24 @@ func AuthLogin(c *gin.Context) {
 		return
 	}
 
-	// 登录限速：检查是否被锁定
-	loginAttemptsMu.RLock()
-	att, locked := loginAttempts[req.Username]
-	loginAttemptsMu.RUnlock()
-	if locked && att.count >= loginMaxRetries {
-		if time.Since(att.lockedAt) < loginCooldown {
-			Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
-			return
-		}
-		// 冷却时间已过，重置
-		loginAttemptsMu.Lock()
-		delete(loginAttempts, req.Username)
-		loginAttemptsMu.Unlock()
+	ip := c.ClientIP()
+	pairKey := loginPairKey(req.Username, ip)
+
+	// 先查锁定再碰数据库：锁定期间连 bcrypt 都不跑。
+	if locked, _ := loginIPFailures.Locked(ip); locked {
+		Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
+		return
+	}
+	if locked, _ := loginPairFailures.Locked(pairKey); locked {
+		Fail(c, http.StatusTooManyRequests, CodeAuthFailed, "登录尝试过多，请15分钟后再试")
+		return
 	}
 
 	token, err := svc.Auth.Login(req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, service.ErrAuthFailed) {
-			// 记录失败尝试（加锁保护）
-			loginAttemptsMu.Lock()
-			a := loginAttempts[req.Username]
-			if a == nil {
-				a = &loginAttempt{}
-				loginAttempts[req.Username] = a
-			}
-			a.count++
-			if a.count >= loginMaxRetries {
-				a.lockedAt = time.Now()
-			}
-			loginAttemptsMu.Unlock()
+			loginPairFailures.Fail(pairKey)
+			loginIPFailures.Fail(ip)
 			Fail(c, http.StatusUnauthorized, CodeAuthFailed, "用户名或密码错误")
 			return
 		}
@@ -95,10 +94,9 @@ func AuthLogin(c *gin.Context) {
 		FailInternal(c, "登录失败")
 		return
 	}
-	// 登录成功，清除限速记录
-	loginAttemptsMu.Lock()
-	delete(loginAttempts, req.Username)
-	loginAttemptsMu.Unlock()
+	// 登录成功只清这个组合的记录；IP 级计数照旧，避免攻击者用
+	// 自己的账号登录一次就把撞库计数清零。
+	loginPairFailures.Reset(pairKey)
 
 	// 设置 Cookie
 	c.SetCookie(
