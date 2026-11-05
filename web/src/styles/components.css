@@ -36,6 +36,7 @@
   gap: var(--space-5);
   flex-wrap: wrap;
 }
+.page-toolbar--end { justify-content: flex-end; }
 .page-toolbar h2 {
   margin: 0;
   font-size: var(--text-lg);
