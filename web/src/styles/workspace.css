@@ -139,6 +139,15 @@
   gap: var(--space-5);
 }
 
+/* ============ 待办 ============ */
+/* 创建者 / 负责人：小头像 + 用户名，同一行。 */
+.todo-user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  white-space: nowrap;
+}
+
 /* ============ 媒体资源 ============ */
 .resource-grid {
   display: grid;
