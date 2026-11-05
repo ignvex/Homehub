@@ -1,18 +1,16 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Notice, PageState } from '@/components/WorkspaceUI'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { PageState } from '@/components/WorkspaceUI'
+import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { useAuth } from '@/lib/auth'
+import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
 import { useTheme, type ThemePreference } from '@/hooks/useTheme'
 import type { BackgroundSettings } from '@/lib/home'
 import { mediaURL } from '@/lib/media'
 import { mediaAssetsApi, type MediaAsset } from '@/lib/mediaAssets'
 import { settingsApi } from '@/lib/settings'
 
-const fallback: BackgroundSettings = {
-  mode: 'single',
-  interval_seconds: 30,
-  transition_effect: 'fade',
-  fade_duration_ms: 1000,
-  selected_asset_ids: [],
-}
+// 背景配置读取失败时不再用默认值渲染可保存的表单：那样一点保存就会
+// 把服务端的真实配置覆盖成默认值。表单只在读取成功后出现。
 
 // ============================================================
 // 外观 — 主题偏好 + 服务端背景配置
@@ -35,23 +33,32 @@ const modes: { value: BackgroundSettings['mode']; label: string; hint: string }[
 
 export function AppearancePage() {
   const { theme, setTheme } = useTheme()
-  const [settings, setSettings] = useState<BackgroundSettings>(fallback)
+  const { auth } = useAuth()
+  const canWrite = hasLevel(auth, CONTENT_WRITE_LEVEL)
+  const notice = useNotice()
+  const [loaded, setLoaded] = useState<BackgroundSettings | null>(null)
+  const [draft, setSettings] = useState<BackgroundSettings | null>(null)
   const [assets, setAssets] = useState<MediaAsset[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true)
+    setLoadError('')
     Promise.all([settingsApi.getBackground(), mediaAssetsApi.list()])
       .then(([background, media]) => {
+        setLoaded(background)
         setSettings(background)
         setAssets(media.filter(asset => asset.media_type === 'image' || asset.media_type === 'video'))
       })
-      .catch(cause => setError(cause instanceof Error ? cause.message : '无法读取外观配置'))
+      .catch(cause => setLoadError(errorMessage(cause, '无法读取外观配置')))
       .finally(() => setLoading(false))
   }, [])
+  useEffect(load, [load])
 
+  // 渲染处已保证 draft 非空才使用 settings；这里给一个只读占位避免到处判空。
+  const settings: BackgroundSettings = draft ?? { mode: 'single', interval_seconds: 30, transition_effect: 'fade', fade_duration_ms: 1000, selected_asset_ids: [] }
   const selectedCount = settings.selected_asset_ids.length
   const carousel = settings.mode !== 'single'
 
@@ -64,7 +71,7 @@ export function AppearancePage() {
   }, [assets, settings.selected_asset_ids])
 
   function toggleAsset(id: number) {
-    setSettings(current => ({
+    setSettings(current => current && ({
       ...current,
       selected_asset_ids: current.selected_asset_ids.includes(id)
         ? current.selected_asset_ids.filter(value => value !== id)
@@ -73,28 +80,26 @@ export function AppearancePage() {
   }
 
   function selectAllAssets() {
-    setSettings(current => ({ ...current, selected_asset_ids: current.selected_asset_ids.length === assets.length ? [] : assets.map(asset => asset.id) }))
+    setSettings(current => current && ({ ...current, selected_asset_ids: current.selected_asset_ids.length === assets.length ? [] : assets.map(asset => asset.id) }))
   }
 
   async function save(event: FormEvent) {
     event.preventDefault()
+    if (!draft || !loaded) return
     setBusy(true)
     try {
-      await settingsApi.updateBackground(settings)
-      setMessage('首页背景已保存。登录页背景在登录页的独立配置中维护，不受此处影响。')
-      setError('')
+      await settingsApi.updateBackground(draft)
+      setLoaded(draft)
+      notice.success('首页背景已保存。登录页背景在登录页的独立配置中维护，不受此处影响。')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '保存失败')
+      notice.error(errorMessage(cause, '保存失败'))
     } finally {
       setBusy(false)
     }
   }
 
-  if (loading) return <PageState kind="loading" title="正在读取外观设置" />
-
   return <div className="business-page appearance-page">
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} tone="info" onDismiss={() => setMessage('')} />
+    {notice.element}
 
     {/* ---------- 浏览器主题 ---------- */}
     <section className="data-panel">
@@ -132,14 +137,19 @@ export function AppearancePage() {
     </section>
 
     {/* ---------- 服务端背景 ---------- */}
-    <form className="data-panel" onSubmit={save}>
+    {loading && !draft
+      ? <PageState kind="loading" title="正在读取背景配置" />
+      : !draft
+      ? <PageState kind="error" title="无法读取背景配置" description={`${loadError}。为避免用默认值覆盖服务端配置，读取成功前不能保存。`} action={<button type="button" className="button button--primary" onClick={load}>重试</button>} />
+      : <form className="data-panel" onSubmit={save}>
       <header className="data-panel-head">
         <div>
           <h2>服务端背景</h2>
-          <p>写入服务端配置，首页与登录页共享。</p>
+          <p>{canWrite ? '写入服务端配置，首页与登录页共享。' : '写入服务端配置，首页与登录页共享。当前等级只能查看。'}</p>
         </div>
-        <button className="button button--primary" disabled={busy}>{busy ? '保存中…' : '保存背景'}</button>
+        {canWrite && <button type="submit" className="button button--primary" disabled={busy}>{busy ? '保存中…' : '保存背景'}</button>}
       </header>
+      <fieldset className="appearance-fieldset" disabled={!canWrite}>
 
       <div className="appearance-body appearance-split">
         {/* 参数 */}
@@ -156,7 +166,7 @@ export function AppearancePage() {
                   name="background-mode"
                   value={option.value}
                   checked={settings.mode === option.value}
-                  onChange={() => setSettings(current => ({ ...current, mode: option.value }))}
+                  onChange={() => setSettings(current => current && ({ ...current, mode: option.value }))}
                   className="visually-hidden"
                 />
                 <strong>{option.label}</strong>
@@ -172,7 +182,7 @@ export function AppearancePage() {
               min="1"
               value={settings.interval_seconds}
               disabled={!carousel}
-              onChange={event => setSettings(current => ({ ...current, interval_seconds: Number(event.target.value) }))}
+              onChange={event => setSettings(current => current && ({ ...current, interval_seconds: Number(event.target.value) }))}
             />
           </label>
 
@@ -185,7 +195,7 @@ export function AppearancePage() {
                   name="transition-effect"
                   value="fade"
                   checked={settings.transition_effect === 'fade'}
-                  onChange={() => setSettings(current => ({ ...current, transition_effect: 'fade' }))}
+                  onChange={() => setSettings(current => current && ({ ...current, transition_effect: 'fade' }))}
                   className="visually-hidden"
                 />
                 淡入淡出
@@ -196,7 +206,7 @@ export function AppearancePage() {
                   name="transition-effect"
                   value="slide"
                   checked={settings.transition_effect === 'slide'}
-                  onChange={() => setSettings(current => ({ ...current, transition_effect: 'slide' }))}
+                  onChange={() => setSettings(current => current && ({ ...current, transition_effect: 'slide' }))}
                   className="visually-hidden"
                 />
                 滑动
@@ -212,7 +222,7 @@ export function AppearancePage() {
               max="10000"
               step="100"
               value={settings.fade_duration_ms}
-              onChange={event => setSettings(current => ({ ...current, fade_duration_ms: Number(event.target.value) }))}
+              onChange={event => setSettings(current => current && ({ ...current, fade_duration_ms: Number(event.target.value) }))}
             />
           </label>
         </div>
@@ -264,6 +274,7 @@ export function AppearancePage() {
             </>}
         </div>
       </div>
-    </form>
+      </fieldset>
+    </form>}
   </div>
 }

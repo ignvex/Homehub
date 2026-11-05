@@ -125,6 +125,14 @@
 }
 .form-field input.extension-secret { font-family: var(--font-mono); }
 
+/* ============ 外观 ============ */
+.appearance-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 /* ============ 用户管理 ============ */
 .user-cell {
   display: flex;
