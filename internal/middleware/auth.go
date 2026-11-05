@@ -39,6 +39,8 @@ type sessionCacheEntry struct {
 var (
 	sessionCache   = make(map[string]sessionCacheEntry)
 	sessionCacheMu sync.RWMutex
+	// sessionCacheLastSweep 上次回收过期条目的时间，由 sessionCacheMu 保护。
+	sessionCacheLastSweep time.Time
 )
 
 // getCachedUser 从缓存读取已认证用户，cache hit 时跳过 DB 查询。
@@ -54,9 +56,22 @@ func getCachedUser(token string) *model.User {
 }
 
 // setCachedUser 将用户写入缓存，设置 TTL 过期时间。
+//
+// 写入时顺带回收过期条目（每个 TTL 周期至多一次）：过期条目只会在同一
+// token 再次访问时被覆盖，换浏览器、清 cookie 留下的条目永远不会再被读，
+// 不回收的话 map 只增不减。写路径本来就持写锁，摊销成本可忽略。
 func setCachedUser(token string, user *model.User) {
+	now := time.Now()
 	sessionCacheMu.Lock()
-	sessionCache[token] = sessionCacheEntry{user: user, expiresAt: time.Now().Add(sessionCacheTTL)}
+	if now.Sub(sessionCacheLastSweep) >= sessionCacheTTL {
+		sessionCacheLastSweep = now
+		for k, e := range sessionCache {
+			if now.After(e.expiresAt) {
+				delete(sessionCache, k)
+			}
+		}
+	}
+	sessionCache[token] = sessionCacheEntry{user: user, expiresAt: now.Add(sessionCacheTTL)}
 	sessionCacheMu.Unlock()
 }
 
