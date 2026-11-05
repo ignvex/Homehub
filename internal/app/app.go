@@ -95,24 +95,7 @@ func Run(opts Options) error {
 		return err
 	}
 
-	if err := db.AutoMigrate(
-		&model.User{},
-		&model.Session{},
-		&model.BookmarkGroup{},
-		&model.Bookmark{},
-		&model.LogEntry{},
-		&model.MediaAsset{},
-		&model.AvatarCache{},
-		&model.RSSGroup{},
-		&model.RSSFeed{},
-		&model.RSSEntry{},
-		&model.RSSEntryFeed{},
-		&model.RSSImage{},
-		&model.RSSImageSource{},
-		&model.RSSImageRef{},
-		&model.Todo{},
-		&model.BalanceTarget{},
-	); err != nil {
+	if err := db.AutoMigrate(model.AutoMigrateModels()...); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 

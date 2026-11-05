@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,23 +40,23 @@ var (
 // 新增表时**必须**在这里加一行，否则 TestDDLOnlyTargetsHomeHubTables 会失败。
 // 这个约束比旧的前缀检查更强：任何不在列表里的表名都会被拦下。
 var homeHubTables = map[string]struct{}{
-	"users":              {},
-	"sessions":           {},
-	"avatar_caches":      {},
-	"bookmark_groups":    {},
-	"bookmarks":          {},
-	"media_assets":       {},
-	"log_entries":        {},
-	"rss_groups":         {},
-	"rss_feeds":          {},
-	"rss_entries":        {},
-	"rss_entry_feeds":    {},
-	"rss_images":         {},
-	"rss_image_sources":  {},
-	"rss_image_refs":     {},
-	"todos":              {},
-	"pastes":             {},
-	"balance_targets":    {},
+	"users":             {},
+	"sessions":          {},
+	"avatar_caches":     {},
+	"bookmark_groups":   {},
+	"bookmarks":         {},
+	"media_assets":      {},
+	"log_entries":       {},
+	"rss_groups":        {},
+	"rss_feeds":         {},
+	"rss_entries":       {},
+	"rss_entry_feeds":   {},
+	"rss_images":        {},
+	"rss_image_sources": {},
+	"rss_image_refs":    {},
+	"todos":             {},
+	"pastes":            {},
+	"balance_targets":   {},
 }
 
 // ownedTable 判断表名是否属于本仓库（忽略 schema 限定符）。
@@ -208,27 +209,20 @@ func targetsOwnedTable(sql string) bool {
 	return ownedTable(m[1])
 }
 func TestAllModelsHaveRegisteredTable(t *testing.T) {
-	models := []struct {
+	type tabler interface{ TableName() string }
+	type entry struct {
 		name  string
 		table string
-	}{
-		{"User", model.User{}.TableName()},
-		{"Session", model.Session{}.TableName()},
-		{"AvatarCache", model.AvatarCache{}.TableName()},
-		{"BookmarkGroup", model.BookmarkGroup{}.TableName()},
-		{"Bookmark", model.Bookmark{}.TableName()},
-		{"MediaAsset", model.MediaAsset{}.TableName()},
-		{"LogEntry", model.LogEntry{}.TableName()},
-		{"RSSGroup", model.RSSGroup{}.TableName()},
-		{"RSSFeed", model.RSSFeed{}.TableName()},
-		{"RSSEntry", model.RSSEntry{}.TableName()},
-		{"RSSEntryFeed", model.RSSEntryFeed{}.TableName()},
-		{"RSSImage", model.RSSImage{}.TableName()},
-		{"RSSImageSource", model.RSSImageSource{}.TableName()},
-		{"RSSImageRef", model.RSSImageRef{}.TableName()},
-		{"Todo", model.Todo{}.TableName()},
-		{"Paste", model.Paste{}.TableName()},
-		{"BalanceTarget", model.BalanceTarget{}.TableName()},
+	}
+	// 与启动路径同源：model.AutoMigrateModels() 加上单独建表的 pastes。
+	var models []entry
+	for _, m := range append(model.AutoMigrateModels(), &model.Paste{}) {
+		tb, ok := m.(tabler)
+		if !ok {
+			t.Errorf("%T 没有实现 TableName()，表名会退回 GORM 的推断规则", m)
+			continue
+		}
+		models = append(models, entry{fmt.Sprintf("%T", m), tb.TableName()})
 	}
 
 	for _, m := range models {

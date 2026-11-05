@@ -88,23 +88,7 @@ func integrationDB(t *testing.T) *gorm.DB {
 		db.Exec("DROP TABLE IF EXISTS " + integrationSchema + "." + name + " CASCADE")
 	}
 
-	if err := db.AutoMigrate(
-		&model.User{},
-		&model.Session{},
-		&model.AvatarCache{},
-		&model.BookmarkGroup{},
-		&model.Bookmark{},
-		&model.MediaAsset{},
-		&model.LogEntry{},
-		&model.RSSGroup{},
-		&model.RSSFeed{},
-		&model.RSSEntry{},
-		&model.RSSEntryFeed{},
-		&model.RSSImage{},
-		&model.RSSImageSource{},
-		&model.RSSImageRef{},
-		&model.Todo{},
-	); err != nil {
+	if err := db.AutoMigrate(model.AutoMigrateModels()...); err != nil {
 		t.Fatalf("AutoMigrate 失败: %v", err)
 	}
 	if err := model.CreatePastesTable(db); err != nil {
