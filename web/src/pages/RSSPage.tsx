@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react'
 import { DeleteButton } from '@/components/Icon'
 import { ConfirmDialog, Modal, PageState, Pagination } from '@/components/WorkspaceUI'
+import { useHotkeys, type Hotkey } from '@/hooks/useHotkeys'
 import { errorMessage, useNotice } from '@/hooks/useNotice'
 import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
 import { isAbortError } from '@/lib/api'
@@ -54,12 +55,17 @@ const fetchModes: { value: FetchBy; label: string; note: string }[] = [
   { value: 'extension', label: 'Extension', note: '对端抓取，去 Extension 阅读' },
 ]
 
+/** rssHotkeys 是订阅阅读页的快捷键（group 统一用「订阅阅读」）。具体按键由后续任务接入。 */
+const rssHotkeys: Hotkey[] = []
+
 export function RSSPage() {
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
   const [groups, setGroups] = useState<RSSGroup[]>([])
   const { auth } = useAuth()
   const canWrite = hasLevel(auth, CONTENT_WRITE_LEVEL)
   const notice = useNotice()
+  // 阅读快捷键的接入点：往 rssHotkeys 里加条目即可同时生效并出现在 ? 帮助里。
+  useHotkeys(rssHotkeys)
   const [entries, setEntries] = useState<RSSEntry[]>([])
   const [total, setTotal] = useState(0)
   // 「全部条目」的计数：与当前筛选范围无关，单独请求。

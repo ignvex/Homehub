@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { PageState, Pagination } from '@/components/WorkspaceUI'
+import { useHotkeys } from '@/hooks/useHotkeys'
 import { errorMessage } from '@/hooks/useNotice'
 import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
 import { isAbortError } from '@/lib/api'
-import { searchApi, type SearchResult, type SearchScope } from '@/lib/search'
+import { SEARCH_INPUT_ID, searchApi, type SearchResult, type SearchScope } from '@/lib/search'
 import { rssApi, type RSSFeed } from '@/lib/rss'
 
 const scopes: { value: SearchScope; label: string }[] = [
@@ -114,25 +115,20 @@ export function SearchPage() {
     rssApi.listFeeds().then(value => setFeeds(value ?? [])).catch(() => undefined)
   }, [])
 
-  // Ctrl/Cmd+K 与 / 聚焦搜索框。列表页里手不离键盘找搜索框是常态。
+  // Ctrl/Cmd+K 聚焦搜索框。列表页里手不离键盘找搜索框是常态。
+  // 「/」由外壳的全局快捷键处理（useHotkeys 不接受修饰键，所以 Ctrl+K 仍在这里）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         inputRef.current?.focus()
         inputRef.current?.select()
-        return
-      }
-      if (event.key === '/' && !typing) {
-        event.preventDefault()
-        inputRef.current?.focus()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+  useHotkeys([{ keys: 'Ctrl+K', description: '聚焦搜索框（⌘K）', group: '数据搜索' }])
 
   function commit(next: string) {
     setPage(1)
@@ -156,6 +152,7 @@ export function SearchPage() {
     <form className="filter-bar" onSubmit={submit}>
       <input
         ref={inputRef}
+        id={SEARCH_INPUT_ID}
         autoFocus
         value={query}
         onChange={event => setQuery(event.target.value)}

@@ -611,6 +611,49 @@ a:focus-visible,
   font-size: var(--text-base);
 }
 
+/* ============ 快捷键 ============ */
+.kbd {
+  display: inline-block;
+  min-width: var(--space-8);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  text-align: center;
+}
+.hotkey-group + .hotkey-group { margin-top: var(--space-6); }
+.hotkey-group h3 {
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.hotkey-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  gap: var(--space-4) var(--space-6);
+  margin: 0;
+}
+.hotkey-list dt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.hotkey-list dd {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.hotkey-then {
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xs);
+}
+
 /* ============ 选项卡 ============ */
 .choice-tile {
   display: flex;

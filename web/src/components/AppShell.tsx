@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { HotkeyHelp } from '@/components/HotkeyHelp'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
+import { useHotkeys } from '@/hooks/useHotkeys'
 import type { AuthStatus } from '@/lib/home'
+import { useNavigate } from '@/lib/navigation'
+import { SEARCH_INPUT_ID } from '@/lib/search'
 import { LEVEL_ADMIN, LEVEL_OPERATOR, hasLevel } from '@/lib/permissions'
 
 // ============================================================
@@ -50,6 +54,12 @@ const navigation: NavGroup[] = [
   },
 ]
 
+/** focusSearchInput 聚焦搜索页的输入框并全选，方便直接改写关键词。 */
+function focusSearchInput() {
+  const input = document.getElementById(SEARCH_INPUT_ID)
+  if (input instanceof HTMLInputElement) { input.focus(); input.select() }
+}
+
 /** ShellPageMeta 只承载文档级信息。
  *
  * eyebrow 与 description 曾用于页面顶部的标题块，那块已删除——
@@ -93,6 +103,23 @@ export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; met
   const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => new Set())
   // 导航分组折叠状态 — 默认全部展开
   const [foldedGroups, setFoldedGroups] = useState<Set<string>>(loadFoldedGroups)
+  const [helpOpen, setHelpOpen] = useState(false)
+  // 跳到搜索页后要等新页面挂载才能聚焦输入框，所以先记下来，在 path 变化后处理。
+  const focusSearchPending = useRef(false)
+  const navigate = useNavigate()
+
+  useHotkeys([
+    {
+      keys: '/',
+      description: '打开搜索并聚焦输入框',
+      handler: () => {
+        if (path === '/search') { focusSearchInput(); return }
+        focusSearchPending.current = true
+        navigate('/search')
+      },
+    },
+    { keys: '?', description: '显示快捷键帮助', handler: () => setHelpOpen(true) },
+  ])
 
   // 页面标题不再画在界面上（原先顶栏与正文各画一遍），但浏览器标签栏
   // 仍需要它：多个标签并排时只靠 favicon 分不出谁是谁。
@@ -105,8 +132,14 @@ export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; met
   useEffect(() => {
     setOpen(false)
     if (firstRender.current) { firstRender.current = false; return }
-    contentRef.current?.focus({ preventScroll: true })
     setAnnouncement(`已打开 ${meta.title}`)
+    if (focusSearchPending.current && path === '/search') {
+      focusSearchPending.current = false
+      focusSearchInput()
+      return
+    }
+    focusSearchPending.current = false
+    contentRef.current?.focus({ preventScroll: true })
   }, [path, meta.title])
 
   // 移动端侧栏：打开时焦点进抽屉，Esc 关闭并把焦点还给 ☰ 按钮。
@@ -265,6 +298,7 @@ export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; met
         </main>
         <p className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement}</p>
       </div>
+      <HotkeyHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   )
 }

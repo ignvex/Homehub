@@ -8,6 +8,9 @@ import { api } from '@/lib/api'
 // 前端只负责分页与高亮。
 // ============================================================
 
+/** 搜索页输入框的 id。外壳的 `/` 快捷键跳到搜索页后按它找到输入框聚焦。 */
+export const SEARCH_INPUT_ID = 'search-input'
+
 export type SearchScope = 'all' | 'bookmarks' | 'rss'
 
 export interface BookmarkSearchItem {
