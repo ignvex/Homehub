@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react'
-import { ConfirmDialog, Modal, Notice, PageState, Pagination } from '@/components/WorkspaceUI'
+import { DeleteButton } from '@/components/Icon'
+import { ConfirmDialog, Modal, PageState, Pagination } from '@/components/WorkspaceUI'
+import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
+import { isAbortError } from '@/lib/api'
+import { useAuth } from '@/lib/auth'
+import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
 import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup } from '@/lib/rss'
 import { RSSFeedManager, RSSGroupManager } from '@/pages/RSSManage'
 import { extensionHubApi, type RemoteSubscription } from '@/lib/extensionHub'
@@ -51,17 +57,31 @@ const fetchModes: { value: FetchBy; label: string; note: string }[] = [
 export function RSSPage() {
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
   const [groups, setGroups] = useState<RSSGroup[]>([])
+  const { auth } = useAuth()
+  const canWrite = hasLevel(auth, CONTENT_WRITE_LEVEL)
+  const notice = useNotice()
   const [entries, setEntries] = useState<RSSEntry[]>([])
   const [total, setTotal] = useState(0)
-  const [selectedFeed, setSelectedFeed] = useState<number | null>(null)
-  const [selectedGroup, setSelectedGroup] = useState<number | null>(null)
-  const [page, setPage] = useState(1)
+  // 「全部条目」的计数：与当前筛选范围无关，单独请求。
+  const [allTotal, setAllTotal] = useState<number | null>(null)
+  // 筛选与页码同步到 URL（replaceState，不新增历史条目），刷新与分享链接都能还原。
+  const [feedParam, setFeedParam] = useQueryState('feed', '')
+  const [groupParam, setGroupParam] = useQueryState('group', '')
+  const [page, setPage] = useQueryNumber('page', 1)
+  const selectedFeed = Number(feedParam) > 0 ? Number(feedParam) : null
+  const selectedGroup = Number(groupParam) > 0 ? Number(groupParam) : null
+  const setSelectedFeed = (id: number | null) => setFeedParam(id ? String(id) : '')
+  const setSelectedGroup = (id: number | null) => setGroupParam(id ? String(id) : '')
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(() => new Set())
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [entriesLoading, setEntriesLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const [entriesError, setEntriesError] = useState('')
   const [busy, setBusy] = useState(false)
+  // 弹窗内的错误：弹窗处于 top layer，页面提示会被遮罩挡住。
+  const [formError, setFormError] = useState('')
+  const entriesRef = useRef<HTMLDivElement>(null)
+  const entriesAbort = useRef<AbortController | null>(null)
   // 远端订阅按 URL 索引，用于在调度面板里显示「对面到底抓到了没有」。
   const [remoteByURL, setRemoteByURL] = useState<Record<string, RemoteSubscription>>({})
 
@@ -105,16 +125,26 @@ export function RSSPage() {
       setGroups(groupList ?? [])
       // 选中的订阅源或分组可能已被删除（包括刚在管理窗口里批量删掉的）。
       // 不清理的话右侧会一直键在一个已不存在的对象上，标题也还挂着。
-      setSelectedGroup(current => current && (groupList ?? []).some(g => g.id === current) ? current : null)
-      setSelectedFeed(current => current && (feedList ?? []).some(f => f.id === current) ? current : null)
-      setError('')
+      // 只在列表非空时校验，避免请求失败的空列表把 URL 里的筛选清掉。
+      if (selectedGroup && groupList?.length && !groupList.some(g => g.id === selectedGroup)) setSelectedGroup(null)
+      if (selectedFeed && feedList?.length && !feedList.some(f => f.id === selectedFeed)) setSelectedFeed(null)
+      setLoadError('')
+      void loadAllTotal()
       // 远端状态是侧栏状态点与计数的依据，单独拉、失败不阻塞列表。
       void loadRemote()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取订阅源')
+      const text = errorMessage(cause, '无法读取订阅源')
+      if (silent) notice.error(text)
+      else setLoadError(text)
     } finally {
       if (!silent) setLoading(false)
     }
+  }
+
+  /** loadAllTotal 取不带筛选的条目总数（per_page=1，只要 total）。 */
+  async function loadAllTotal() {
+    try { setAllTotal((await rssApi.listEntries(null, null, 1, 1)).total ?? 0) }
+    catch { setAllTotal(null) }
   }
 
   /** loadRemote 取远端订阅状态。签名通道没启用时静默留空。 */
@@ -135,14 +165,14 @@ export function RSSPage() {
     setBusy(true)
     try {
       const result = await extensionHubApi.push(feedID, { fetchNow: true })
-      setMessage(result.created
+      notice.success(result.created
         ? `已推送「${label}」到 Extension，对端开始抓取`
         : `已更新 Extension 上的「${label}」`)
-      setError('')
     } catch (cause) {
-      const text = cause instanceof Error ? cause.message : '推送失败'
+      const text = errorMessage(cause, '推送失败')
       // 最常见的原因是没启用签名通道；直接说出来，别让人去查网络。
-      setError(text.includes('未启用') || text.includes('70001')
+      // 推送按钮在订阅源弹窗里，所以错误画在弹窗内。
+      setFormError(text.includes('未启用') || text.includes('70001')
         ? '还没有启用 Extension 签名通道：到「设置 → Extension 对接」填好地址与私钥后再推送'
         : text)
     } finally {
@@ -150,47 +180,66 @@ export function RSSPage() {
     }
   }
 
+  /** loadEntries 读取当前范围的条目。
+   *
+   * 新请求会取消上一个未完成的请求：快速切换订阅源时，慢的旧响应
+   * 不能覆盖新选择的结果。翻页时保留旧列表（降低透明度）直到新数据到达。
+   */
   async function loadEntries(feed = selectedFeed, group = selectedGroup, targetPage = page) {
+    entriesAbort.current?.abort()
+    const controller = new AbortController()
+    entriesAbort.current = controller
     setEntriesLoading(true)
     try {
-      const result = await rssApi.listEntries(feed, group, targetPage, perPage)
+      const result = await rssApi.listEntries(feed, group, targetPage, perPage, { signal: controller.signal })
       setEntries(result.list ?? [])
       setTotal(result.total ?? 0)
-      setError('')
+      setEntriesError('')
+      entriesRef.current?.scrollTo({ top: 0 })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取订阅条目')
+      if (isAbortError(cause)) return
+      setEntriesError(errorMessage(cause, '无法读取订阅条目'))
     } finally {
-      setEntriesLoading(false)
+      if (entriesAbort.current === controller) setEntriesLoading(false)
     }
   }
 
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadFeeds() }, [])
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadEntries(selectedFeed, selectedGroup, page) }, [selectedFeed, selectedGroup, page])
+  useEffect(() => () => entriesAbort.current?.abort(), [])
 
   /** run 执行一次写操作并刷新列表。
    *
    * silentReload 供弹窗内的操作使用：列表刷新不该把整页（连同正在
    * 交互的弹窗）换掉，也不该让列表自己在每次点击后闪一下。
    */
-  async function run(action: () => Promise<unknown>, success: string, reloadEntries = false, silentReload = false) {
+  async function run(action: () => Promise<unknown>, success: string, reloadEntries = false, inModal = false) {
     setBusy(true)
+    setFormError('')
     try {
       await action()
-      setMessage(success)
-      await loadFeeds(silentReload)
+      notice.success(success)
+      // 写操作后的刷新一律静默：列表不闪，打开中的弹窗也不会被卸载。
+      await loadFeeds(true)
       if (reloadEntries) await loadEntries()
       return true
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '操作失败')
+      const text = errorMessage(cause, '操作失败')
+      if (inModal) setFormError(text)
+      else notice.error(text)
       return false
     } finally {
       setBusy(false)
     }
   }
 
-  /** runSilent 是弹窗内部使用的 run：刷新列表但不切 loading、不闪列表。 */
+  /** runSilent 是管理弹窗内部使用的 run：错误画在弹窗里。 */
   const runSilent = (action: () => Promise<unknown>, success: string) =>
     run(action, success, false, true)
+
+  function closeFeedDraft() { setFeedDraft(null); setFormError('') }
 
   // ---------- 订阅源 ----------
   async function saveFeed(event: FormEvent) {
@@ -209,6 +258,8 @@ export function RSSPage() {
           group_id: feedDraft.group_id ?? null,
         }),
         '订阅源已更新',
+        false,
+        true,
       )
       : await run(
         () => rssApi.createFeed({
@@ -223,17 +274,20 @@ export function RSSPage() {
           fetch_now: feedDraft.fetch_now,
         }),
         feedDraft.fetch_now ? '订阅源已添加，正在后台抓取' : '订阅源已添加',
+        false,
+        true,
       )
-    if (saved) { setFeedDraft(null); await loadEntries(); void loadRemote() }
+    if (saved) { closeFeedDraft(); await loadEntries(); void loadRemote() }
   }
 
   async function removeFeed() {
     if (!pendingDeleteFeed) return
     const id = pendingDeleteFeed.id
-    const saved = await run(() => rssApi.deleteFeed(id), '订阅源及其条目已删除', true)
+    const saved = await run(() => rssApi.deleteFeed(id), '订阅源及其条目已删除', true, true)
     if (saved) {
       if (selectedFeed === id) { setSelectedFeed(null); setPage(1) }
       setPendingDeleteFeed(null)
+      setFormError('')
     }
   }
 
@@ -255,11 +309,10 @@ export function RSSPage() {
       const target = groupID === null
         ? '未分组'
         : groups.find(g => g.id === groupID)?.name ?? '目标分组'
-      setMessage(`「${feed.title || feed.url}」已移入${target}`)
-      setError('')
+      notice.success(`「${feed.title || feed.url}」已移入${target}`)
       await loadFeeds(true)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '移动订阅源失败')
+      notice.error(errorMessage(cause, '移动订阅源失败'))
     } finally {
       setBusy(false)
     }
@@ -318,6 +371,7 @@ export function RSSPage() {
   async function deleteFeeds(ids: number[]) {
     if (!ids.length) return
     setBusy(true)
+    setFormError('')
     const failed: number[] = []
     try {
       for (const id of ids) {
@@ -328,13 +382,9 @@ export function RSSPage() {
         }
       }
       const done = ids.length - failed.length
-      if (failed.length) {
-        setError(`删除未全部完成：成功 ${done} 个，失败 ${failed.length} 个，可重试`)
-        setMessage('')
-      } else {
-        setMessage(`已删除 ${done} 个订阅源`)
-        setError('')
-      }
+      // 批量删除只从订阅管理弹窗发起，失败信息画在弹窗里。
+      if (failed.length) setFormError(`删除未全部完成：成功 ${done} 个，失败 ${failed.length} 个，可重试`)
+      else notice.success(`已删除 ${done} 个订阅源`)
       await loadFeeds(true)
       await loadEntries()
     } finally {
@@ -384,31 +434,31 @@ export function RSSPage() {
   }
 
   if (loading && !feeds.length) return <PageState kind="loading" title="正在读取订阅源" />
-  if (error && !feeds.length) {
+  if (loadError && !feeds.length) {
     return <PageState
       kind="error"
       title="无法读取订阅源"
-      description={error}
+      description={loadError}
       action={<button className="button button--primary" onClick={() => void loadFeeds()}>重试</button>}
     />
   }
 
   return <div className="business-page rss-page">
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} onDismiss={() => setMessage('')} />
+    {notice.element}
 
     {!feeds.length
       ? <PageState
         kind="empty"
         title="还没有订阅源"
-        description="添加 RSS 或 Atom 链接后，抓取到的文章会出现在这里。"
-        action={<button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button>}
+        description={canWrite ? '添加 RSS 或 Atom 链接后，抓取到的文章会出现在这里。' : '管理员或编辑添加订阅源后，文章会出现在这里。'}
+        action={canWrite ? <button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button> : undefined}
       />
       : <section className="rss-panel">
         {/* 顶部工具栏：所有动作同一层级、同一形态，按使用顺序排。
             样式参照 qBittorrent WebUI——一条压缩的工具条 + 图标文字按钮，
             而不是把按钮分散到各栏里。 */}
         <div className="rss-toolbar">
+          {canWrite && <>
           <button type="button" className="rss-tool" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
             添加订阅源
@@ -440,6 +490,7 @@ export function RSSPage() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><path d="M20 5v6h-6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
             全部抓取
           </button>
+          </>}
           <span className="rss-toolbar-summary">
             {feeds.length} 个源 · {groups.length} 个分组
             {remoteCount > 0 && ` · ${remoteCount} 远端`}
@@ -462,7 +513,7 @@ export function RSSPage() {
               onClick={selectAll}
             >
               <span className="rss-nav-label">全部条目</span>
-              <span className="rss-nav-count">{total.toLocaleString()}</span>
+              <span className="rss-nav-count">{allTotal === null ? '—' : allTotal.toLocaleString()}</span>
             </button>
             {groups.map(group => {
               const groupFeeds = grouped.byGroup.get(group.id) ?? []
@@ -484,7 +535,7 @@ export function RSSPage() {
                 </button>
                 {expanded && <div className="rss-group-feeds">
                   {groupFeeds.length === 0
-                    ? <span className="rss-nav-item" style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>暂无订阅源</span>
+                    ? <span className="rss-nav-item rss-nav-empty">暂无订阅源</span>
                     : groupFeeds.map(feed => <FeedNavItem
                       key={feed.id}
                       feed={feed}
@@ -497,9 +548,8 @@ export function RSSPage() {
                     />)}
                   <button
                     type="button"
-                    className="rss-nav-item"
+                    className="rss-nav-item rss-nav-group-all"
                     onClick={() => selectGroup(group.id)}
-                    style={{ color: 'var(--color-link)', fontSize: 'var(--text-xs)' }}
                   >
                     <span className="rss-nav-label">查看该分组全部条目</span>
                   </button>
@@ -513,7 +563,7 @@ export function RSSPage() {
               className={`rss-group${dropTarget === 'loose' ? ' is-drop-target' : ''}`}
               {...dropHandlers('loose')}
             >
-              <span className="rss-group-head" style={{ cursor: 'default' }}>
+              <span className="rss-group-head rss-group-head--static">
                 <span className="rss-group-arrow" aria-hidden="true">▾</span>
                 <span className="rss-nav-label">未分组</span>
                 <span className="rss-nav-count">{grouped.loose.length}</span>
@@ -542,25 +592,27 @@ export function RSSPage() {
               <p>{total.toLocaleString()} 条内容{activeFeed?.last_fetch ? ` · 最近抓取 ${relativeTime(activeFeed.last_fetch)}` : ''}</p>
             </div>
             <div className="rss-main-actions">
-              {activeFeed && <>
-                <button className="rss-tool" disabled={busy} onClick={() => void run(() => rssApi.fetchFeed(activeFeed.id), `已抓取「${activeFeed.title || activeFeed.url}」`, true)}>抓取</button>
-                <button className="rss-tool" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, remark: activeFeed.remark ?? '', fetch_interval: activeFeed.fetch_interval, fetch_by: activeFeed.fetch_by ?? 'local', fetch_enabled: activeFeed.fetch_enabled ?? true, group_id: activeFeed.group_id, fetch_now: false })}>编辑</button>
-                <button className="icon-button" aria-label="删除该订阅源" onClick={() => setPendingDeleteFeed(activeFeed)}>×</button>
+              {activeFeed && canWrite && <>
+                <button type="button" className="rss-tool" disabled={busy} onClick={() => void run(() => rssApi.fetchFeed(activeFeed.id), `已抓取「${activeFeed.title || activeFeed.url}」`, true)}>抓取</button>
+                <button type="button" className="rss-tool" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, remark: activeFeed.remark ?? '', fetch_interval: activeFeed.fetch_interval, fetch_by: activeFeed.fetch_by ?? 'local', fetch_enabled: activeFeed.fetch_enabled ?? true, group_id: activeFeed.group_id, fetch_now: false })}>编辑</button>
+                <DeleteButton label={`删除订阅源「${activeFeed.title || activeFeed.url}」`} onClick={() => setPendingDeleteFeed(activeFeed)} />
               </>}
             </div>
           </header>
 
           {activeFeed?.error_msg && <p className="rss-feed-error">最近一次抓取失败：{activeFeed.error_msg}</p>}
 
-          {entriesLoading
+          {entriesLoading && !entries.length
             ? <PageState kind="loading" title="正在读取条目" />
+            : entriesError && !entries.length
+            ? <PageState kind="error" title="无法读取订阅条目" description={entriesError} action={<button type="button" className="button button--primary" onClick={() => void loadEntries()}>重试</button>} />
             : !entries.length
               ? <PageState
                 kind="empty"
                 title="没有可显示的条目"
                 description={activeFeed ? '这个订阅源还没有抓到文章，试试手动抓取。' : '切换订阅源，或调整筛选范围。'}
               />
-              : <div className="rss-entries">
+              : <div className={`rss-entries${entriesLoading ? ' is-stale' : ''}`} ref={entriesRef} aria-busy={entriesLoading}>
                 {entries.map(entry => <article className="rss-entry" key={entry.id}>
                   <div className="rss-entry-body">
                     <a className="rss-entry-title" href={entry.link} target="_blank" rel="noreferrer">{entry.title}</a>
@@ -578,7 +630,7 @@ export function RSSPage() {
                     className="rss-magnet"
                     url={entry.magnet_url}
                     title={entry.title}
-                    onCopied={ok => setMessage(ok ? '磁力链接已复制' : '自动复制不可用，已选中链接，按 Ctrl+C 复制')}
+                    onCopied={ok => ok ? notice.success('磁力链接已复制') : notice.info('自动复制不可用，已选中链接，按 Ctrl+C 复制')}
                   />}
                 </article>)}
               </div>}
@@ -594,10 +646,12 @@ export function RSSPage() {
       title={feedDraft?.id ? '订阅源设置' : '添加订阅源'}
       description={feedDraft?.id ? undefined : '只保存，不抓取。保存后再点「抓取」拉内容。'}
       size="large"
-      onClose={() => !busy && setFeedDraft(null)}
+      error={formError}
+      busy={busy}
+      onClose={closeFeedDraft}
       footer={<>
-        <button className="button button--quiet" type="button" onClick={() => setFeedDraft(null)} disabled={busy}>取消</button>
-        <button className="button button--primary" type="submit" form="rss-feed-form" disabled={busy}>{busy ? '保存中...' : '保存'}</button>
+        <button className="button button--quiet" type="button" onClick={closeFeedDraft} disabled={busy}>取消</button>
+        <button className="button button--primary" type="submit" form="rss-feed-form" disabled={busy}>{busy ? '保存中…' : '保存'}</button>
       </>}
     >
       <form id="rss-feed-form" className="rss-feed-form" onSubmit={saveFeed}>
@@ -690,7 +744,7 @@ export function RSSPage() {
                 type="button"
                 className="button button--quiet"
                 disabled={busy || feedDraft?.fetch_enabled === false}
-                onClick={() => feedDraft?.id && void run(() => rssApi.fetchFeed(feedDraft.id!), '已触发抓取', true)}
+                onClick={() => feedDraft?.id && void run(() => rssApi.fetchFeed(feedDraft.id!), '已触发抓取', true, true)}
               >
                 立即抓取
               </button>}
@@ -716,11 +770,13 @@ export function RSSPage() {
       title="创建分组"
       description="建好后把订阅源拖到分组标题上即可归入。"
       size="small"
-      onClose={() => !busy && setShowNewGroup(false)}
+      error={formError}
+      busy={busy}
+      onClose={() => { setShowNewGroup(false); setFormError('') }}
       footer={<>
-        <button className="button button--quiet" type="button" disabled={busy} onClick={() => setShowNewGroup(false)}>取消</button>
+        <button className="button button--quiet" type="button" disabled={busy} onClick={() => { setShowNewGroup(false); setFormError('') }}>取消</button>
         <button className="button button--primary" type="submit" form="new-group-form" disabled={busy || !newGroup.trim()}>
-          {busy ? '创建中...' : '创建'}
+          {busy ? '创建中…' : '创建'}
         </button>
       </>}
     >
@@ -728,7 +784,7 @@ export function RSSPage() {
         event.preventDefault()
         const name = newGroup.trim()
         if (!name) return
-        const saved = await run(() => rssApi.createGroup(name), `分组「${name}」已创建`)
+        const saved = await run(() => rssApi.createGroup(name), `分组「${name}」已创建`, false, true)
         if (saved) {
           setNewGroup('')
           setShowNewGroup(false)
@@ -755,7 +811,8 @@ export function RSSPage() {
       feeds={feeds}
       groups={groups}
       busy={busy}
-      onClose={() => setShowFeeds(false)}
+      error={formError}
+      onClose={() => { setShowFeeds(false); setFormError('') }}
       run={runSilent}
       deleteFeeds={deleteFeeds}
     />
@@ -766,7 +823,8 @@ export function RSSPage() {
       feeds={feeds}
       groups={groups}
       busy={busy}
-      onClose={() => setShowGroups(false)}
+      error={formError}
+      onClose={() => { setShowGroups(false); setFormError('') }}
       run={runSilent}
     />
 
@@ -777,7 +835,8 @@ export function RSSPage() {
       confirmLabel="删除"
       danger
       busy={busy}
-      onClose={() => setPendingDeleteFeed(null)}
+      error={formError}
+      onClose={() => { setPendingDeleteFeed(null); setFormError('') }}
       onConfirm={() => void removeFeed()}
     />
   </div>

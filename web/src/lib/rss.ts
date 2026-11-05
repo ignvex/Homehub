@@ -130,11 +130,11 @@ export const rssApi = {
   deleteFeed: (id: number) => api.delete<void>(`/rss/feeds/${id}`),
   fetchFeed: (id: number) => api.post<void>(`/rss/feeds/${id}/fetch`),
   fetchAll: () => api.post<void>('/rss/fetch-all'),
-  listEntries: (feedID: number | null, groupID: number | null, page: number, perPage = 20) => {
+  listEntries: (feedID: number | null, groupID: number | null, page: number, perPage = 20, init?: RequestInit) => {
     const query = new URLSearchParams({ page: String(page), per_page: String(perPage) })
     if (feedID) query.set('feed_id', String(feedID))
     if (groupID) query.set('group_id', String(groupID))
-    return api.get<PageResult<RSSEntry>>(`/rss/entries?${query}`)
+    return api.get<PageResult<RSSEntry>>(`/rss/entries?${query}`, init)
   },
   // 正文按需取：列表只带摘要，展开某条时才调这个端点。
   entryContent: (id: number) => api.get<RSSEntryContent>(`/rss/entries/${id}/content`),

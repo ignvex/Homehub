@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { DeleteButton } from '@/components/Icon'
 import { ConfirmDialog, Modal } from '@/components/WorkspaceUI'
 import { rssApi, type BatchUpdateFeedBody, type RSSFeed, type RSSGroup } from '@/lib/rss'
 import { relativeTime } from '@/lib/format'
@@ -18,6 +19,8 @@ interface ManageProps {
   feeds: RSSFeed[]
   groups: RSSGroup[]
   busy: boolean
+  /** 弹窗内的错误（由父级 run 写入）。 */
+  error?: string
   onClose: () => void
   /** 执行一次写操作。父级负责 busy 态、成功后重载并提示。 */
   run: (action: () => Promise<unknown>, success: string) => Promise<boolean>
@@ -46,7 +49,10 @@ function feedState(feed: RSSFeed): string {
 // 订阅管理
 // ============================================================
 
-export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, deleteFeeds }: FeedManageProps) {
+/** 批量删除确认文案里最多列出的名称数。 */
+const MAX_LISTED_NAMES = 5
+
+export function RSSFeedManager({ open, feeds, groups, busy, error, onClose, run, deleteFeeds }: FeedManageProps) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [targetGroup, setTargetGroup] = useState('')
@@ -114,14 +120,32 @@ export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, delete
   const groupName = (feed: RSSFeed) =>
     groups.find(group => group.id === feed.group_id)?.name ?? '未分组'
 
+  // 关闭时清空选中与筛选：下次打开不应带着上次的勾选去批量操作。
+  function close() {
+    setSelected(new Set())
+    setQuery('')
+    onClose()
+  }
+
+  // 确认文案：列出名称（最多 5 个），并点出不在当前筛选结果里的数量——
+  // 筛选后看不到的已选项最容易被误删。
+  const selectedFeeds = feeds.filter(feed => selected.has(feed.id))
+  const hiddenCount = selectedFeeds.filter(feed => !visible.includes(feed)).length
+  const listedNames = selectedFeeds.slice(0, MAX_LISTED_NAMES).map(feed => `「${feedLabel(feed)}」`).join('、')
+  const moreNames = selectedFeeds.length > MAX_LISTED_NAMES ? `等 ${selectedFeeds.length} 个` : ''
+  const deleteDescription = `将删除 ${listedNames}${moreNames} 订阅源及其收录关联，其他源仍收录的内容会保留。`
+    + (hiddenCount > 0 ? `其中 ${hiddenCount} 个不在当前筛选结果中。` : '')
+
   return <>
     <Modal
       open={open}
       title="订阅管理"
       description="勾选多个订阅源后批量修改分组、抓取方式或调度状态。"
       size="large"
-      onClose={() => !busy && onClose()}
-      footer={<button className="button button--quiet" type="button" onClick={onClose} disabled={busy}>关闭</button>}
+      error={pendingDelete ? undefined : error}
+      busy={busy}
+      onClose={close}
+      footer={<button className="button button--quiet" type="button" onClick={close} disabled={busy}>关闭</button>}
     >
       <div className="rss-manage">
         <div className="rss-manage-bar">
@@ -171,7 +195,7 @@ export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, delete
                 </thead>
                 <tbody>
                   {visible.map(feed => <tr key={feed.id} className={selected.has(feed.id) ? 'is-selected' : undefined}>
-                    <td className="rss-col-check">
+                    <td className="rss-col-check" data-label="选择">
                       <input
                         type="checkbox"
                         checked={selected.has(feed.id)}
@@ -179,17 +203,17 @@ export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, delete
                         aria-label={`选择 ${feedLabel(feed)}`}
                       />
                     </td>
-                    <td>
+                    <td data-label="订阅源">
                       <span className="rss-manage-name">{feedLabel(feed)}</span>
                       {feed.title && <small className="table-subtext">{feed.url}</small>}
                     </td>
-                    <td className="rss-col-group">{groupName(feed)}</td>
-                    <td className="rss-col-mode">
+                    <td className="rss-col-group" data-label="分组">{groupName(feed)}</td>
+                    <td className="rss-col-mode" data-label="抓取">
                       {feed.fetch_by === 'extension'
                         ? <span className="rss-tag is-remote">Extension</span>
                         : <span className="rss-tag">本机</span>}
                     </td>
-                    <td className="rss-col-state">
+                    <td className="rss-col-state" data-label="状态">
                       <span className="rss-state-cell">
                         <span className={`status-dot ${feed.fetch_enabled === false ? 'is-warn' : feed.error_msg ? 'is-error' : 'is-ok'}`} aria-hidden="true" />
                         {feedState(feed)}
@@ -268,10 +292,11 @@ export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, delete
     <ConfirmDialog
       open={pendingDelete}
       title="删除订阅源"
-      description={`将删除选中的 ${selectedIDs.length} 个订阅源及其收录关联。其他源仍收录的内容会保留。`}
+      description={deleteDescription}
       confirmLabel="删除"
       danger
       busy={busy}
+      error={error}
       onClose={() => setPendingDelete(false)}
       onConfirm={() => void removeSelected()}
     />
@@ -282,7 +307,7 @@ export function RSSFeedManager({ open, feeds, groups, busy, onClose, run, delete
 // 分组管理
 // ============================================================
 
-export function RSSGroupManager({ open, feeds, groups, busy, onClose, run }: ManageProps) {
+export function RSSGroupManager({ open, feeds, groups, busy, error, onClose, run }: ManageProps) {
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [newGroup, setNewGroup] = useState('')
   const [renaming, setRenaming] = useState<number | null>(null)
@@ -367,7 +392,8 @@ export function RSSGroupManager({ open, feeds, groups, busy, onClose, run }: Man
                 onChange={event => setRenameValue(event.target.value)}
                 onKeyDown={event => {
                   if (event.key === 'Enter') { event.preventDefault(); void commitRename(group) }
-                  if (event.key === 'Escape') setRenaming(null)
+                  // 只取消重命名：不阻止的话 Esc 会冒泡到 dialog，把整个管理窗口关掉。
+                  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRenaming(null) }
                 }}
                 maxLength={100}
                 aria-label="分组名称"
@@ -394,12 +420,7 @@ export function RSSGroupManager({ open, feeds, groups, busy, onClose, run }: Man
                 aria-label={`重命名分组 ${group.name}`}
                 onClick={() => { setRenaming(group.id); setRenameValue(group.name) }}
               >✎</button>
-              <button
-                className="icon-button"
-                type="button"
-                aria-label={`删除分组 ${group.name}`}
-                onClick={() => setPendingDelete(group)}
-              >×</button>
+              <DeleteButton label={`删除分组「${group.name}」`} onClick={() => setPendingDelete(group)} />
             </div>}
           </>}
       </div>
@@ -461,7 +482,9 @@ export function RSSGroupManager({ open, feeds, groups, busy, onClose, run }: Man
       title="管理分组"
       description="展开分组可以添加或移出订阅源；删除分组时其下订阅源会移回未分组。"
       size="large"
-      onClose={() => !busy && onClose()}
+      error={pendingDelete ? undefined : error}
+      busy={busy}
+      onClose={onClose}
       footer={<button className="button button--quiet" type="button" onClick={onClose} disabled={busy}>关闭</button>}
     >
       <div className="rss-group-manage">
@@ -493,6 +516,7 @@ export function RSSGroupManager({ open, feeds, groups, busy, onClose, run }: Man
       confirmLabel="删除"
       danger
       busy={busy}
+      error={error}
       onClose={() => setPendingDelete(null)}
       onConfirm={() => void removeGroup()}
     />

@@ -206,6 +206,15 @@
 }
 
 /* 分组行 */
+.rss-nav-item.rss-nav-empty {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.rss-nav-item.rss-nav-group-all {
+  color: var(--color-link);
+  font-size: var(--text-xs);
+}
+.rss-group-head.rss-group-head--static { cursor: default; }
 .rss-group-head {
   display: flex;
   align-items: center;
@@ -274,6 +283,11 @@
 /* 条目 */
 /* 条目区独立滚动：页面本身不随条目数变长，
  * 左栏与工具栏始终可见。这是 qB 的基本行为。 */
+.rss-entries.is-stale {
+  opacity: .55;
+  transition: opacity var(--dur-base) ease;
+  pointer-events: none;
+}
 .rss-entries {
   display: flex;
   flex-direction: column;
@@ -418,12 +432,12 @@
 }
 .rss-magnet:hover {
   background: var(--color-accent);
-  color: #fffdf4;
+  color: var(--color-nav-text);
 }
 /* 复制成功：换成绿色对钩，避免用户反复点击确认是否命中 */
 .rss-magnet.is-copied {
   background: var(--color-success);
-  color: #fffdf4;
+  color: var(--color-nav-text);
 }
 
 /* ============ 订阅源错误详情 ============ */
@@ -723,7 +737,7 @@
 @media (max-width: 560px) {
   .rss-main-head { flex-direction: column; align-items: flex-start; }
   .rss-main-actions { width: 100%; }
-  .rss-main-actions .button { flex: 1; }
+  .rss-main-actions .rss-tool { flex: 1; }
   /* 条目标题与桌面同档：手机上字更不该变小。 */
   .rss-entry-title { font-size: var(--text-base); }
   /* 抓取方式与参数在窄屏堆叠：两列会让说明文字压成一条细线。 */
