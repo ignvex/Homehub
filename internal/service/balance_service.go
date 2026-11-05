@@ -469,7 +469,8 @@ func (s *BalanceService) viewOf(t *model.BalanceTarget) BalanceTargetView {
 //
 // ctx 用于生命周期控制（如程序退出时取消）。
 // 刷新间隔由 config.json 中的 balance_monitor.refresh_interval_seconds 控制。
-func (s *BalanceService) StartBackgroundRefresh(ctx context.Context) {
+// goroutine 登记在 wg 上，供关闭时等待它退出。
+func (s *BalanceService) StartBackgroundRefresh(ctx context.Context, wg *sync.WaitGroup) {
 	cfg := config.Get()
 	if cfg == nil || !cfg.BalanceMonitor.Enabled {
 		logger.Info("[balance] 余额监控未启用，跳过后台刷新")
@@ -486,7 +487,7 @@ func (s *BalanceService) StartBackgroundRefresh(ctx context.Context) {
 	// 立即执行一次刷新
 	s.refreshAll()
 
-	go func() {
+	wg.Go(func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -503,7 +504,7 @@ func (s *BalanceService) StartBackgroundRefresh(ctx context.Context) {
 				s.refreshAll()
 			}
 		}
-	}()
+	})
 }
 
 // ============================================================

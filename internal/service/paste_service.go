@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
@@ -153,8 +154,8 @@ func (s *PasteService) PurgeExpired() (int64, error) {
 
 // StartPurgeLoop 启动后台定期清理过期粘贴。
 //
-// ctx 用于生命周期控制。清理间隔由 config 控制。
-func (s *PasteService) StartPurgeLoop(ctx context.Context) {
+// ctx 用于生命周期控制，goroutine 登记在 wg 上。清理间隔由 config 控制。
+func (s *PasteService) StartPurgeLoop(ctx context.Context, wg *sync.WaitGroup) {
 	cfg := config.Get()
 	intervalHours := 24
 	if cfg != nil && cfg.Pastebin.CleanupIntervalHours > 0 {
@@ -164,7 +165,7 @@ func (s *PasteService) StartPurgeLoop(ctx context.Context) {
 
 	logger.Info("[pastebin] 过期清理已启动", "interval", interval.String())
 
-	go func() {
+	wg.Go(func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -181,5 +182,5 @@ func (s *PasteService) StartPurgeLoop(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }

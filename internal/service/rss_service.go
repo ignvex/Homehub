@@ -1073,9 +1073,9 @@ const backgroundTick = 5 * time.Second
 //   - 配置（开关/间隔）变化时重置计时，立即按新配置执行
 //   - 到达下次抓取时间时执行一轮并发抓取
 //
-// ctx 取消时停止。
-func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
-	go func() {
+// ctx 取消时停止；goroutine 登记在 wg 上，供关闭时等待它退出。
+func (s *RSSService) StartBackgroundFetcher(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Go(func() {
 		ticker := time.NewTicker(backgroundTick)
 		defer ticker.Stop()
 
@@ -1115,7 +1115,7 @@ func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
 			case <-ticker.C:
 			}
 		}
-	}()
+	})
 }
 
 // StartImageJanitor 启动图片缓存清理任务。
@@ -1123,9 +1123,9 @@ func (s *RSSService) StartBackgroundFetcher(ctx context.Context) {
 // 启动后先跑一次（回收上次进程异常退出留下的临时文件/孤儿记录），
 // 之后按 rss.image_cleanup_interval_hours 周期执行。配置热更新在下一轮
 // 生效。无引用图片保留 rss.image_retention_days 天，避免刚下载、引用
-// 尚未写入的图片被误删。
-func (s *RSSService) StartImageJanitor(ctx context.Context) {
-	go func() {
+// 尚未写入的图片被误删。goroutine 登记在 wg 上。
+func (s *RSSService) StartImageJanitor(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Go(func() {
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 
@@ -1172,7 +1172,7 @@ func (s *RSSService) StartImageJanitor(ctx context.Context) {
 
 			timer.Reset(imageCleanupInterval())
 		}
-	}()
+	})
 }
 
 // ============================================================

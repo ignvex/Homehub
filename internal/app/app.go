@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
 	"github.com/ignvex/HomeHub/internal/database"
@@ -149,14 +151,25 @@ func Run(opts Options) error {
 	// ============================================================
 	// 6. 后台任务：统一一个可取消的根 context
 	// ============================================================
+	//
+	// 所有后台 goroutine 登记在 bg 上。关闭顺序是硬约束：
+	// 信号 → HTTP Shutdown（server.Run 返回）→ cancel → 等待后台退出 → 关库。
+	// 不等待就关库，正在执行的抓取/清理会撞上已关闭的连接池，
+	// 半批写入留在库里。
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var bg sync.WaitGroup
+	defer func() {
+		cancel()
+		if !waitTimeout(&bg, backgroundStopTimeout) {
+			logger.Warn("后台任务未在超时内退出，继续关闭", "timeout", backgroundStopTimeout.String())
+		}
+	}()
 
-	go service.CleanupExpiredSessions(ctx, db)
-	svc.RSS.StartBackgroundFetcher(ctx)
-	svc.RSS.StartImageJanitor(ctx)
-	svc.Balance.StartBackgroundRefresh(ctx)
-	svc.Paste.StartPurgeLoop(ctx)
+	bg.Go(func() { service.CleanupExpiredSessions(ctx, db) })
+	svc.RSS.StartBackgroundFetcher(ctx, &bg)
+	svc.RSS.StartImageJanitor(ctx, &bg)
+	svc.Balance.StartBackgroundRefresh(ctx, &bg)
+	svc.Paste.StartPurgeLoop(ctx, &bg)
 
 	logger.Info("后台任务已启动",
 		"rss", cfg.RSS.BackgroundFetchEnabled,
@@ -167,6 +180,30 @@ func Run(opts Options) error {
 	// ============================================================
 	// 7. HTTP 服务
 	// ============================================================
+	//
+	// server.Run 在收到信号并完成 Shutdown 后返回；随后上面的 defer
+	// 依次执行：先停后台任务，再关数据库。
 	handler.Init(svc)
 	return server.Run()
+}
+
+// backgroundStopTimeout 是关闭时等待后台任务退出的上限。
+//
+// 抓取单个源有自己的超时预算，但 ctx 取消后应立即返回；给 10 秒
+// 兜住正在提交的事务，超时就放弃等待，不让进程卡在退出阶段。
+const backgroundStopTimeout = 10 * time.Second
+
+// waitTimeout 等待 wg 归零，超时返回 false。
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
