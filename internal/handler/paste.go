@@ -98,6 +98,7 @@ func PasteList(c *gin.Context) {
 //	@Param			request	body		createPasteRequest	true	"粘贴内容"
 //	@Success		200		{object}	Response{data=pasteResponse}	"创建成功"
 //	@Failure		400		{object}	Response						"内容为空或超长"
+//	@Failure		429		{object}	Response						"请求过于频繁（每 IP 每分钟 10 次）"
 //	@Failure		500		{object}	Response						"服务内部错误"
 //	@Router			/pastes [post]
 func PasteCreate(c *gin.Context) {

@@ -625,6 +625,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
+                    },
+                    "429": {
+                        "description": "登录尝试过多",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
                     }
                 }
             }
@@ -2357,6 +2363,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
+                    "429": {
+                        "description": "请求过于频繁（每 IP 每分钟 10 次）",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
                     "500": {
                         "description": "服务内部错误",
                         "schema": {
@@ -2478,7 +2490,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "每页数量（默认 20）",
+                        "description": "每页数量（默认 20，上限 100）",
                         "name": "per_page",
                         "in": "query"
                     }
@@ -2934,6 +2946,18 @@ const docTemplate = `{
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
+                    "404": {
+                        "description": "订阅源不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "该订阅源正在抓取中",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
                     "500": {
                         "description": "抓取失败",
                         "schema": {
@@ -3291,6 +3315,12 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "缺少搜索关键词或范围不合法",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未登录",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -3722,6 +3752,10 @@ const docTemplate = `{
                 "level": {
                     "description": "日志级别：debug / info / warn / error，默认 \"info\"",
                     "type": "string"
+                },
+                "retention_days": {
+                    "description": "数据库日志保留天数，0 表示不限，默认 30，范围 0-3650",
+                    "type": "integer"
                 }
             }
         },
@@ -5137,6 +5171,10 @@ const docTemplate = `{
                 },
                 "level": {
                     "type": "string"
+                },
+                "retention_days": {
+                    "description": "RetentionDays 数据库日志保留天数，0 表示不限。",
+                    "type": "integer"
                 }
             }
         },
