@@ -30,6 +30,24 @@ type SafeConfig struct {
 	RSS      config.RSSConfig      `json:"rss"`
 	// Extension 含连接参数，但**绝不含私钥内容**。
 	Extension SafeExtensionConfig `json:"extension"`
+	// BalanceMonitor 只含模块开关；监控点（含 api_key）在数据库里单独管理，
+	// config.json 里遗留的 targets 绝不下发。
+	BalanceMonitor SafeBalanceMonitorConfig `json:"balance_monitor"`
+}
+
+// SafeBalanceMonitorConfig 是余额监控的开关视图，不含 targets。
+type SafeBalanceMonitorConfig struct {
+	Enabled                bool `json:"enabled"`
+	RefreshIntervalSeconds int  `json:"refresh_interval_seconds"`
+	AllowPrivateHosts      bool `json:"allow_private_hosts"`
+}
+
+// BalanceMonitorUpdate 是 Web 端可修改的余额监控字段，逐字段合并，
+// 不碰 targets。
+type BalanceMonitorUpdate struct {
+	Enabled                *bool `json:"enabled,omitempty"`
+	RefreshIntervalSeconds *int  `json:"refresh_interval_seconds,omitempty"`
+	AllowPrivateHosts      *bool `json:"allow_private_hosts,omitempty"`
 }
 
 // SafeDatabaseConfig 不含密码的数据库配置。
@@ -139,6 +157,11 @@ func (s *ConfigService) GetSafe() SafeConfig {
 			TimeoutSeconds: cfg.Extension.TimeoutSeconds,
 			PrivateKeySet:  strings.TrimSpace(cfg.Extension.PrivateKeyPEM) != "",
 		},
+		BalanceMonitor: SafeBalanceMonitorConfig{
+			Enabled:                cfg.BalanceMonitor.Enabled,
+			RefreshIntervalSeconds: cfg.BalanceMonitor.RefreshIntervalSeconds,
+			AllowPrivateHosts:      cfg.BalanceMonitor.AllowPrivateHosts,
+		},
 	}
 }
 
@@ -157,12 +180,18 @@ type UpdateConfigRequest struct {
 	RSS      *config.RSSConfig      `json:"rss,omitempty"`
 	// Extension 只接受连接参数；私钥走单独的 setKey 端点，不进这个结构体。
 	Extension *ExtensionUpdate `json:"extension,omitempty"`
+	// BalanceMonitor 只接受开关字段；监控点走 /balances 接口。
+	BalanceMonitor *BalanceMonitorUpdate `json:"balance_monitor,omitempty"`
 }
 
 // ServerUpdate 服务器配置更新字段。
+//
+// 三个字段都只在重启后生效：监听地址与 Gin 引擎都只在启动时构建。
 type ServerUpdate struct {
 	Host *string `json:"host,omitempty"`
 	Port *int    `json:"port,omitempty"`
+	// TrustedProxies 可信反向代理的 IP/CIDR；合法性由写盘前的校验把关。
+	TrustedProxies *[]string `json:"trusted_proxies,omitempty"`
 }
 
 // DatabaseUpdate 数据库配置更新字段。
@@ -205,6 +234,15 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 			}
 			if req.Server.Port != nil {
 				srv["port"] = float64(*req.Server.Port)
+			}
+			if req.Server.TrustedProxies != nil {
+				proxies := make([]any, 0, len(*req.Server.TrustedProxies))
+				for _, p := range *req.Server.TrustedProxies {
+					if p = strings.TrimSpace(p); p != "" {
+						proxies = append(proxies, p)
+					}
+				}
+				srv["trusted_proxies"] = proxies
 			}
 		}
 		if req.Database != nil {
@@ -275,6 +313,19 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 		}
 		if req.Extension != nil {
 			mergeExtension(raw, *req.Extension)
+		}
+		if req.BalanceMonitor != nil {
+			ensureMap(raw, "balance_monitor")
+			bm := raw["balance_monitor"].(map[string]any)
+			if req.BalanceMonitor.Enabled != nil {
+				bm["enabled"] = *req.BalanceMonitor.Enabled
+			}
+			if req.BalanceMonitor.RefreshIntervalSeconds != nil {
+				bm["refresh_interval_seconds"] = float64(*req.BalanceMonitor.RefreshIntervalSeconds)
+			}
+			if req.BalanceMonitor.AllowPrivateHosts != nil {
+				bm["allow_private_hosts"] = *req.BalanceMonitor.AllowPrivateHosts
+			}
 		}
 		return nil
 	})

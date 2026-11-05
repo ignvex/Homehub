@@ -373,3 +373,87 @@ func TestUpdateWritesLogRetentionDays(t *testing.T) {
 		t.Fatalf("热加载后 RetentionDays = %d，期望 0", got)
 	}
 }
+
+// TestGetSafeBalanceMonitorOmitsTargets 确认设置页能读到余额监控开关，
+// 但监控点（含 api_key）绝不随配置视图下发。
+//
+// 防的回归：有人图省事把 config.BalanceMonitorConfig 整个塞进 SafeConfig，
+// 遗留在 config.json 里的 targets[].api_key 就会出现在 GET /config 响应里。
+func TestGetSafeBalanceMonitorOmitsTargets(t *testing.T) {
+	base := strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1)
+	base = strings.Replace(base, `"log": {`,
+		`"balance_monitor": {"enabled": true, "refresh_interval_seconds": 120, "allow_private_hosts": true,
+			"targets": [{"name": "ds", "type": "deepseek", "base_url": "https://api.example.com", "api_key": "LEAKMARKER"}]},
+	"log": {`, 1)
+	loadSettingsConfig(t, base)
+
+	safe := NewConfigService().GetSafe()
+	if !safe.BalanceMonitor.Enabled || safe.BalanceMonitor.RefreshIntervalSeconds != 120 || !safe.BalanceMonitor.AllowPrivateHosts {
+		t.Fatalf("余额监控视图字段不对: %+v", safe.BalanceMonitor)
+	}
+	out, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "LEAKMARKER") || strings.Contains(string(out), "targets") {
+		t.Fatalf("配置视图泄露了监控点: %s", out)
+	}
+}
+
+// TestUpdateBalanceMonitorMergesFields 确认只改传入的字段，且 targets 保留。
+//
+// 整段替换会把 config.json 里遗留的 targets 清掉；它们虽已迁入数据库，
+// 但「保存一个开关就删掉别的配置」不是用户能预期的行为。
+func TestUpdateBalanceMonitorMergesFields(t *testing.T) {
+	base := strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1)
+	base = strings.Replace(base, `"log": {`,
+		`"balance_monitor": {"enabled": true, "refresh_interval_seconds": 120,
+			"targets": [{"name": "ds", "type": "deepseek", "base_url": "https://api.example.com", "api_key": "sk-keep"}]},
+	"log": {`, 1)
+	path := loadSettingsConfig(t, base)
+
+	allow := true
+	if err := NewConfigService().Update(UpdateConfigRequest{
+		BalanceMonitor: &BalanceMonitorUpdate{AllowPrivateHosts: &allow},
+	}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+
+	bm := readConfigJSON(t, path)["balance_monitor"].(map[string]any)
+	if bm["allow_private_hosts"] != true {
+		t.Fatalf("allow_private_hosts 未写入: %v", bm)
+	}
+	if bm["refresh_interval_seconds"] != float64(120) || bm["enabled"] != true {
+		t.Fatalf("未传入的字段被改动: %v", bm)
+	}
+	if targets, ok := bm["targets"].([]any); !ok || len(targets) != 1 {
+		t.Fatalf("targets 被清掉了: %v", bm["targets"])
+	}
+	if !config.Get().BalanceMonitor.AllowPrivateHosts {
+		t.Fatal("热加载后 AllowPrivateHosts 应为 true")
+	}
+}
+
+// TestUpdateServerTrustedProxies 确认可信代理能写入，非法值在落盘前被拒。
+func TestUpdateServerTrustedProxies(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+	svc := NewConfigService()
+
+	good := []string{"10.0.0.1", "172.16.0.0/12"}
+	if err := svc.Update(UpdateConfigRequest{Server: &ServerUpdate{TrustedProxies: &good}}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	got := readConfigJSON(t, path)["server"].(map[string]any)["trusted_proxies"].([]any)
+	if len(got) != 2 || got[1] != "172.16.0.0/12" {
+		t.Fatalf("trusted_proxies 写入不对: %v", got)
+	}
+
+	bad := []string{"not-an-ip"}
+	if err := svc.Update(UpdateConfigRequest{Server: &ServerUpdate{TrustedProxies: &bad}}); err == nil {
+		t.Fatal("非法代理地址应被拒绝")
+	}
+	again := readConfigJSON(t, path)["server"].(map[string]any)["trusted_proxies"].([]any)
+	if len(again) != 2 {
+		t.Fatalf("校验失败后文件不该被改动: %v", again)
+	}
+}

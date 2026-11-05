@@ -465,7 +465,10 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 - 每个 target 的 `api_key` **必填**（与 `enabled` 无关，缺失会导致配置校验失败）
 - `refresh_interval_seconds` 范围 10–3600
 - `allow_private_hosts`（默认 false）：默认在连接层拒绝内网/回环/链路本地
-  地址，防止借余额查询探测内网；自建中转在内网时再显式打开
+  地址，防止借余额查询探测内网；自建中转在内网时再显式打开。可在设置页
+  修改，热更新生效
+- 设置页读取的配置视图只含 `enabled` / `refresh_interval_seconds` /
+  `allow_private_hosts` 三个开关，`targets`（含 `api_key`）不会下发
 - 查询失败时错误信息只含 HTTP 状态码，对方响应体只写 debug 日志
 - 前端用 Chart.js 饼图展示
 
@@ -611,6 +614,8 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
   其他来源伪造这两个头不起作用。Gin 默认信任所有来源，那样换个头
   就能绕过限流与锁定，所以这里反过来默认谁都不信
 - 每项必须是合法 IP 或 CIDR，否则启动时配置校验失败
+- 也可以在设置页「服务器」一节修改（一行一个）。与监听地址一样，
+  **改完需要重启**才生效：Gin 引擎只在启动时构建
 
 ### CSRF 防护
 

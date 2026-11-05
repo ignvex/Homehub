@@ -5351,6 +5351,20 @@ const docTemplate = `{
                 }
             }
         },
+        "service.BalanceMonitorUpdate": {
+            "type": "object",
+            "properties": {
+                "allow_private_hosts": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "refresh_interval_seconds": {
+                    "type": "integer"
+                }
+            }
+        },
         "service.BalanceStatus": {
             "type": "object",
             "properties": {
@@ -5950,11 +5964,33 @@ const docTemplate = `{
                 }
             }
         },
+        "service.SafeBalanceMonitorConfig": {
+            "type": "object",
+            "properties": {
+                "allow_private_hosts": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "refresh_interval_seconds": {
+                    "type": "integer"
+                }
+            }
+        },
         "service.SafeConfig": {
             "type": "object",
             "properties": {
                 "auth": {
                     "$ref": "#/definitions/service.SafeAuthConfig"
+                },
+                "balance_monitor": {
+                    "description": "BalanceMonitor 只含模块开关；监控点（含 api_key）在数据库里单独管理，\nconfig.json 里遗留的 targets 绝不下发。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/service.SafeBalanceMonitorConfig"
+                        }
+                    ]
                 },
                 "bookmark": {
                     "$ref": "#/definitions/config.BookmarkConfig"
@@ -6161,6 +6197,13 @@ const docTemplate = `{
                 },
                 "port": {
                     "type": "integer"
+                },
+                "trusted_proxies": {
+                    "description": "TrustedProxies 可信反向代理的 IP/CIDR；合法性由写盘前的校验把关。",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -6281,6 +6324,14 @@ const docTemplate = `{
             "properties": {
                 "auth": {
                     "$ref": "#/definitions/service.AuthUpdate"
+                },
+                "balance_monitor": {
+                    "description": "BalanceMonitor 只接受开关字段；监控点走 /balances 接口。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/service.BalanceMonitorUpdate"
+                        }
+                    ]
                 },
                 "bookmark": {
                     "$ref": "#/definitions/config.BookmarkConfig"

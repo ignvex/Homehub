@@ -869,6 +869,15 @@ definitions:
       transition_effect:
         type: string
     type: object
+  service.BalanceMonitorUpdate:
+    properties:
+      allow_private_hosts:
+        type: boolean
+      enabled:
+        type: boolean
+      refresh_interval_seconds:
+        type: integer
+    type: object
   service.BalanceStatus:
     properties:
       enabled:
@@ -1306,10 +1315,25 @@ definitions:
       username:
         type: string
     type: object
+  service.SafeBalanceMonitorConfig:
+    properties:
+      allow_private_hosts:
+        type: boolean
+      enabled:
+        type: boolean
+      refresh_interval_seconds:
+        type: integer
+    type: object
   service.SafeConfig:
     properties:
       auth:
         $ref: '#/definitions/service.SafeAuthConfig'
+      balance_monitor:
+        allOf:
+        - $ref: '#/definitions/service.SafeBalanceMonitorConfig'
+        description: |-
+          BalanceMonitor 只含模块开关；监控点（含 api_key）在数据库里单独管理，
+          config.json 里遗留的 targets 绝不下发。
       bookmark:
         $ref: '#/definitions/config.BookmarkConfig'
       database:
@@ -1448,6 +1472,11 @@ definitions:
         type: string
       port:
         type: integer
+      trusted_proxies:
+        description: TrustedProxies 可信反向代理的 IP/CIDR；合法性由写盘前的校验把关。
+        items:
+          type: string
+        type: array
     type: object
   service.TargetResult:
     properties:
@@ -1530,6 +1559,10 @@ definitions:
     properties:
       auth:
         $ref: '#/definitions/service.AuthUpdate'
+      balance_monitor:
+        allOf:
+        - $ref: '#/definitions/service.BalanceMonitorUpdate'
+        description: BalanceMonitor 只接受开关字段；监控点走 /balances 接口。
       bookmark:
         $ref: '#/definitions/config.BookmarkConfig'
       database:
