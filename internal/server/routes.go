@@ -223,6 +223,7 @@ func registerRoutes(r *gin.Engine) {
 			rssRead.DELETE("/entries/:id/star", handler.RSSUnstarEntry)
 			rssRead.POST("/entries/mark-read", handler.RSSMarkEntriesRead)
 			rssRead.GET("/unread-counts", handler.RSSUnreadCounts)
+			rssRead.GET("/opml", handler.RSSExportOPML)
 		}
 
 		rssWrite := contentWrite.Group("/rss")
@@ -238,6 +239,8 @@ func registerRoutes(r *gin.Engine) {
 			rssWrite.POST("/groups", handler.RSSCreateGroup)
 			rssWrite.PUT("/groups/:id", handler.RSSUpdateGroup)
 			rssWrite.DELETE("/groups/:id", handler.RSSDeleteGroup)
+			// 批量建源与建分组，与 POST /feeds 同一门槛。
+			rssWrite.POST("/opml", handler.RSSImportOPML)
 
 			// 磁力链接锁定与 PikPak 提交
 			rssWrite.PUT("/entries/:id/magnet/lock", handler.RSSLockMagnet)
