@@ -259,3 +259,17 @@ func TestIndexHTMLIsNotLongCached(t *testing.T) {
 		t.Errorf("GET / 的 Cache-Control = %q，期望 %q", got, htmlCacheControl)
 	}
 }
+
+// TestSearchRequiresAuth 确认联合搜索不对匿名访客开放。
+//
+// 搜索会命中 RSS 条目正文与书签，RSS 读接口本身要求登录；
+// 搜索若挂在公开组里，就成了绕开 /rss 认证读取订阅内容的旁路。
+func TestSearchRequiresAuth(t *testing.T) {
+	r := newTestEngine()
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/search?q=x", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("/search 未登录时状态码 = %d，期望 401", w.Code)
+	}
+}

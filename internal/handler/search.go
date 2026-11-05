@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/service"
 )
 
@@ -27,6 +28,7 @@ import (
 //	@Param			group_id	query		int		false	"只搜该书签分组下的条目"
 //	@Success		200			{object}	Response{data=service.SearchResult}
 //	@Failure		400			{object}	Response	"缺少搜索关键词或范围不合法"
+//	@Failure		401			{object}	Response	"未登录"
 //	@Failure		500			{object}	Response	"服务器内部错误"
 //	@Router			/search [get]
 func SearchAll(c *gin.Context) {
@@ -47,7 +49,9 @@ func SearchAll(c *gin.Context) {
 			FailBadRequest(c, err.Error())
 			return
 		}
-		FailInternal(c, err.Error())
+		// 驱动错误会带表名、列名甚至语句片段，不回给客户端。
+		logger.Error("搜索失败", "error", err, "scope", opts.Scope)
+		FailInternal(c, "搜索失败")
 		return
 	}
 

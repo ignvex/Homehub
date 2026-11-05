@@ -111,9 +111,6 @@ func registerRoutes(r *gin.Engine) {
 		publicAPI.GET("/bookmarks", handler.BookmarkList)
 		publicAPI.GET("/bookmark-groups", handler.BookmarkGroupList)
 
-		// 搜索（只读）
-		publicAPI.GET("/search", handler.SearchAll)
-
 		// 剪贴板（公开读写，无需认证）
 		publicAPI.GET("/pastes", handler.PasteList)
 		publicAPI.POST("/pastes", handler.PasteCreate)
@@ -127,6 +124,10 @@ func registerRoutes(r *gin.Engine) {
 	{
 		// 头像（当前用户）
 		authRequired.GET("/avatar/me", handler.AvatarGetMe)
+
+		// 搜索：会命中 RSS 条目正文，而 /rss 读接口要求登录，
+		// 放在公开组里就成了绕开它的旁路。
+		authRequired.GET("/search", handler.SearchAll)
 
 		// 认证
 		authRequired.POST("/auth/logout", handler.AuthLogout)
