@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ignvex/HomeHub/internal/model"
 	"gorm.io/gorm"
@@ -45,7 +46,9 @@ func (s *BookmarkService) CreateGroup(name string) (*model.BookmarkGroup, error)
 
 	// 获取当前最大排序值
 	var maxOrder int
-	s.db.Model(&model.BookmarkGroup{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
+	if err := s.db.Model(&model.BookmarkGroup{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder).Error; err != nil {
+		return nil, fmt.Errorf("查询分组排序失败: %w", err)
+	}
 
 	group := model.BookmarkGroup{
 		Name:      name,
@@ -80,15 +83,10 @@ func (s *BookmarkService) DeleteGroup(id uint64) error {
 //
 // ids 为分组 ID 列表，按期望顺序排列。
 func (s *BookmarkService) ReorderGroups(ids []uint64) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for i, id := range ids {
-			if err := tx.Model(&model.BookmarkGroup{}).Where("id = ?", id).
-				Update("sort_order", i+1).Error; err != nil {
-				return fmt.Errorf("更新分组排序失败: %w", err)
-			}
-		}
-		return nil
-	})
+	if err := reorderBySortOrder(s.db, "bookmark_groups", ids, ""); err != nil {
+		return fmt.Errorf("更新分组排序失败: %w", err)
+	}
+	return nil
 }
 
 // ============================================================
@@ -134,8 +132,10 @@ func (s *BookmarkService) CreateBookmark(groupID uint64, title, url, icon string
 
 	// 获取该分组下最大排序值
 	var maxOrder int
-	s.db.Model(&model.Bookmark{}).Where("group_id = ?", groupID).
-		Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
+	if err := s.db.Model(&model.Bookmark{}).Where("group_id = ?", groupID).
+		Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder).Error; err != nil {
+		return nil, fmt.Errorf("查询书签排序失败: %w", err)
+	}
 
 	bookmark := model.Bookmark{
 		GroupID:   groupID,
@@ -210,16 +210,45 @@ func (s *BookmarkService) DeleteBookmark(id uint64) error {
 }
 
 // ReorderBookmarks 按传入的 ID 顺序更新指定分组下书签的 sort_order。
+//
+// 限定 group_id：不属于该分组的 ID 不会被改动。
 func (s *BookmarkService) ReorderBookmarks(groupID uint64, ids []uint64) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for i, id := range ids {
-			if err := tx.Model(&model.Bookmark{}).Where("id = ? AND group_id = ?", id, groupID).
-				Update("sort_order", i+1).Error; err != nil {
-				return fmt.Errorf("更新书签排序失败: %w", err)
-			}
-		}
+	if err := reorderBySortOrder(s.db, "bookmarks", ids, "group_id = ?", groupID); err != nil {
+		return fmt.Errorf("更新书签排序失败: %w", err)
+	}
+	return nil
+}
+
+// reorderBySortOrder 用一条 UPDATE ... CASE 把 ids 依次设为 sort_order 1..n。
+//
+// 逐行 UPDATE 是 n 次往返，且要靠事务才能保证「要么全改要么不改」；
+// 单条语句天然原子。table 只能是调用方写死的常量（不接受外部输入）；
+// extraWhere 为附加条件（可为空），extraArgs 是它的参数。
+func reorderBySortOrder(db *gorm.DB, table string, ids []uint64, extraWhere string, extraArgs ...any) error {
+	if len(ids) == 0 {
 		return nil
-	})
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(ids)*3+1+len(extraArgs))
+	sb.WriteString("UPDATE ")
+	sb.WriteString(table)
+	sb.WriteString(" SET sort_order = CASE id")
+	// 参数在 CASE 分支里没有上下文类型，PostgreSQL 会推断成 text 并拒绝
+	// 赋给 bigint 列（42804），所以显式转换。
+	for i, id := range ids {
+		sb.WriteString(" WHEN ?::bigint THEN ?::bigint")
+		args = append(args, id, i+1)
+	}
+	sb.WriteString(" END, updated_at = ? WHERE id IN ?")
+	args = append(args, time.Now(), ids)
+	sb.WriteString(" AND deleted_at IS NULL")
+	if extraWhere != "" {
+		sb.WriteString(" AND ")
+		sb.WriteString(extraWhere)
+		args = append(args, extraArgs...)
+	}
+	return db.Exec(sb.String(), args...).Error
 }
 
 // validateBookmarkURL 校验书签 URL 的协议安全性。

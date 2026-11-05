@@ -89,7 +89,9 @@ func (s *TodoService) CreateTodo(title, description string, priority int, dueDat
 
 	// 获取当前最大排序值
 	var maxOrder int
-	s.db.Model(&model.Todo{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
+	if err := s.db.Model(&model.Todo{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder).Error; err != nil {
+		return nil, fmt.Errorf("查询待办排序失败: %w", err)
+	}
 
 	todo := model.Todo{
 		Title:       title,
@@ -180,17 +182,12 @@ func (s *TodoService) DeleteTodo(id uint64) error {
 
 // ReorderTodos 按传入的 ID 顺序更新待办的 sort_order。
 //
-// ids 为待办 ID 列表，按期望顺序排列。
+// ids 为待办 ID 列表，按期望顺序排列。一条 UPDATE 完成，整体生效或整体不变。
 func (s *TodoService) ReorderTodos(ids []uint64) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for i, id := range ids {
-			if err := tx.Model(&model.Todo{}).Where("id = ?", id).
-				Update("sort_order", i+1).Error; err != nil {
-				return fmt.Errorf("更新待办排序失败: %w", err)
-			}
-		}
-		return nil
-	})
+	if err := reorderBySortOrder(s.db, "todos", ids, ""); err != nil {
+		return fmt.Errorf("更新待办排序失败: %w", err)
+	}
+	return nil
 }
 
 // ============================================================
