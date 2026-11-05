@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-
-/** 客户端导航（pushState）后由 App 派发，让各 hook 重读 URL。 */
-export const LOCATION_CHANGE_EVENT = 'homehub:locationchange'
+import { LOCATION_CHANGE_EVENT, notifyLocationChange } from '@/lib/navigation'
 
 function read(key: string, fallback: string): string {
   return new URLSearchParams(window.location.search).get(key) ?? fallback
@@ -35,6 +33,7 @@ export function useQueryState(key: string, defaultValue = ''): [string, (value: 
     const target = `${url.pathname}${url.search}${url.hash}`
     if (target !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
       history.replaceState(history.state, '', target)
+      notifyLocationChange()
     }
   }, [key, defaultValue])
 

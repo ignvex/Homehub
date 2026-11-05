@@ -6,6 +6,8 @@ import { homeApi, type AuthStatus, type BackgroundSettings, type Bookmark, type 
 import { absoluteDate, hostnameOf, isUsableTimestamp, plainSummary, relativeTime } from '@/lib/format'
 import { MagnetCopyButton } from '@/components/MagnetCopyButton'
 import { getWebUIConfig } from '@/lib/webui'
+import { useAuth } from '@/lib/auth'
+import { useNavigate } from '@/lib/navigation'
 import { mediaURL } from '@/lib/media'
 
 type Preferences = { bookmarks: number[]; feeds: number[] }
@@ -327,7 +329,9 @@ function HomeEmpty({ loggedIn }: { loggedIn: boolean }) {
 // ============================================================
 
 export function HomePage() {
-  const [auth, setAuth] = useState<AuthStatus>({ logged_in: false })
+  const { auth: authState } = useAuth()
+  const auth: AuthStatus = authState ?? { logged_in: false }
+  const navigate = useNavigate()
   const [groups, setGroups] = useState<BookmarkGroup[]>([])
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
   const [entries, setEntries] = useState<RSSEntry[]>([])
@@ -346,14 +350,12 @@ export function HomePage() {
   useEffect(() => {
     let cancelled = false
     Promise.allSettled([
-      homeApi.auth(),
       getWebUIConfig(),
       homeApi.bookmarks(),
       homeApi.feeds(),
       homeApi.entries(),
-    ]).then(([authResult, webuiResult, groupsResult, feedsResult, entriesResult]) => {
+    ]).then(([webuiResult, groupsResult, feedsResult, entriesResult]) => {
       if (cancelled) return
-      if (authResult.status === 'fulfilled') setAuth(authResult.value)
       if (webuiResult.status === 'fulfilled') {
         setBackground(webuiResult.value.home.background)
         setAssets(webuiResult.value.home.assets)
@@ -365,17 +367,8 @@ export function HomePage() {
       }
       setLoading(false)
     })
-
-    // 页面恢复可见时刷新 auth（改名后切回首页能立即生效）
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return
-      homeApi.auth().then(status => { if (!cancelled) setAuth(status) }).catch(() => undefined)
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      cancelled = true
-      document.removeEventListener('visibilitychange', onVisible)
-    }
+    // 认证状态由 App 的 AuthContext 统一维护（含页面重新可见时的刷新），这里不再重复请求。
+    return () => { cancelled = true }
   }, [])
 
   const selectedAssets = useMemo(
@@ -460,7 +453,7 @@ export function HomePage() {
       searchRef.current?.focus()
       return
     }
-    window.location.assign(`/search?q=${encodeURIComponent(query)}`)
+    navigate(`/search?q=${encodeURIComponent(query)}`)
   }
 
   const bgFadeStyle = { '--bg-duration': `${background.fade_duration_ms}ms` } as CSSProperties

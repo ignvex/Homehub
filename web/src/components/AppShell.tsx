@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
@@ -7,8 +7,9 @@ import type { AuthStatus } from '@/lib/home'
 // ============================================================
 // AppShell — 控制台侧边栏布局
 //
-// 当前后端为单入口 SPA fallback，因此导航使用原生 <a> 整页装载。
-// 不依赖 React Router，也不将完整 HTML 文档注入局部容器。
+// 导航使用原生 <a>，由 App 拦截同源点击改为 history.pushState。
+// 不依赖 React Router；当前路径由 App 通过 path 传入。
+// 页面正文不再画标题块（顶栏已有页面名），页面只放操作按钮。
 // ============================================================
 
 interface NavItem { href: string; label: string; icon: ReactNode; admin?: boolean; children?: NavItem[] }
@@ -74,17 +75,19 @@ function saveFoldedGroups(folded: Set<string>) {
   localStorage.setItem(FOLD_STORAGE_KEY, JSON.stringify([...folded]))
 }
 
-/**
- * 判断当前路径是否匹配导航项（用于高亮 active 状态）。
- * 不使用 react-router，直接读取 window.location.pathname。
- */
-function isActivePath(href: string): boolean {
-  const pathname = window.location.pathname
+/** 判断路径是否匹配导航项（用于高亮 active 状态）。 */
+function matchesPath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`)
 }
 
-export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: ShellPageMeta; children: ReactNode }) {
+export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; meta: ShellPageMeta; path: string; children: ReactNode }) {
+  const isActivePath = (href: string) => matchesPath(path, href)
   const [open, setOpen] = useState(false)
+  const [announcement, setAnnouncement] = useState('')
+  const contentRef = useRef<HTMLElement>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const firstRender = useRef(true)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('homehub-shell-collapsed') === '1')
   const [expandedMenus, setExpandedMenus] = useState<Set<string>>(() => new Set())
   // 导航分组折叠状态 — 默认全部展开
@@ -96,14 +99,27 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
     document.title = meta.title ? `${meta.title} · HomeHub` : 'HomeHub'
   }, [meta.title])
 
-  // 浏览器前进、后退时关闭移动端侧栏。
+  // 路径变化（客户端导航或前进后退）：关闭移动端侧栏，焦点移到正文，并播报新页面标题。
+  // 首次渲染不抢焦点，保持浏览器默认行为。
   useEffect(() => {
-    const close = () => setOpen(false)
-    window.addEventListener('popstate', close)
-    return () => {
-      window.removeEventListener('popstate', close)
+    setOpen(false)
+    if (firstRender.current) { firstRender.current = false; return }
+    contentRef.current?.focus({ preventScroll: true })
+    setAnnouncement(`已打开 ${meta.title}`)
+  }, [path, meta.title])
+
+  // 移动端侧栏：打开时焦点进抽屉，Esc 关闭并把焦点还给 ☰ 按钮。
+  useEffect(() => {
+    if (!open) return
+    sidebarRef.current?.querySelector<HTMLElement>('a, button')?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      menuButtonRef.current?.focus()
     }
-  }, [])
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
 
   useEffect(() => {
     localStorage.setItem('homehub-shell-collapsed', collapsed ? '1' : '0')
@@ -140,18 +156,18 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
       return (
         <div key={item.href} className="nav-collapsible">
           <div className="nav-collapsible-head">
-            <a href={item.href} className={isActivePath(item.href) || isChildActive ? 'is-active' : ''}>
+            <a href={item.href} className={isActivePath(item.href) || isChildActive ? 'is-active' : ''} aria-current={path === item.href ? 'page' : undefined}>
               {item.icon}
               <span>{item.label}</span>
             </a>
-            <button className="nav-expand" onClick={() => toggleMenu(item.href)} aria-label={isExpanded ? '折叠子菜单' : '展开子菜单'}>
+            <button type="button" className="nav-expand" onClick={() => toggleMenu(item.href)} aria-expanded={isExpanded} aria-label={`${item.label}子菜单`}>
               {isExpanded ? '▾' : '▸'}
             </button>
           </div>
           {isExpanded && (
             <div className="nav-children">
               {item.children.map(child => (
-                <a key={child.href} href={child.href} className={isActivePath(child.href) ? 'is-active' : ''}>
+                <a key={child.href} href={child.href} className={isActivePath(child.href) ? 'is-active' : ''} aria-current={path === child.href ? 'page' : undefined}>
                   {child.icon}
                   <span>{child.label}</span>
                 </a>
@@ -169,6 +185,7 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
         href={item.href}
         title={collapsed ? item.label : undefined}
         className={isActivePath(item.href) ? 'is-active' : ''}
+        aria-current={path === item.href ? 'page' : undefined}
       >
         {item.icon}
         <span>{item.label}</span>
@@ -178,15 +195,15 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
 
   return (
     <div className={`shell ${collapsed ? 'shell--collapsed' : ''}`}>
-      <button className={`shell-scrim ${open ? 'is-open' : ''}`} onClick={() => setOpen(false)} aria-label="关闭导航" />
+      <button type="button" tabIndex={-1} className={`shell-scrim ${open ? 'is-open' : ''}`} onClick={() => setOpen(false)} aria-label="关闭导航" />
 
-      <aside className={`shell-sidebar ${open ? 'is-open' : ''}`}>
+      <aside className={`shell-sidebar ${open ? 'is-open' : ''}`} id="shell-sidebar" ref={sidebarRef}>
         <div className="shell-brand">
           <a href="/dashboard" aria-label="打开仪表盘">
             <span className="shell-brand-mark">H</span>
             <span className="shell-brand-name">HomeHub</span>
           </a>
-          <button onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '展开侧栏' : '收起侧栏'}>{collapsed ? '›' : '‹'}</button>
+          <button type="button" onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '展开侧栏' : '收起侧栏'}>{collapsed ? '›' : '‹'}</button>
         </div>
         <nav className="shell-nav" aria-label="主导航">
           {navigation.map(group => {
@@ -198,16 +215,18 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             const effectiveFolded = collapsed ? false : (hasActiveChild ? false : isFolded)
             return (
               <section key={group.label}>
-                <h2
-                  className={`shell-nav-group-head ${effectiveFolded ? 'is-folded' : ''}`}
-                  onClick={() => { if (!collapsed) toggleGroupFold(group.label) }}
-                  title={collapsed ? '' : (effectiveFolded ? '展开分组' : '折叠分组')}
-                  role="button"
-                  tabIndex={collapsed ? -1 : 0}
-                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroupFold(group.label) } }}
-                >
-                  <span>{group.label}</span>
-                  {!collapsed && <span className="shell-nav-group-arrow">{effectiveFolded ? '▸' : '▾'}</span>}
+                <h2 className="shell-nav-group-title">
+                  <button
+                    type="button"
+                    className={`shell-nav-group-head ${effectiveFolded ? 'is-folded' : ''}`}
+                    onClick={() => toggleGroupFold(group.label)}
+                    aria-expanded={!effectiveFolded}
+                    disabled={collapsed}
+                    title={collapsed ? undefined : (effectiveFolded ? '展开分组' : '折叠分组')}
+                  >
+                    <span>{group.label}</span>
+                    {!collapsed && <span className="shell-nav-group-arrow" aria-hidden="true">{effectiveFolded ? '▸' : '▾'}</span>}
+                  </button>
                 </h2>
                 {!collapsed && !effectiveFolded && group.items.filter(item => !item.admin || auth.role === 'admin').map(renderNavItem)}
               </section>
@@ -228,7 +247,7 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             eyebrow，而页面正文里又有同样的一块（shell-page-head）——
             同一个标题在一屏里出现两次，占掉的正是内容的高度。 */}
         <header className="shell-header">
-          <button className="shell-menu" onClick={() => setOpen(true)} aria-label="打开导航">☰</button>
+          <button type="button" ref={menuButtonRef} className="shell-menu" onClick={() => setOpen(true)} aria-label="打开导航" aria-expanded={open} aria-controls="shell-sidebar">☰</button>
           {/* 只显示页面名。曾在这里叠了一个 eyebrow（「运行概览」「内容订阅」），
               它与右边的标题重复表达同一件事，纯占位；正文里的同名大标题块
               也已经删掉，所以这里是页面上唯一的位置提示。 */}
@@ -238,9 +257,10 @@ export function AppShell({ auth, meta, children }: { auth: AuthStatus; meta: She
             <a href="/">返回首页</a>
           </div>
         </header>
-        <main className="shell-main" id="shell-content">
+        <main className="shell-main" id="shell-content" ref={contentRef} tabIndex={-1}>
           {children}
         </main>
+        <p className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement}</p>
       </div>
     </div>
   )
