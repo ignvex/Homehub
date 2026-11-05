@@ -115,3 +115,26 @@ func TestListEntriesScansMagnetAndPikPakColumns(t *testing.T) {
 		t.Fatalf("PikPak 状态被静默丢弃：%+v", got)
 	}
 }
+
+// TestListEntriesCapsPerPage 防的是一次请求拉走全部条目。
+//
+// per_page 来自查询参数；不封顶时 `per_page=1000000` 会让一条请求
+// 扫完整张表并把结果全部塞进响应。这里断言发出去的 LIMIT 是 100。
+func TestListEntriesCapsPerPage(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`SELECT COUNT`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1000))
+	mock.ExpectQuery(`SELECT e.id FROM .* LIMIT \$\d+`).
+		WithArgs(100).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	svc := &RSSService{db: db}
+	if _, _, err := svc.ListEntries(EntryFilter{Page: 1, PerPage: 1000000}); err != nil {
+		t.Fatalf("ListEntries 失败: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("SQL 期望未满足: %v", err)
+	}
+}

@@ -620,12 +620,8 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 	page, perPage := f.Page, f.PerPage
 	feedID, groupID := f.FeedID, f.GroupID
 
-	if page < 1 {
-		page = 1
-	}
-	if perPage <= 0 {
-		perPage = 20
-	}
+	// 与日志列表同一套分页语义：非正回落 20，上限 100。
+	page, perPage = normalizePage(page), clampPerPage(perPage)
 
 	baseQuery := s.db.Table("rss_entries AS e").
 		Joins("JOIN rss_entry_feeds AS ef ON ef.entry_id = e.id AND ef.deleted_at IS NULL").

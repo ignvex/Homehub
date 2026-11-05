@@ -335,7 +335,7 @@ func RSSFetchAll(c *gin.Context) {
 //	@Produce		json
 //	@Param			feed_id		query		int		false	"订阅源 ID 筛选"
 //	@Param			page		query		int		false	"页码（默认 1）"
-//	@Param			per_page	query		int		false	"每页数量（默认 20）"
+//	@Param			per_page	query		int		false	"每页数量（默认 20，上限 100）"
 //	@Success		200			{object}	Response	"条目列表（含分页信息）"
 //	@Failure		400			{object}	Response	"无效的 feed_id"
 //	@Failure		500			{object}	Response	"服务器内部错误"
