@@ -73,10 +73,10 @@ type SafeProxyConfig struct {
 // 不含私钥：私钥通过单独的 setKey 端点设置，避免它出现在任何
 // 「读配置 → 改一处 → 提交整个对象」的表单流程里。
 type ExtensionUpdate struct {
-	Enabled        *bool    `json:"enabled,omitempty"`
-	BaseURL        *string  `json:"base_url,omitempty"`
+	Enabled        *bool     `json:"enabled,omitempty"`
+	BaseURL        *string   `json:"base_url,omitempty"`
 	ProxyNames     *[]string `json:"proxy_names,omitempty"`
-	TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
+	TimeoutSeconds *int      `json:"timeout_seconds,omitempty"`
 }
 
 // SafeProxyEntry 脱敏后的代理配置，不暴露完整的代理 URL。
@@ -123,8 +123,8 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		Auth: SafeAuthConfig{
 			Username: cfg.Auth.Username,
 		},
-		Log:      cfg.Log,
-		WebUI:    cfg.WebUI,
+		Log:   cfg.Log,
+		WebUI: cfg.WebUI,
 		Proxy: SafeProxyConfig{
 			Entries: maskProxyList(cfg.Proxy.Entries),
 			Default: cfg.Proxy.Default,
