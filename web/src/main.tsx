@@ -22,3 +22,12 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+// 开发模式不注册：vite 的模块不带哈希，cache-first 会让热更新失效。
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {
+      // 注册失败只是没有离线壳，不影响正常使用。
+    })
+  })
+}
