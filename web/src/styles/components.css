@@ -211,6 +211,17 @@ a:focus-visible,
   resize: vertical;
 }
 .data-panel select { width: auto; }
+/* 等宽多行输入：JSON、代码、粘贴内容 */
+.form-field textarea.code-textarea,
+.code-textarea {
+  min-height: 200px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
 
 /* 筛选条 */
 .filter-bar {
