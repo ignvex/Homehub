@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ConfirmDialog, Notice, PageState, Pagination } from '@/components/WorkspaceUI'
+import { ConfirmDialog, PageState, Pagination } from '@/components/WorkspaceUI'
+import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
 import { adminApi, type LogEntry, type LogQuery } from '@/lib/admin'
 import { formatDateTime } from '@/lib/types'
 
@@ -13,7 +15,7 @@ import { formatDateTime } from '@/lib/types'
 //   3. 列表截断上限不影响 total（total 是服务端筛选结果的总数）
 // ============================================================
 
-const defaultQuery: LogQuery = { page: 1, perPage: 50, level: '', query: '', since: '', until: '' }
+const PER_PAGE = 50
 const LIVE_BUFFER = 200
 
 const levels = ['', 'DEBUG', 'INFO', 'WARN', 'ERROR'] as const
@@ -52,16 +54,33 @@ function matchesQuery(entry: LogEntry, query: LogQuery): boolean {
 }
 
 export function LogsPage() {
-  const [query, setQuery] = useState<LogQuery>(defaultQuery)
+  // 已生效的筛选条件保存在 URL（replaceState），刷新与分享链接都能还原。
+  const [levelParam, setLevelParam] = useQueryState('level', '')
+  const [qParam, setQParam] = useQueryState('q', '')
+  const [sinceParam, setSinceParam] = useQueryState('since', '')
+  const [untilParam, setUntilParam] = useQueryState('until', '')
+  const [page, setPage] = useQueryNumber('page', 1)
+  const level = (levels as readonly string[]).includes(levelParam.toUpperCase()) ? levelParam.toUpperCase() : ''
+  const query = useMemo<LogQuery>(() => ({ page, perPage: PER_PAGE, level, query: qParam, since: sinceParam, until: untilParam }), [page, level, qParam, sinceParam, untilParam])
+  // 输入框里的草稿：提交「筛选」后才写进 URL。
+  const [draftQuery, setDraftQuery] = useState(qParam)
+  const [draftSince, setDraftSince] = useState(sinceParam)
+  useEffect(() => { setDraftQuery(qParam) }, [qParam])
+  useEffect(() => { setDraftSince(sinceParam) }, [sinceParam])
+
+  const notice = useNotice()
   const [items, setItems] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [clearing, setClearing] = useState(false)
+  const [clearError, setClearError] = useState('')
   const [showClear, setShowClear] = useState(false)
   const [live, setLive] = useState(true)
   const [pending, setPending] = useState(0)
+  // SSE 连接状态：断线时 EventSource 会自动重连，期间提示「重连中」。
+  const [streamState, setStreamState] = useState<'connecting' | 'open' | 'reconnecting'>('connecting')
+  const [reloadKey, setReloadKey] = useState(0)
 
   // SSE 回调读取最新值，避免闭包捕获旧 query
   const queryRef = useRef(query)
@@ -79,15 +98,17 @@ export function LogsPage() {
       setTotal(result.total ?? 0)
       seenRef.current = new Set(list.map(entry => entry.id))
       setPending(0)
-      setError('')
+      setLoadError('')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取系统日志')
+      setLoadError(errorMessage(cause, '无法读取系统日志'))
     } finally {
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => { void load(defaultQuery) }, [load])
+  // 筛选条件（URL）变化即重新读取。
+  useEffect(() => { void load(query) }, [load, query, reloadKey])
+  const reload = () => setReloadKey(key => key + 1)
 
   // SSE 实时推送
   useEffect(() => {
@@ -120,35 +141,31 @@ export function LogsPage() {
       setItems(prev => [entry, ...prev].slice(0, LIVE_BUFFER))
       setTotal(prev => prev + 1)
     }
-    source.onerror = () => { /* EventSource 自带重连，这里不处理 */ }
+    source.onopen = () => setStreamState('open')
+    // EventSource 自带重连；这里只把状态告诉用户，避免误以为还在实时推送。
+    source.onerror = () => setStreamState('reconnecting')
     return () => source.close()
   }, [])
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    const next = { ...query, page: 1 }
-    setQuery(next)
-    void load(next)
+    setQParam(draftQuery.trim())
+    setSinceParam(draftSince)
+    setPage(1)
+    reload()
   }
 
-  function changePage(page: number) {
-    const next = { ...query, page }
-    setQuery(next)
-    void load(next)
-  }
+  function changePage(next: number) { setPage(next) }
 
-  function applyLevel(level: string) {
-    const next = { ...query, level, page: 1 }
-    setQuery(next)
-    void load(next)
+  function applyLevel(next: string) {
+    setLevelParam(next)
+    setPage(1)
   }
 
   function applyRange(minutes: number | null) {
-    const next = minutes === null
-      ? { ...query, since: '', until: '', page: 1 }
-      : { ...query, since: toLocalInput(new Date(Date.now() - minutes * 60_000)), until: '', page: 1 }
-    setQuery(next)
-    void load(next)
+    setSinceParam(minutes === null ? '' : toLocalInput(new Date(Date.now() - minutes * 60_000)))
+    setUntilParam('')
+    setPage(1)
   }
 
   // 当前时间范围对应哪个快捷档
@@ -162,21 +179,23 @@ export function LogsPage() {
   function resumeLive() {
     setLive(true)
     setPending(0)
-    void load({ ...query, page: 1 })
+    if (page === 1) reload()
+    else setPage(1)
   }
 
   async function clearAll() {
     setClearing(true)
+    setClearError('')
     try {
       await adminApi.deleteLogs()
-      setMessage('日志已全部清除')
+      notice.success('日志已全部清除')
       setShowClear(false)
       setItems([])
       setTotal(0)
       setPending(0)
       seenRef.current = new Set()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '清除失败')
+      setClearError(errorMessage(cause, '清除失败'))
     } finally {
       setClearing(false)
     }
@@ -185,28 +204,29 @@ export function LogsPage() {
   return <div className="business-page logs-page">
     <div className="page-toolbar">
       <div className="toolbar-actions">
-        <button className="button button--quiet" disabled={loading} onClick={() => void load(query)}>刷新</button>
+        <button type="button" className="button button--quiet" disabled={loading} onClick={reload}>刷新</button>
         <button
           type="button"
           className="logs-live"
           aria-pressed={live}
           onClick={() => (live ? setLive(false) : resumeLive())}
         >
-          <span className={`status-dot ${live ? 'is-ok' : 'is-warn'}`} aria-hidden="true" />
-          {live ? '实时推送中' : '已暂停'}
+          <span className={`status-dot ${!live || streamState !== 'open' ? 'is-warn' : 'is-ok'}`} aria-hidden="true" />
+          {!live ? '已暂停' : streamState === 'reconnecting' ? '重连中…' : streamState === 'connecting' ? '连接中…' : '实时推送中'}
         </button>
       </div>
       <span className="toolbar-summary">{total.toLocaleString()} 条记录</span>
     </div>
 
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} onDismiss={() => setMessage('')} />
+    {notice.element}
+    {loadError && items.length > 0 && <div className="notice notice--error" role="alert"><span>刷新失败：{loadError}</span><button type="button" className="button button--quiet" onClick={reload}>重试</button></div>}
+    {live && streamState === 'reconnecting' && <div className="notice notice--info" role="status"><span>实时推送已断开，正在重连；期间的新日志可在恢复后点「刷新」查看。</span></div>}
 
     <form className="logs-filters" onSubmit={submit}>
       <input
         type="search"
-        value={query.query}
-        onChange={event => setQuery(current => ({ ...current, query: event.target.value }))}
+        value={draftQuery}
+        onChange={event => setDraftQuery(event.target.value)}
         placeholder="搜索日志消息"
         aria-label="搜索日志消息"
       />
@@ -227,11 +247,11 @@ export function LogsPage() {
           onClick={() => applyRange(range.minutes)}
         >{range.label}</button>)}
       </div>
-      <label className="form-field" style={{ flex: '0 1 170px' }}>
+      <label className="form-field logs-since">
         <span className="visually-hidden">起始时间</span>
-        <input type="datetime-local" value={query.since} onChange={event => setQuery(current => ({ ...current, since: event.target.value }))} />
+        <input type="datetime-local" value={draftSince} onChange={event => setDraftSince(event.target.value)} />
       </label>
-      <button className="button button--primary">筛选</button>
+      <button type="submit" className="button button--primary">筛选</button>
     </form>
 
     <section className="logs-stream" aria-label="日志流">
@@ -254,15 +274,17 @@ export function LogsPage() {
         暂停期间收到 {pending} 条日志 · <button type="button" onClick={resumeLive}>恢复并刷新</button>
       </div>}
 
-      {loading
+      {loading && !items.length
         ? <PageState kind="loading" title="正在读取日志" />
+        : loadError && !items.length
+        ? <PageState kind="error" title="无法读取系统日志" description={loadError} action={<button type="button" className="button button--primary" onClick={reload}>重试</button>} />
         : !items.length
           ? <PageState
             kind="empty"
             title="没有符合条件的日志"
             description="调整级别、关键词或时间范围后重试。"
           />
-          : <div className="logs-list">
+          : <div className={`logs-list${loading ? ' is-stale' : ''}`} aria-busy={loading}>
             {items.map(entry => <article className={`log-entry ${levelClass(entry.level)}`} key={entry.id}>
               <time className="log-time" dateTime={entry.log_time || entry.created_at}>
                 {formatDateTime(entry.log_time || entry.created_at)}
@@ -297,7 +319,8 @@ export function LogsPage() {
       confirmLabel="清除全部"
       danger
       busy={clearing}
-      onClose={() => setShowClear(false)}
+      error={clearError}
+      onClose={() => { setShowClear(false); setClearError('') }}
       onConfirm={() => void clearAll()}
     />
   </div>

@@ -156,6 +156,8 @@
 
 /* ============ 日志行 ============ */
 .logs-list { display: flex; flex-direction: column; }
+.logs-list.is-stale { opacity: .55; transition: opacity var(--dur-base) ease; }
+.logs-filters .logs-since { flex: 0 1 170px; }
 .log-entry {
   display: grid;
   grid-template-columns: 132px 56px 108px minmax(0, 1fr);
