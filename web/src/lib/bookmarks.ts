@@ -25,6 +25,13 @@ export interface BookmarkInput {
   priority?: number
 }
 
+/** BookmarkImportResult 是 POST /bookmarks/import 的结果。 */
+export interface BookmarkImportResult {
+  created: number
+  skipped: number
+  groups_created: number
+}
+
 export const bookmarksApi = {
   listGroups: () => api.get<BookmarkGroup[]>('/bookmark-groups'),
   createGroup: (name: string) => api.post<BookmarkGroup>('/bookmark-groups', { name }),
@@ -35,4 +42,10 @@ export const bookmarksApi = {
   update: (id: number, body: Partial<Omit<BookmarkInput, 'group_id'>>) => api.put<void>(`/bookmarks/${id}`, body),
   delete: (id: number) => api.delete<void>(`/bookmarks/${id}`),
   reorder: (groupID: number, ids: number[]) => api.post<void>('/bookmarks/reorder', { group_id: groupID, ids }),
+  /** 导入浏览器导出的书签 HTML（Netscape Bookmark File）。 */
+  importHTML: (file: File) => {
+    const data = new FormData()
+    data.append('file', file)
+    return api.post<BookmarkImportResult>('/bookmarks/import', data)
+  },
 }

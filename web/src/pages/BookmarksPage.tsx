@@ -1,12 +1,15 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { DeleteButton } from '@/components/Icon'
+import { ImportFileButton, ImportResultModal } from '@/components/ImportResult'
 import { ConfirmDialog, Modal, PageState } from '@/components/WorkspaceUI'
 import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { downloadFile } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
-import { bookmarksApi, type Bookmark, type BookmarkGroup } from '@/lib/bookmarks'
+import { bookmarksApi, type Bookmark, type BookmarkGroup, type BookmarkImportResult } from '@/lib/bookmarks'
 import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
 
 const emptyBookmark = { group_id: 0, title: '', url: '', icon: '' }
+const IMPORT_ACCEPT = '.html,.htm,text/html'
 
 export function BookmarksPage() {
   const { auth } = useAuth()
@@ -20,6 +23,8 @@ export function BookmarksPage() {
   const [groupDraft, setGroupDraft] = useState<{ id?: number; name: string; priority?: number } | null>(null)
   const [bookmarkDraft, setBookmarkDraft] = useState<(typeof emptyBookmark & { id?: number; priority?: number }) | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'group' | 'bookmark'; id: number; name: string } | null>(null)
+  const [importResult, setImportResult] = useState<BookmarkImportResult | null>(null)
+  const [importing, setImporting] = useState(false)
 
   /** silent=true 时不切回整页 loading，只在后台刷新列表。 */
   async function load(silent = false) {
@@ -47,6 +52,23 @@ export function BookmarksPage() {
       return false
     }
     finally { setBusy(false) }
+  }
+
+  async function exportBookmarks() {
+    try { await downloadFile('/bookmarks/export', 'homehub-bookmarks.html') }
+    catch (cause) { notice.error(errorMessage(cause, '导出书签失败')) }
+  }
+
+  async function importBookmarks(file: File) {
+    setImporting(true)
+    try {
+      setImportResult(await bookmarksApi.importHTML(file))
+      await load(true)
+    } catch (cause) {
+      notice.error(errorMessage(cause, '导入书签失败'))
+    } finally {
+      setImporting(false)
+    }
   }
 
   function closeModals() { setGroupDraft(null); setBookmarkDraft(null); setPendingDelete(null); setFormError('') }
@@ -100,7 +122,14 @@ export function BookmarksPage() {
   if (loadError && !groups.length) return <PageState kind="error" title="无法读取书签" description={loadError} action={<button className="button button--primary" onClick={() => void load()}>重试</button>} />
 
   return <div className="business-page">
-    {canWrite && <div className="page-toolbar page-toolbar--end"><div className="toolbar-actions"><button className="button button--quiet" onClick={() => setGroupDraft({ name: '' })}>新建分组</button><button className="button button--primary" disabled={!groups.length} onClick={() => setBookmarkDraft({ ...emptyBookmark, group_id: groups[0]?.id ?? 0 })}>添加书签</button></div></div>}
+    <div className="page-toolbar page-toolbar--end"><div className="toolbar-actions">
+      <button className="button button--quiet" disabled={!groups.length} onClick={() => void exportBookmarks()}>导出</button>
+      {canWrite && <>
+        <ImportFileButton label="导入" accept={IMPORT_ACCEPT} busy={importing} onFile={file => void importBookmarks(file)} />
+        <button className="button button--quiet" onClick={() => setGroupDraft({ name: '' })}>新建分组</button>
+        <button className="button button--primary" disabled={!groups.length} onClick={() => setBookmarkDraft({ ...emptyBookmark, group_id: groups[0]?.id ?? 0 })}>添加书签</button>
+      </>}
+    </div></div>
     {notice.element}
     {!groups.length ? <PageState kind="empty" title="还没有书签分组" description={canWrite ? '先创建分组，再将常用链接归类到其中。' : '管理员或编辑添加书签后会显示在这里。'} action={canWrite ? <button className="button button--primary" onClick={() => setGroupDraft({ name: '' })}>创建分组</button> : undefined} /> : <div className="bookmark-groups">
       {groups.map((group, groupIndex) => <section className="data-panel" key={group.id}>
@@ -110,6 +139,7 @@ export function BookmarksPage() {
     </div>}
     <Modal open={groupDraft !== null} title={groupDraft?.id ? '编辑分组' : '新建分组'} error={formError} busy={busy} onClose={closeModals} footer={<><button className="button button--quiet" type="button" onClick={closeModals} disabled={busy}>取消</button><button className="button button--primary" type="submit" form="bookmark-group-form" disabled={busy}>{busy ? '保存中…' : '保存'}</button></>}><form id="bookmark-group-form" className="form-grid" onSubmit={saveGroup}><label className="form-field form-field--wide">分组名称<input autoFocus value={groupDraft?.name ?? ''} onChange={event => setGroupDraft(draft => draft ? { ...draft, name: event.target.value } : draft)} required maxLength={100} /></label></form></Modal>
     <Modal open={bookmarkDraft !== null} title={bookmarkDraft?.id ? '编辑书签' : '添加书签'} error={formError} busy={busy} onClose={closeModals} footer={<><button className="button button--quiet" type="button" onClick={closeModals} disabled={busy}>取消</button><button className="button button--primary" type="submit" form="bookmark-form" disabled={busy}>{busy ? '保存中…' : '保存'}</button></>}><form id="bookmark-form" className="form-grid" onSubmit={saveBookmark}><label className="form-field">分组<select value={bookmarkDraft?.group_id ?? 0} disabled={Boolean(bookmarkDraft?.id)} onChange={event => setBookmarkDraft(draft => draft ? { ...draft, group_id: Number(event.target.value) } : draft)}>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><label className="form-field">标题<input value={bookmarkDraft?.title ?? ''} onChange={event => setBookmarkDraft(draft => draft ? { ...draft, title: event.target.value } : draft)} required maxLength={200} /></label><label className="form-field form-field--wide">URL<input type="url" value={bookmarkDraft?.url ?? ''} onChange={event => setBookmarkDraft(draft => draft ? { ...draft, url: event.target.value } : draft)} required /></label><label className="form-field form-field--wide">图标 URL（留空时由服务端尝试获取）<input type="url" value={bookmarkDraft?.icon ?? ''} onChange={event => setBookmarkDraft(draft => draft ? { ...draft, icon: event.target.value } : draft)} /></label></form></Modal>
+    <ImportResultModal title="书签导入结果" unit="个书签" result={importResult} onClose={() => setImportResult(null)} />
     <ConfirmDialog open={pendingDelete !== null} title={`删除${pendingDelete?.kind === 'group' ? '分组' : '书签'}`} description={`将删除“${pendingDelete?.name ?? ''}”，删除后无法恢复。${pendingDelete?.kind === 'group' ? '该分组下的书签也会一并删除。' : ''}`} confirmLabel="删除" danger busy={busy} error={formError} onClose={closeModals} onConfirm={() => void removePending()} />
   </div>
 }
