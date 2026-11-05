@@ -89,10 +89,14 @@ export function LogsPage() {
   useEffect(() => { queryRef.current = query }, [query])
   useEffect(() => { liveRef.current = live }, [live])
 
+  // 请求序号：筛选连续变化时只采用最后一次请求的结果。
+  const loadSeq = useRef(0)
   const load = useCallback(async (next: LogQuery) => {
+    const seq = ++loadSeq.current
     setLoading(true)
     try {
       const result = await adminApi.listLogs(next)
+      if (seq !== loadSeq.current) return
       const list = result.list ?? []
       setItems(list)
       setTotal(result.total ?? 0)
@@ -100,9 +104,9 @@ export function LogsPage() {
       setPending(0)
       setLoadError('')
     } catch (cause) {
-      setLoadError(errorMessage(cause, '无法读取系统日志'))
+      if (seq === loadSeq.current) setLoadError(errorMessage(cause, '无法读取系统日志'))
     } finally {
-      setLoading(false)
+      if (seq === loadSeq.current) setLoading(false)
     }
   }, [])
 
@@ -149,10 +153,13 @@ export function LogsPage() {
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    setQParam(draftQuery.trim())
+    const nextQuery = draftQuery.trim()
+    // 条件没变时也要重新读取（用户按「筛选」就是想刷新）；变了则由 URL 状态触发。
+    const unchanged = nextQuery === qParam && draftSince === sinceParam && page === 1
+    setQParam(nextQuery)
     setSinceParam(draftSince)
     setPage(1)
-    reload()
+    if (unchanged) reload()
   }
 
   function changePage(next: number) { setPage(next) }
