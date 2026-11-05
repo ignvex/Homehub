@@ -33,7 +33,7 @@ internal/logger/    slog handler（控制台 / 数据库 / SSE 广播）
 internal/middleware/ 认证、管理员校验、CSRF、请求日志
 internal/model/     GORM 模型
 internal/service/   业务逻辑
-internal/hubclient/ Extension /hub/* 通道的签名客户端
+internal/hubclient/ 调用 Extension 的签名客户端（/hub/*、/fetch、/avatar）
 web/src/            前端 SPA
 ```
 
@@ -136,5 +136,8 @@ closed（`0 <= 1` 会给出最高权限）。
 - RSS 的 `group_id` 用三态表达（缺失 / 显式 null / 具体值）。只用 `*uint64`
   会让「清空分组」与「不改分组」无法区分
 - Extension 有两条独立通道：`/fetch`、`/avatar` 由 HomeHub 主动调用
-  （`docs/extension.md`）；`/hub/*` 由 Extension 验签接收（`docs/hub-integration.md`）。
-  `internal/hubclient` 实现了后者，**目前没有调用方**
+  （`docs/extension.md`）；`/hub/*` 是 Extension 验签的机器通道
+  （`docs/hub-integration.md`）。两条都由 `internal/hubclient` 签名发出
+  （同一把 Ed25519 密钥），调用方是 `service/extension_hub_service.go`
+  （`/hub/*`：订阅镜像、密钥管理）、`service/rss_remote_fetcher.go`
+  （`/fetch` 代抓）与 `service/gravatar_source.go`（`/avatar` 头像代取）
