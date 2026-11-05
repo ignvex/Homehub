@@ -11,10 +11,11 @@ export function PageState({ kind, title, description, action }: { kind: 'loading
   )
 }
 
-export function Notice({ message, tone = 'success', onDismiss }: { message?: string; tone?: 'success' | 'error' | 'info'; onDismiss?: () => void }) {
+/** live=false 时由外层容器（如 useNotice 的 aria-live 区域）负责播报，避免重复朗读。 */
+export function Notice({ message, tone = 'success', onDismiss, live = true }: { message?: string; tone?: 'success' | 'error' | 'info'; onDismiss?: () => void; live?: boolean }) {
   if (!message) return null
   return (
-    <div className={`notice notice--${tone}`} role={tone === 'error' ? 'alert' : 'status'}>
+    <div className={`notice notice--${tone}`} role={live ? (tone === 'error' ? 'alert' : 'status') : undefined}>
       <span>{message}</span>
       {onDismiss && <button type="button" className="icon-button" onClick={onDismiss} aria-label="关闭消息">×</button>}
     </div>

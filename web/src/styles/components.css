@@ -478,6 +478,8 @@ a:focus-visible,
 .notice--success { border-left-color: var(--color-success); }
 .notice--error { border-left-color: var(--color-error); }
 .notice--info { border-left-color: var(--color-interactive); }
+/* useNotice 的 aria-live 容器：不生成盒子，空时不占页面 grid 的间距。 */
+.notice-region { display: contents; }
 
 /* ============ 空态 / 加载态 ============ */
 .page-state {
