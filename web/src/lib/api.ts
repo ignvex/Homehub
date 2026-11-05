@@ -19,12 +19,19 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    credentials: 'include',
-    headers,
-    signal: options.signal,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers,
+    })
+  } catch (cause) {
+    // 取消请求要原样抛出，调用方据此识别 AbortError 并忽略。
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
+    if (cause instanceof TypeError) throw new ApiRequestError(0, '网络不可用，请检查连接')
+    throw cause
+  }
   const body = await response.json().catch(() => ({}))
 
   const isAuthProbe = path === '/auth/status'
@@ -51,24 +58,25 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   return body as T
 }
 
+function encodeBody(data: unknown): BodyInit | undefined {
+  return data instanceof FormData ? data : data ? JSON.stringify(data) : undefined
+}
+
+/** 每个方法都接受可选的 RequestInit（如 signal），透传给 fetch。 */
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, data?: unknown) =>
-    request<T>(path, {
-      method: 'POST',
-      body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
-    }),
-  put: <T>(path: string, data?: unknown) =>
-    request<T>(path, {
-      method: 'PUT',
-      body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
-    }),
-  patch: <T>(path: string, data?: unknown) =>
-    request<T>(path, {
-      method: 'PATCH',
-      body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
-    }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  get: <T>(path: string, init: RequestInit = {}) => request<T>(path, init),
+  post: <T>(path: string, data?: unknown, init: RequestInit = {}) =>
+    request<T>(path, { ...init, method: 'POST', body: encodeBody(data) }),
+  put: <T>(path: string, data?: unknown, init: RequestInit = {}) =>
+    request<T>(path, { ...init, method: 'PUT', body: encodeBody(data) }),
+  patch: <T>(path: string, data?: unknown, init: RequestInit = {}) =>
+    request<T>(path, { ...init, method: 'PATCH', body: encodeBody(data) }),
+  delete: <T>(path: string, init: RequestInit = {}) => request<T>(path, { ...init, method: 'DELETE' }),
+}
+
+/** 判断是否是被 AbortController 取消的请求。 */
+export function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === 'AbortError'
 }
 
 export { ApiRequestError }
