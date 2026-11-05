@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
+import { DeleteButton } from '@/components/Icon'
 import { ConfirmDialog, Modal, Notice, PageState, StatusBadge } from '@/components/WorkspaceUI'
+import { useNotice } from '@/hooks/useNotice'
+import { useAuth } from '@/lib/auth'
+import { copyText } from '@/lib/clipboard'
+import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
 import {
   extensionHubApi,
   type AccessKey,
@@ -60,8 +65,14 @@ export function ExtensionPage() {
   const [keys, setKeys] = useState<AccessKey[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const { auth } = useAuth()
+  // 页面本身要求 ≤2 级；推送单条订阅只要求内容写权限（≤3），单独判断以免将来放宽页面门槛时漏掉。
+  const canPush = hasLevel(auth, CONTENT_WRITE_LEVEL)
+  const notice = useNotice()
+  const showError = notice.error
+  const [loadError, setLoadError] = useState('')
+  // 弹窗内的错误：弹窗处于 top layer，页面提示会被遮罩挡住。
+  const [formError, setFormError] = useState('')
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null)
 
   const [pendingRemove, setPendingRemove] = useState<RemoteSubscription | null>(null)
@@ -77,9 +88,10 @@ export function ExtensionPage() {
     try {
       const next = await extensionHubApi.status()
       setStatus(next)
+      setLoadError('')
       return next
     } catch (cause) {
-      setError(describeError(cause))
+      setLoadError(describeError(cause))
       return null
     }
   }, [])
@@ -88,17 +100,17 @@ export function ExtensionPage() {
     try {
       setSubscriptions(await extensionHubApi.listSubscriptions())
     } catch (cause) {
-      setError(describeError(cause))
+      showError(describeError(cause))
     }
-  }, [])
+  }, [showError])
 
   const loadKeys = useCallback(async () => {
     try {
       setKeys(await extensionHubApi.listKeys())
     } catch (cause) {
-      setError(describeError(cause))
+      showError(describeError(cause))
     }
-  }, [])
+  }, [showError])
 
   useEffect(() => {
     let cancelled = false
@@ -120,9 +132,8 @@ export function ExtensionPage() {
       if (next?.authenticated) {
         await Promise.all([next.rss_available ? loadSubscriptions() : Promise.resolve(), loadKeys()])
       }
-      // 只在探测真的成功时清错误。无条件清除会把 loadStatus 刚写下的
-      // 失败原因抹掉，按钮看上去像点了没反应。
-      if (next) setError('')
+      // 探测失败时 loadStatus 已写下原因；页面保留上一次的状态，并用提示告知。
+      if (!next) notice.error('探测失败，显示的是上一次的状态')
     } finally {
       setBusy(false)
     }
@@ -135,11 +146,10 @@ export function ExtensionPage() {
       setSyncResult(result)
       // 对账只推归属 Extension 的源。total=0 有两种含义（本地没源 /
       // 有源但都归本机），不区分的话使用者会以为对账没干活。
-      setMessage(syncMessage(result))
-      setError('')
+      notice.success(syncMessage(result))
       await loadSubscriptions()
     } catch (cause) {
-      setError(describeError(cause))
+      notice.error(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -152,11 +162,10 @@ export function ExtensionPage() {
       // fetch_now=false：重推的目的是刷新元数据（标题、间隔），
       // 不应该顺手触发一次抓取。
       await extensionHubApi.push(item.local_feed_id, { fetchNow: false })
-      setMessage(`已重推「${item.title || item.url}」`)
-      setError('')
+      notice.success(`已重推「${item.title || item.url}」`)
       await loadSubscriptions()
     } catch (cause) {
-      setError(describeError(cause))
+      notice.error(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -165,15 +174,14 @@ export function ExtensionPage() {
   async function removeSubscription() {
     if (!pendingRemove) return
     setBusy(true)
+    setFormError('')
     try {
       const result = await extensionHubApi.removeSubscription(pendingRemove.id)
-      setMessage(result.already_deleted ? '对方本来就没有这条订阅' : '已从 Extension 移除该订阅')
-      setError('')
+      notice.success(result.already_deleted ? '对方本来就没有这条订阅' : '已从 Extension 移除该订阅')
       setPendingRemove(null)
       await loadSubscriptions()
     } catch (cause) {
-      setError(describeError(cause))
-      setPendingRemove(null)
+      setFormError(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -182,6 +190,7 @@ export function ExtensionPage() {
   async function issueKey() {
     if (!keyDraft) return
     setBusy(true)
+    setFormError('')
     try {
       const created = await extensionHubApi.issueKey(
         keyDraft.name.trim(),
@@ -189,10 +198,9 @@ export function ExtensionPage() {
       )
       setIssuedKey(created)
       setKeyDraft(null)
-      setError('')
       await loadKeys()
     } catch (cause) {
-      setError(describeError(cause))
+      setFormError(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -201,32 +209,30 @@ export function ExtensionPage() {
   async function revokeKey() {
     if (!pendingRevoke) return
     setBusy(true)
+    setFormError('')
     try {
       await extensionHubApi.revokeKey(pendingRevoke.id)
-      setMessage(`已撤销密钥「${pendingRevoke.name}」，它换出去的会话同时失效`)
-      setError('')
+      notice.success(`已撤销密钥「${pendingRevoke.name}」，它换出去的会话同时失效`)
       setPendingRevoke(null)
       await loadKeys()
     } catch (cause) {
-      setError(describeError(cause))
-      setPendingRevoke(null)
+      setFormError(describeError(cause))
     } finally {
       setBusy(false)
     }
   }
 
+  // 签发弹窗里的提示要画在弹窗内：页面提示会被遮罩挡住。
+  const [copyState, setCopyState] = useState<'' | 'ok' | 'failed'>('')
   async function copyKey() {
     if (!issuedKey) return
-    try {
-      await navigator.clipboard.writeText(issuedKey.key)
-      setMessage('密钥已复制到剪贴板')
-    } catch {
-      setError('复制失败，请手动选中上面的密钥文本')
-    }
+    setCopyState(await copyText(issuedKey.key) ? 'ok' : 'failed')
   }
+  function closeIssued() { setIssuedKey(null); setCopyState('') }
+  function closeForm(close: () => void) { close(); setFormError('') }
 
   if (loading) return <PageState kind="loading" title="正在探测 Extension 状态" />
-  if (!status) return <PageState kind="error" title="无法读取对接状态" description={error} />
+  if (!status) return <PageState kind="error" title="无法读取对接状态" description={loadError} action={<button type="button" className="button button--primary" disabled={busy} onClick={() => void refresh()}>重试</button>} />
 
   // 未启用：给出配置指引，而不是一个空白页。
   if (!status.enabled || status.error_code === 'disabled') {
@@ -235,7 +241,7 @@ export function ExtensionPage() {
         kind="empty"
         title="Extension 对接未启用"
         description="在 config.json 的 extension 段填写 base_url 与 private_key_pem，把 enabled 设为 true，保存后配置会自动热重载。"
-        action={<button className="button button--primary" disabled={busy} onClick={() => void refresh()}>重新探测</button>}
+        action={<button type="button" className="button button--primary" disabled={busy} onClick={() => void refresh()}>重新探测</button>}
       />
       <Notice message={status.error_message} tone="info" />
     </div>
@@ -245,20 +251,15 @@ export function ExtensionPage() {
   const healthy = status.reachable && status.authenticated
 
   return <div className="business-page">
-    <div className="page-toolbar">
-      <div>
-        <p>跨实例集成</p>
-        <h2>Extension 对接</h2>
-      </div>
+    <div className="page-toolbar page-toolbar--end">
       <div className="toolbar-actions">
-        <button className="button button--quiet" disabled={busy} onClick={() => void refresh()}>
-          {busy ? '探测中...' : '刷新状态'}
+        <button type="button" className="button button--quiet" disabled={busy} onClick={() => void refresh()}>
+          {busy ? '探测中…' : '刷新状态'}
         </button>
       </div>
     </div>
 
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} onDismiss={() => setMessage('')} />
+    {notice.element}
 
     {/* ---------- 状态 ---------- */}
     <section className="data-panel">
@@ -268,7 +269,7 @@ export function ExtensionPage() {
           <p>{status.base_url}</p>
         </div>
       </header>
-      <div className="modal-body">
+      <div className="data-panel-body">
         <div className="metric-row">
           <div className="metric-label"><span>网络可达</span><small>能否建立 HTTP 连接</small></div>
           <div className="metric-value">
@@ -299,7 +300,7 @@ export function ExtensionPage() {
             <small>与 Extension 的 auth.hub.public_key 内容比对</small>
           </div>
           <div className="metric-value">
-            <code style={{ wordBreak: 'break-all', fontSize: 'var(--text-xs)' }}>{status.public_key}</code>
+            <code className="extension-public-key">{status.public_key}</code>
           </div>
         </div>}
         {status.error_message && <Notice message={`${status.error_code}：${status.error_message}`} tone="error" />}
@@ -327,7 +328,7 @@ export function ExtensionPage() {
           </button>
         </div>
       </header>
-      <div className="modal-body">
+      <div className="data-panel-body">
         {!status.configured
           ? <PageState kind="empty" title="配置不完整" description={status.error_message || '检查 extension.base_url 与 extension.private_key_pem。'} />
           : !status.authenticated
@@ -374,14 +375,15 @@ export function ExtensionPage() {
                     </td>
                     <td data-label="操作">
                       <div className="table-actions">
-                        {item.in_local && <button
+                        {item.in_local && canPush && <button
+                          type="button"
                           className="button button--quiet"
                           disabled={busy}
                           onClick={() => void pushOne(item)}
                         >
                           重推
                         </button>}
-                        <button className="icon-button" aria-label="从 Extension 删除该订阅" onClick={() => setPendingRemove(item)}>×</button>
+                        <DeleteButton label={`从 Extension 删除订阅「${item.title || item.url}」`} onClick={() => setPendingRemove(item)} />
                       </div>
                     </td>
                   </tr>)}
@@ -389,8 +391,8 @@ export function ExtensionPage() {
               </table>
             </div>}
 
-        {syncResult && syncResult.failed > 0 && <div style={{ marginTop: 16 }}>
-          <h3 style={{ fontSize: 'var(--text-sm)', marginBottom: 8 }}>失败明细</h3>
+        {syncResult && syncResult.failed > 0 && <div className="extension-sync-failures">
+          <h3>失败明细</h3>
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th>订阅源</th><th>原因</th></tr></thead>
@@ -419,7 +421,7 @@ export function ExtensionPage() {
           </button>
         </div>
       </header>
-      <div className="modal-body">
+      <div className="data-panel-body">
         {!healthy
           ? <PageState kind="empty" title="通道未就绪" description="需要网络可达且签名通过才能管理访问密钥。" />
           : !keys.length
@@ -476,16 +478,18 @@ export function ExtensionPage() {
       open={keyDraft !== null}
       title="签发访问密钥"
       description="密钥只在这个流程里显示一次，Extension 侧只存哈希。之后任何接口都拿不回明文。"
-      onClose={() => !busy && setKeyDraft(null)}
+      error={formError}
+      busy={busy}
+      onClose={() => closeForm(() => setKeyDraft(null))}
       footer={<>
-        <button className="button button--quiet" type="button" disabled={busy} onClick={() => setKeyDraft(null)}>取消</button>
+        <button className="button button--quiet" type="button" disabled={busy} onClick={() => closeForm(() => setKeyDraft(null))}>取消</button>
         <button
           className="button button--primary"
           type="submit"
           form="extension-key-form"
           disabled={busy || !keyDraft?.name.trim()}
         >
-          {busy ? '签发中...' : '签发'}
+          {busy ? '签发中…' : '签发'}
         </button>
       </>}
     >
@@ -518,16 +522,19 @@ export function ExtensionPage() {
       open={issuedKey !== null}
       title="密钥已签发"
       description="现在复制它。关闭这个窗口后，任何接口都拿不回明文，只能重新签发。"
-      onClose={() => setIssuedKey(null)}
+      // 明文只出现这一次：Esc、遮罩与 × 都不关闭，只能点「我已保存该密钥」。
+      dismissible={false}
+      onClose={closeIssued}
+      error={copyState === 'failed' ? '复制失败，请手动选中上面的密钥文本' : undefined}
       footer={<>
-        <button className="button button--quiet" onClick={() => void copyKey()}>复制密钥</button>
-        <button className="button button--primary" onClick={() => setIssuedKey(null)}>我已保存</button>
+        <button type="button" className="button button--quiet" onClick={() => void copyKey()}>{copyState === 'ok' ? '已复制' : '复制密钥'}</button>
+        <button type="button" className="button button--primary" onClick={closeIssued}>我已保存该密钥</button>
       </>}
     >
       <div className="form-grid">
         <label className="form-field form-field--wide">
           密钥
-          <input readOnly value={issuedKey?.key ?? ''} onFocus={event => event.currentTarget.select()} style={{ fontFamily: 'ui-monospace,monospace' }} />
+          <input className="extension-secret" readOnly value={issuedKey?.key ?? ''} onFocus={event => event.currentTarget.select()} />
         </label>
         <label className="form-field form-field--wide">
           有效期
@@ -544,7 +551,8 @@ export function ExtensionPage() {
       confirmLabel="确认删除"
       danger
       busy={busy}
-      onClose={() => setPendingRemove(null)}
+      error={formError}
+      onClose={() => closeForm(() => setPendingRemove(null))}
       onConfirm={() => void removeSubscription()}
     />
 
@@ -555,7 +563,8 @@ export function ExtensionPage() {
       confirmLabel="撤销"
       danger
       busy={busy}
-      onClose={() => setPendingRevoke(null)}
+      error={formError}
+      onClose={() => closeForm(() => setPendingRevoke(null))}
       onConfirm={() => void revokeKey()}
     />
   </div>

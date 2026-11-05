@@ -113,6 +113,18 @@
 .settings-guide-note { margin: var(--space-4) 0 0; color: var(--color-text-secondary); }
 .settings-json { margin-bottom: var(--space-5); }
 
+/* ============ Extension 对接 ============ */
+.extension-public-key {
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+.extension-sync-failures { margin-top: var(--space-6); }
+.extension-sync-failures h3 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-sm);
+}
+.form-field input.extension-secret { font-family: var(--font-mono); }
+
 /* ============ 用户管理 ============ */
 .user-cell {
   display: flex;
