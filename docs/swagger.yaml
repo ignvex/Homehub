@@ -219,6 +219,18 @@ definitions:
       port:
         description: 监听端口，默认 8080
         type: integer
+      trusted_proxies:
+        description: |-
+          TrustedProxies 可信反向代理的 IP 或 CIDR。
+
+          为空（默认）时不信任任何转发头（X-Forwarded-For / X-Real-IP），
+          客户端 IP 一律取 TCP 直连地址。部署在反向代理后面时必须填上
+          代理的地址，否则所有请求看起来都来自代理，按 IP 的限流与登录
+          锁定会把全体用户当成同一个人；反过来，若信任所有来源，客户端
+          伪造 X-Forwarded-For 就能绕过这两道闸。
+        items:
+          type: string
+        type: array
     type: object
   config.WebUIConfig:
     properties:
@@ -345,6 +357,9 @@ definitions:
     type: object
   handler.createTodoRequest:
     properties:
+      assignee_id:
+        description: AssigneeID 可选，指派给某个启用中的用户。
+        type: integer
       description:
         type: string
       due_date:
@@ -392,6 +407,22 @@ definitions:
     required:
     - password
     - username
+    type: object
+  handler.markEntriesReadRequest:
+    properties:
+      before:
+        description: Before 只标记发布时间不晚于它的条目，RFC3339。
+        format: date-time
+        type: string
+      entry_ids:
+        description: EntryIDs 省略表示不按 id 限定；显式空数组会被拒绝。
+        items:
+          type: integer
+        type: array
+      feed_id:
+        type: integer
+      group_id:
+        type: integer
     type: object
   handler.pasteResponse:
     properties:
@@ -533,10 +564,17 @@ definitions:
     type: object
   handler.updateTodoRequest:
     properties:
+      assignee_id:
+        description: AssigneeID 省略=不改，null=取消指派，值=指派给该用户。
+        type: integer
+        x-nullable: true
       description:
         type: string
+        x-nullable: true
       due_date:
+        format: date-time
         type: string
+        x-nullable: true
       priority:
         type: integer
       status:
@@ -734,6 +772,49 @@ definitions:
         description: 图片宽度（像素）
         type: integer
     type: object
+  model.Todo:
+    properties:
+      assignee:
+        $ref: '#/definitions/model.UserBrief'
+      assignee_id:
+        description: AssigneeID 指派给谁。被指派者（4 级）可以改状态，不能改其他字段。
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        description: |-
+          CreatedBy 创建者。NULL 是改造前的旧数据（或创建者已被删除），
+          只有 3 级及以上能动它们——没有归属就没有「自己的」。
+        type: integer
+      creator:
+        allOf:
+        - $ref: '#/definitions/model.UserBrief'
+        description: Creator / Assignee 是输出时批量补上的用户摘要，不是数据库列。
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      description:
+        description: 详细描述
+        type: string
+      due_date:
+        description: 截止日期（可选）
+        type: string
+      id:
+        type: integer
+      priority:
+        description: 优先级，值越大越靠前
+        type: integer
+      sort_order:
+        description: 拖拽排序
+        type: integer
+      status:
+        description: 状态：planned/pending/in_progress/completed/paused
+        type: string
+      title:
+        description: 任务标题
+        type: string
+      updated_at:
+        type: string
+    type: object
   model.User:
     properties:
       created_at:
@@ -754,6 +835,13 @@ definitions:
         type: integer
       updated_at:
         type: string
+      username:
+        type: string
+    type: object
+  model.UserBrief:
+    properties:
+      id:
+        type: integer
       username:
         type: string
     type: object
@@ -838,6 +926,18 @@ definitions:
         type: string
       type:
         type: string
+    type: object
+  service.BookmarkImportResult:
+    properties:
+      created:
+        description: Created 新建的书签数。
+        type: integer
+      groups_created:
+        description: GroupsCreated 新建的分组数。
+        type: integer
+      skipped:
+        description: Skipped 跳过的书签数：同组同 URL 已存在、文件内重复、非 http/https、URL 过长。
+        type: integer
     type: object
   service.BookmarkSearchItem:
     properties:
@@ -1099,6 +1199,44 @@ definitions:
         description: RetentionDays 数据库日志保留天数，0 表示不限。
         type: integer
     type: object
+  service.OPMLImportError:
+    properties:
+      reason:
+        type: string
+      url:
+        type: string
+    type: object
+  service.OPMLImportResult:
+    properties:
+      created:
+        description: Created 新建的订阅源数。
+        type: integer
+      errors:
+        description: Errors 校验或写入失败的条目；不影响其余条目。
+        items:
+          $ref: '#/definitions/service.OPMLImportError'
+        type: array
+      groups_created:
+        description: GroupsCreated 新建的分组数。
+        type: integer
+      skipped:
+        description: Skipped 因 URL 已存在（库里或文件内重复）而跳过的数目。
+        type: integer
+    type: object
+  service.PasteSearchItem:
+    properties:
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: integer
+      public_id:
+        description: PublicID 是 /pastes/:id 与 /paste/:id 使用的公开 ID。
+        type: string
+      snippet:
+        type: string
+    type: object
   service.RSSEntryView:
     properties:
       author:
@@ -1115,6 +1253,11 @@ definitions:
         type: boolean
       id:
         type: integer
+      is_read:
+        description: IsRead / IsStarred 是**当前用户**的阅读状态。
+        type: boolean
+      is_starred:
+        type: boolean
       link:
         type: string
       magnet_locked:
@@ -1269,6 +1412,13 @@ definitions:
           Page / PerPage 回传生效值：前端传了超限的 per_page 时，
           它需要知道实际用了多少才能正确算页数。
         type: integer
+      pastes:
+        description: Pastes 只含未过期的粘贴；剪贴板关闭时恒为空。
+        items:
+          $ref: '#/definitions/service.PasteSearchItem'
+        type: array
+      pastes_total:
+        type: integer
       per_page:
         type: integer
       query:
@@ -1282,6 +1432,12 @@ definitions:
       scope:
         description: Scope 原样回传，让前端知道这次返回覆盖了哪些源。
         type: string
+      todos:
+        items:
+          $ref: '#/definitions/service.TodoSearchItem'
+        type: array
+      todos_total:
+        type: integer
       took_ms:
         description: TookMs 是服务端耗时，便于判断慢查询。
         type: integer
@@ -1320,6 +1476,40 @@ definitions:
         type: string
       type:
         type: string
+    type: object
+  service.TodoSearchItem:
+    properties:
+      created_at:
+        type: string
+      due_date:
+        type: string
+      id:
+        type: integer
+      snippet:
+        description: Snippet 是描述里命中关键词附近的一段；为空表示命中在标题。
+        type: string
+      status:
+        type: string
+      title:
+        type: string
+    type: object
+  service.UnreadCounts:
+    properties:
+      by_feed:
+        additionalProperties:
+          format: int64
+          type: integer
+        description: ByFeed 按源计数，一个条目被两个源收录时在两个源下各算一次。
+        type: object
+      by_group:
+        additionalProperties:
+          format: int64
+          type: integer
+        description: ByGroup 按分组计数，同一分组内去重；未分组的源不计入任何分组。
+        type: object
+      total:
+        description: Total 是去重后的未读条目数：同一条目被多个源收录只算一次。
+        type: integer
     type: object
   service.UpdateBackgroundRequest:
     properties:
@@ -2371,6 +2561,55 @@ paths:
       summary: 更新书签
       tags:
       - 书签
+  /bookmarks/export:
+    get:
+      description: 导出为 Netscape Bookmark File（浏览器通用 HTML），每个分组一个 H3 文件夹；以附件 homehub-bookmarks.html
+        下载
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: 书签 HTML
+          schema:
+            type: string
+        "500":
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 导出书签
+      tags:
+      - 书签
+  /bookmarks/import:
+    post:
+      consumes:
+      - multipart/form-data
+      description: multipart 字段 file（≤5MB），Netscape Bookmark File 格式。H3 文件夹作为分组（嵌套拍平为「父/子」），不在文件夹里的归入「导入的书签」；同组同
+        URL 去重，只接受 http/https
+      parameters:
+      - description: 书签 HTML 文件
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 导入结果
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.BookmarkImportResult'
+              type: object
+        "400":
+          description: 文件缺失、过大或无法解析
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 导入书签
+      tags:
+      - 书签
   /bookmarks/reorder:
     post:
       consumes:
@@ -2896,12 +3135,24 @@ paths:
       - 剪贴板
   /rss/entries:
     get:
-      description: 分页获取 RSS 订阅条目，可按订阅源筛选
+      description: 分页获取 RSS 订阅条目，可按订阅源、分组、磁力与阅读状态筛选。每条带当前用户的 is_read / is_starred
       parameters:
       - description: 订阅源 ID 筛选
         in: query
         name: feed_id
         type: integer
+      - description: 分组 ID 筛选
+        in: query
+        name: group_id
+        type: integer
+      - description: 磁力筛选：has/locked/unlocked/pikpak_saved/pikpak_failed
+        in: query
+        name: magnet
+        type: string
+      - description: 阅读状态筛选：unread/read/starred（缺省全部）
+        in: query
+        name: state
+        type: string
       - description: 页码（默认 1）
         in: query
         name: page
@@ -3015,6 +3266,126 @@ paths:
       summary: 提交磁力链接到 PikPak
       tags:
       - 磁力链接
+  /rss/entries/{id}/read:
+    delete:
+      description: 对当前用户把条目恢复为未读，幂等
+      parameters:
+      - description: 条目 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 条目不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 标记未读
+      tags:
+      - RSS 阅读状态
+    put:
+      description: 对当前用户把条目标记为已读，幂等
+      parameters:
+      - description: 条目 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 条目不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 标记已读
+      tags:
+      - RSS 阅读状态
+  /rss/entries/{id}/star:
+    delete:
+      description: 对当前用户取消条目星标，幂等
+      parameters:
+      - description: 条目 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 条目不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 取消星标
+      tags:
+      - RSS 阅读状态
+    put:
+      description: 对当前用户给条目加星标，幂等
+      parameters:
+      - description: 条目 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "404":
+          description: 条目不存在
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 加星标
+      tags:
+      - RSS 阅读状态
+  /rss/entries/mark-read:
+    post:
+      consumes:
+      - application/json
+      description: 按源、分组、条目 ID 与发布时间上限（AND 组合）批量标记已读；全部省略即全部已读。返回本次新标记的条数
+      parameters:
+      - description: 范围
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/handler.markEntriesReadRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{marked: n}'
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  type: object
+              type: object
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 批量标记已读
+      tags:
+      - RSS 阅读状态
   /rss/feeds:
     get:
       description: 返回所有 RSS 订阅源及其最新状态，可按分组筛选
@@ -3361,6 +3732,53 @@ paths:
       summary: 更新分组
       tags:
       - RSS 订阅
+  /rss/opml:
+    get:
+      description: 导出全部订阅源为 OPML 2.0，分组嵌套为一级 outline，未分组的放顶层；以附件 homehub-feeds.opml
+        下载
+      produces:
+      - text/xml
+      responses:
+        "200":
+          description: OPML 文档
+          schema:
+            type: string
+        "500":
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 导出 OPML
+      tags:
+      - RSS 订阅
+    post:
+      consumes:
+      - multipart/form-data
+      description: multipart 字段 file（≤2MB，≤2000 个源）。按 URL 去重，分组按名字匹配或新建；只保存不抓取，由后台调度抓取
+      parameters:
+      - description: OPML 文件
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 导入结果
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.OPMLImportResult'
+              type: object
+        "400":
+          description: 文件缺失、过大或无法解析
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 导入 OPML
+      tags:
+      - RSS 订阅
   /rss/pikpak:
     get:
       produces:
@@ -3395,16 +3813,34 @@ paths:
       summary: 调度总览
       tags:
       - RSS 订阅
+  /rss/unread-counts:
+    get:
+      description: 一次返回总未读数、按源与按分组的未读数（键为 ID 字符串，0 不出现）
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 计数
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/service.UnreadCounts'
+              type: object
+      summary: 未读计数
+      tags:
+      - RSS 阅读状态
   /search:
     get:
-      description: 在书签（标题/URL/分组名）与 RSS 条目（标题/正文/作者）中搜索，支持分页、按源与分组过滤
+      description: 在书签（标题/URL/分组名）、RSS 条目（标题/正文/作者）、待办（标题/描述）与未过期的剪贴板（正文）中搜索，支持分页、按源与分组过滤
       parameters:
       - description: 搜索关键词
         in: query
         name: q
         required: true
         type: string
-      - description: 搜索范围：all / bookmarks / rss（默认 all）
+      - description: 搜索范围：all / bookmarks / rss / todos / pastes（默认 all）
         in: query
         name: scope
         type: string
@@ -3453,21 +3889,40 @@ paths:
       - 搜索
   /todos:
     get:
-      description: 获取所有待办事项，可按状态筛选和排序
+      description: 获取待办事项，可按状态、被指派者、创建者筛选和排序。每条附带 creator / assignee 的 {id, username}
       parameters:
       - description: 状态筛选：planned/pending/in_progress/completed/paused
         in: query
         name: status
         type: string
-      - description: 排序字段（默认 priority）
+      - description: 排序：priority（默认）/due_date/created_at
         in: query
         name: sort
+        type: string
+      - description: me 或用户 ID：只看指派给该用户的
+        in: query
+        name: assignee
+        type: string
+      - description: 1：只看我创建的
+        in: query
+        name: mine
         type: string
       produces:
       - application/json
       responses:
         "200":
           description: 待办列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.Todo'
+                  type: array
+              type: object
+        "400":
+          description: assignee 参数无效
           schema:
             $ref: '#/definitions/handler.Response'
         "500":
@@ -3522,6 +3977,10 @@ paths:
           description: 无效的待办 ID
           schema:
             $ref: '#/definitions/handler.Response'
+        "403":
+          description: 4 级越权
+          schema:
+            $ref: '#/definitions/handler.Response'
         "404":
           description: 待办不存在
           schema:
@@ -3558,7 +4017,7 @@ paths:
     put:
       consumes:
       - application/json
-      description: 更新待办事项的标题、描述、状态、优先级或截止日期
+      description: 更新待办事项的标题、描述、状态、优先级或截止日期。description / due_date 省略=不改，null 或空串=清空
       parameters:
       - description: 待办 ID
         in: path
@@ -3580,6 +4039,10 @@ paths:
             $ref: '#/definitions/handler.Response'
         "400":
           description: 无效的请求参数
+          schema:
+            $ref: '#/definitions/handler.Response'
+        "403":
+          description: 4 级越权
           schema:
             $ref: '#/definitions/handler.Response'
         "500":
@@ -3617,6 +4080,10 @@ paths:
           description: 无效的状态值
           schema:
             $ref: '#/definitions/handler.Response'
+        "403":
+          description: 4 级越权
+          schema:
+            $ref: '#/definitions/handler.Response'
         "500":
           description: 服务器内部错误
           schema:
@@ -3647,6 +4114,10 @@ paths:
           description: 缺少 ids
           schema:
             $ref: '#/definitions/handler.Response'
+        "403":
+          description: 4 级越权
+          schema:
+            $ref: '#/definitions/handler.Response'
         "500":
           description: 服务器内部错误
           schema:
@@ -3654,6 +4125,30 @@ paths:
       summary: 调整待办排序
       tags:
       - 待办事项
+  /users/directory:
+    get:
+      description: 返回所有启用用户的 {id, username}，供待办指派选择器使用；登录即可
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户列表
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/model.UserBrief'
+                  type: array
+              type: object
+        "500":
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/handler.Response'
+      summary: 用户目录
+      tags:
+      - 用户管理
   /webui:
     get:
       description: 返回首页和登录页的背景设置、布局方案和已解析的静态资源 URL（无需登录）

@@ -2,8 +2,8 @@
 
 HomeHub 的全部持久化表。用于人工复核与 schema 评审。
 
-**权威性**：表结构由 `internal/app/app.go` 的 `AutoMigrate` 生成（`pastes`
-例外，见下）。本文档中的列类型由 GORM 的 PostgreSQL dialector 解析得出，
+**权威性**：表结构由 `AutoMigrate` 生成，模型列表在
+`model.AutoMigrateModels()`，启动流程与集成测试共用（`pastes` 例外，见下）。本文档中的列类型由 GORM 的 PostgreSQL dialector 解析得出，
 与 AutoMigrate 实际执行一致；但**唯一事实源仍是 Go 模型**
 （`internal/model/*.go`）。模型变更后请同步本文档。
 
@@ -50,6 +50,7 @@ HomeHub 的全部持久化表。用于人工复核与 schema 评审。
 | `rss_image_sources` | **物理** | URL → 内容 映射；内容被回收时一并删 |
 | `rss_images` | **物理** | 回收孤儿时用 `Unscoped()`；否则 `cache_key` 唯一键冲突 |
 | `rss_entry_feeds` | **物理** | 删源 / retention 都删关联行 |
+| `rss_entry_states` | **物理**（无 `deleted_at`） | 随孤儿条目删除；删用户时删除；取消已读与星标后两列皆空也删除 |
 | `rss_feeds` | **物理** | 删源用 `Unscoped()` |
 | `pastes` | **物理** | 过期清理用 `Unscoped()` |
 | `avatar_caches` | **物理** | 换头像时 `Unscoped()` 删旧行 |
@@ -86,6 +87,9 @@ erDiagram
     rss_images ||--o{ rss_image_refs : "image_id"
     rss_images ||--o{ rss_image_sources : "image_id"
     rss_entries ||--o{ rss_image_refs : "entry_id"
+    rss_entries ||--o{ rss_entry_states : "entry_id"
+    users ||--o{ rss_entry_states : "user_id"
+    users ||--o{ todos : "created_by / assignee_id 可空"
 
     users {
         bigserial id PK
@@ -145,6 +149,17 @@ erDiagram
         bigint image_id
         bigint entry_id
     }
+    rss_entry_states {
+        bigint user_id PK
+        bigint entry_id PK
+        timestamptz read_at
+        timestamptz starred_at
+    }
+    todos {
+        bigserial id PK
+        bigint created_by
+        bigint assignee_id
+    }
 ```
 
 条目是**跨源共享的内容**：`rss_entries` 只存内容（按 `link` 全表
@@ -154,8 +169,7 @@ erDiagram
 图片引用挂在**条目**上：内容被多源共享时图片只有一份引用，删掉任一源
 都不会让图片变成孤儿。
 
-图中未画的三张表与其他表没有关联：`todos`（全体共享）、
-`log_entries`（只写日志）、`media_assets`（只被
+图中未画的表与其他表没有关联：`log_entries`（只写日志）、`media_assets`（只被
 `webui` 配置里的 asset id 引用，配置存在 JSON 文件而非数据库）、
 `pastes`（完全独立）。
 
@@ -423,7 +437,10 @@ erDiagram
 `idx_rss_entries_feed_id`、`idx_rss_entries_published`、
 `idx_rss_entries_magnet_locked`、`idx_rss_entries_pikpak_status`、
 `idx_rss_entries_deleted_at`，以及 pg_trgm 索引
-`idx_rss_entries_title_trgm(title)`。
+`idx_rss_entries_title_trgm(title)`、`idx_rss_entries_content_trgm(content)`、
+`idx_rss_entries_author_trgm(author)`。全局搜索匹配这三列；没有单独的摘要列
+（摘要在列表查询时从 `content` 现算），所以正文索引只能建在 `content` 上。
+GIN trgm 存的是三元组，没有 btree 的单键字节上限，长正文也建得出来。
 
 **磁力锁定与 PikPak 是两个独立维度**：
 
@@ -590,6 +607,30 @@ URL → 内容 的映射。没有它，每轮抓取都得重新下载才能算�
   2048 字符 link 进联合索引的限制，改成 `entry_id` 后不需要了。
 - `reconcileRefs` 定期删除没有对应条目的引用（一条 `NOT EXISTS`）。
 
+### 7.8 `rss_entry_states`
+
+每个用户对每个条目的阅读状态。**不嵌入 BaseModel**：没有自增 `id`，也没有
+`created_at` / `deleted_at`。
+
+| 列 | 类型 | 约束 | 说明 |
+|----|------|------|------|
+| `user_id` | `bigint` | **PK**（联合） | 指向 `users.id` |
+| `entry_id` | `bigint` | **PK**（联合），有索引 | 指向 `rss_entries.id` |
+| `read_at` | `timestamptz` | 可空 | 非 NULL = 已读 |
+| `starred_at` | `timestamptz` | 可空 | 非 NULL = 已加星 |
+| `updated_at` | `timestamptz` | | |
+
+索引：主键 `(user_id, entry_id)`、`idx_rss_entry_states_entry_id`。
+
+**评审要点**：
+
+- 没有软删除是故意的：软删除行会占住主键，「取消已读再标记」就会撞键
+- 没有外键（全库约定），清理靠应用层：`purgeOrphanEntries` 删孤儿条目时
+  一并删除；`AuthService.DeleteUser` 在同一事务里删除该用户的行
+- 写入一律 `INSERT ... SELECT FROM rss_entries ... ON CONFLICT (user_id, entry_id)
+  DO UPDATE`：条目存在性与写入是同一条语句，不会留下指向不存在条目的行
+- 列表查询按 `(entry_id, user_id)` LEFT JOIN，主键保证最多命中一行，不会复制条目
+
 ---
 
 ## 8. 待办与剪贴板
@@ -606,14 +647,23 @@ URL → 内容 的映射。没有它，每轮抓取都得重新下载才能算�
 | `priority` | `bigint` | DEFAULT `0` | 越大越靠前 |
 | `due_date` | `timestamptz` | 可空 | |
 | `sort_order` | `bigint` | DEFAULT `0` | |
+| `created_by` | `bigint` | 可空，有索引 | 创建者 `users.id`；NULL = 旧数据或创建者已删除 |
+| `assignee_id` | `bigint` | 可空，有索引 | 被指派者 `users.id` |
 
 `status` 合法值：`planned` / `pending` / `in_progress` / `completed` / `paused`。
 应用层 `model.IsValidTodoStatus` 校验，**数据库没有 CHECK 约束**。
 
-索引：`idx_todos_status`、`idx_todos_deleted_at`。
+索引：`idx_todos_status`、`idx_todos_deleted_at`、`idx_todos_created_by`、
+`idx_todos_assignee_id`；模糊搜索 `idx_todos_title_trgm`、
+`idx_todos_description_trgm`（GIN trgm，见 `database.EnsureSearchIndexes`）。
 
-**评审要点**：待办是**全体用户共享**的，表上没有 `user_id`。这是产品决策，
-不是遗漏；但多用户场景下无法做到人各有份。
+**评审要点**：
+
+- 待办仍是**全体用户共享**的集合；`created_by` / `assignee_id` 只决定 4 级
+  用户能改哪些，不决定谁能看见
+- 两列都是新增的可空列，AutoMigrate 加列不需要手工迁移；旧数据为 NULL，
+  只有 ≤3 级能动
+- 删除用户时，同一事务里把引用该用户的 `created_by` / `assignee_id` 置 NULL
 
 ### 8.2 `pastes`
 
@@ -998,6 +1048,11 @@ CREATE UNIQUE INDEX idx_users_username_active
 | `url_key` 唯一约束生效 | `TestIntegrationImageSourcesUniqueURLKey` |
 | 超长 Content-Type 被裁剪而非拖垮整批 | `TestIntegrationImageFilenameTooLongForColumn` |
 | `Sweep` 不误删有引用的图片 | `TestIntegrationSweepKeepsRegisteredImage` |
+| 未读计数 GROUPING SETS、批量已读 ON CONFLICT 计数、孤儿条目清理状态行 | `TestIntegrationEntryStateAndUnreadCounts` |
+| OPML 导入去重、分组复用与新建 | `TestIntegrationOPMLImportDedupesAndCreatesGroups` |
+| 书签导出可导回、分组名按 rune 截断 | `TestIntegrationBookmarkExportImportRoundTrip` |
+| 待办 4 级归属边界、删用户后引用置 NULL | `TestIntegrationTodoOwnershipAndUserDeletion` |
+| 待办 / 粘贴搜索的片段 SQL | `TestIntegrationSearchTodosAndPastes` |
 
 **运行方式**（未设置环境变量时全部 skip，不影响普通 `go test`）：
 
@@ -1006,8 +1061,9 @@ HOMEHUB_TEST_DB="host=192.168.1.2 port=5432 user=test password=xxx dbname=testdb
   go test ./internal/database/ ./internal/service/ -run Integration -v
 ```
 
-两个包用的是**不同的 schema**（database 用 `it_database`，service 用
-`it_service`，测试结束就 `DROP SCHEMA`）。这不是洁癖：
+每组用例用**各自的 schema**（database 用 `it_database`；service 用
+`it_service`、`it_service_feed`、`it_service_sort`、`it_service_state`；
+测试结束就 `DROP SCHEMA`）。这不是洁癖：
 
 - `go test ./...` 会并行跑不同包，同用一个 schema 时一边在删表、
   另一边正在插入，表现为随机失败；

@@ -1504,6 +1504,82 @@
                 }
             }
         },
+        "/bookmarks/export": {
+            "get": {
+                "description": "导出为 Netscape Bookmark File（浏览器通用 HTML），每个分组一个 H3 文件夹；以附件 homehub-bookmarks.html 下载",
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "书签"
+                ],
+                "summary": "导出书签",
+                "responses": {
+                    "200": {
+                        "description": "书签 HTML",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/bookmarks/import": {
+            "post": {
+                "description": "multipart 字段 file（≤5MB），Netscape Bookmark File 格式。H3 文件夹作为分组（嵌套拍平为「父/子」），不在文件夹里的归入「导入的书签」；同组同 URL 去重，只接受 http/https",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "书签"
+                ],
+                "summary": "导入书签",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "书签 HTML 文件",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "导入结果",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.BookmarkImportResult"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "文件缺失、过大或无法解析",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/bookmarks/reorder": {
             "post": {
                 "consumes": [
@@ -2461,7 +2537,7 @@
         },
         "/rss/entries": {
             "get": {
-                "description": "分页获取 RSS 订阅条目，可按订阅源筛选",
+                "description": "分页获取 RSS 订阅条目，可按订阅源、分组、磁力与阅读状态筛选。每条带当前用户的 is_read / is_starred",
                 "produces": [
                     "application/json"
                 ],
@@ -2474,6 +2550,24 @@
                         "type": "integer",
                         "description": "订阅源 ID 筛选",
                         "name": "feed_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "分组 ID 筛选",
+                        "name": "group_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "磁力筛选：has/locked/unlocked/pikpak_saved/pikpak_failed",
+                        "name": "magnet",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "阅读状态筛选：unread/read/starred（缺省全部）",
+                        "name": "state",
                         "in": "query"
                     },
                     {
@@ -2504,6 +2598,57 @@
                     },
                     "500": {
                         "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/entries/mark-read": {
+            "post": {
+                "description": "按源、分组、条目 ID 与发布时间上限（AND 组合）批量标记已读；全部省略即全部已读。返回本次新标记的条数",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "批量标记已读",
+                "parameters": [
+                    {
+                        "description": "范围",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/handler.markEntriesReadRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{marked: n}",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "object"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -2648,6 +2793,142 @@
                                     }
                                 }
                             ]
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/entries/{id}/read": {
+            "put": {
+                "description": "对当前用户把条目标记为已读，幂等",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "标记已读",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "条目不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "对当前用户把条目恢复为未读，幂等",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "标记未读",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "条目不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/rss/entries/{id}/star": {
+            "put": {
+                "description": "对当前用户给条目加星标，幂等",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "加星标",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "条目不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "对当前用户取消条目星标，幂等",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "取消星标",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "条目 ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成功",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "条目不存在",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
                         }
                     }
                 }
@@ -3182,6 +3463,80 @@
                 }
             }
         },
+        "/rss/opml": {
+            "get": {
+                "description": "导出全部订阅源为 OPML 2.0，分组嵌套为一级 outline，未分组的放顶层；以附件 homehub-feeds.opml 下载",
+                "produces": [
+                    "text/xml"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "导出 OPML",
+                "responses": {
+                    "200": {
+                        "description": "OPML 文档",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "multipart 字段 file（≤2MB，≤2000 个源）。按 URL 去重，分组按名字匹配或新建；只保存不抓取，由后台调度抓取",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 订阅"
+                ],
+                "summary": "导入 OPML",
+                "parameters": [
+                    {
+                        "type": "file",
+                        "description": "OPML 文件",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "导入结果",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.OPMLImportResult"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "文件缺失、过大或无法解析",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/rss/pikpak": {
             "get": {
                 "produces": [
@@ -3239,9 +3594,41 @@
                 }
             }
         },
+        "/rss/unread-counts": {
+            "get": {
+                "description": "一次返回总未读数、按源与按分组的未读数（键为 ID 字符串，0 不出现）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RSS 阅读状态"
+                ],
+                "summary": "未读计数",
+                "responses": {
+                    "200": {
+                        "description": "计数",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/service.UnreadCounts"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
         "/search": {
             "get": {
-                "description": "在书签（标题/URL/分组名）与 RSS 条目（标题/正文/作者）中搜索，支持分页、按源与分组过滤",
+                "description": "在书签（标题/URL/分组名）、RSS 条目（标题/正文/作者）、待办（标题/描述）与未过期的剪贴板（正文）中搜索，支持分页、按源与分组过滤",
                 "produces": [
                     "application/json"
                 ],
@@ -3259,7 +3646,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "搜索范围：all / bookmarks / rss（默认 all）",
+                        "description": "搜索范围：all / bookmarks / rss / todos / pastes（默认 all）",
                         "name": "scope",
                         "in": "query"
                     },
@@ -3330,7 +3717,7 @@
         },
         "/todos": {
             "get": {
-                "description": "获取所有待办事项，可按状态筛选和排序",
+                "description": "获取待办事项，可按状态、被指派者、创建者筛选和排序。每条附带 creator / assignee 的 {id, username}",
                 "produces": [
                     "application/json"
                 ],
@@ -3347,14 +3734,47 @@
                     },
                     {
                         "type": "string",
-                        "description": "排序字段（默认 priority）",
+                        "description": "排序：priority（默认）/due_date/created_at",
                         "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "me 或用户 ID：只看指派给该用户的",
+                        "name": "assignee",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "1：只看我创建的",
+                        "name": "mine",
                         "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "待办列表",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/model.Todo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "assignee 参数无效",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -3443,6 +3863,12 @@
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
+                    "403": {
+                        "description": "4 级越权",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
                     "500": {
                         "description": "服务器内部错误",
                         "schema": {
@@ -3493,7 +3919,7 @@
                 }
             },
             "put": {
-                "description": "更新待办事项的标题、描述、状态、优先级或截止日期",
+                "description": "更新待办事项的标题、描述、状态、优先级或截止日期。description / due_date 省略=不改，null 或空串=清空",
                 "consumes": [
                     "application/json"
                 ],
@@ -3535,6 +3961,12 @@
                             "$ref": "#/definitions/handler.Response"
                         }
                     },
+                    "403": {
+                        "description": "4 级越权",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
                     "500": {
                         "description": "服务器内部错误",
                         "schema": {
@@ -3570,6 +4002,12 @@
                     },
                     "400": {
                         "description": "无效的待办 ID",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "4 级越权",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
                         }
@@ -3625,6 +4063,53 @@
                         "description": "无效的状态值",
                         "schema": {
                             "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "4 级越权",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "服务器内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/handler.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/users/directory": {
+            "get": {
+                "description": "返回所有启用用户的 {id, username}，供待办指派选择器使用；登录即可",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "用户管理"
+                ],
+                "summary": "用户目录",
+                "responses": {
+                    "200": {
+                        "description": "用户列表",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/model.UserBrief"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
                         }
                     },
                     "500": {
@@ -3923,6 +4408,13 @@
                 "port": {
                     "description": "监听端口，默认 8080",
                     "type": "integer"
+                },
+                "trusted_proxies": {
+                    "description": "TrustedProxies 可信反向代理的 IP 或 CIDR。\n\n为空（默认）时不信任任何转发头（X-Forwarded-For / X-Real-IP），\n客户端 IP 一律取 TCP 直连地址。部署在反向代理后面时必须填上\n代理的地址，否则所有请求看起来都来自代理，按 IP 的限流与登录\n锁定会把全体用户当成同一个人；反过来，若信任所有来源，客户端\n伪造 X-Forwarded-For 就能绕过这两道闸。",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -4114,6 +4606,10 @@
                 "title"
             ],
             "properties": {
+                "assignee_id": {
+                    "description": "AssigneeID 可选，指派给某个启用中的用户。",
+                    "type": "integer"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -4180,6 +4676,29 @@
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "handler.markEntriesReadRequest": {
+            "type": "object",
+            "properties": {
+                "before": {
+                    "description": "Before 只标记发布时间不晚于它的条目，RFC3339。",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "entry_ids": {
+                    "description": "EntryIDs 省略表示不按 id 限定；显式空数组会被拒绝。",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "feed_id": {
+                    "type": "integer"
+                },
+                "group_id": {
+                    "type": "integer"
                 }
             }
         },
@@ -4392,11 +4911,19 @@
         "handler.updateTodoRequest": {
             "type": "object",
             "properties": {
+                "assignee_id": {
+                    "description": "AssigneeID 省略=不改，null=取消指派，值=指派给该用户。",
+                    "type": "integer",
+                    "x-nullable": true
+                },
                 "description": {
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "due_date": {
-                    "type": "string"
+                    "type": "string",
+                    "format": "date-time",
+                    "x-nullable": true
                 },
                 "priority": {
                     "type": "integer"
@@ -4679,6 +5206,66 @@
                 }
             }
         },
+        "model.Todo": {
+            "type": "object",
+            "properties": {
+                "assignee": {
+                    "$ref": "#/definitions/model.UserBrief"
+                },
+                "assignee_id": {
+                    "description": "AssigneeID 指派给谁。被指派者（4 级）可以改状态，不能改其他字段。",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "description": "CreatedBy 创建者。NULL 是改造前的旧数据（或创建者已被删除），\n只有 3 级及以上能动它们——没有归属就没有「自己的」。",
+                    "type": "integer"
+                },
+                "creator": {
+                    "description": "Creator / Assignee 是输出时批量补上的用户摘要，不是数据库列。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/model.UserBrief"
+                        }
+                    ]
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "description": {
+                    "description": "详细描述",
+                    "type": "string"
+                },
+                "due_date": {
+                    "description": "截止日期（可选）",
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "priority": {
+                    "description": "优先级，值越大越靠前",
+                    "type": "integer"
+                },
+                "sort_order": {
+                    "description": "拖拽排序",
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "状态：planned/pending/in_progress/completed/paused",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "任务标题",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "model.User": {
             "type": "object",
             "properties": {
@@ -4704,6 +5291,17 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.UserBrief": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
                 },
                 "username": {
                     "type": "string"
@@ -4832,6 +5430,23 @@
                 },
                 "type": {
                     "type": "string"
+                }
+            }
+        },
+        "service.BookmarkImportResult": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "description": "Created 新建的书签数。",
+                    "type": "integer"
+                },
+                "groups_created": {
+                    "description": "GroupsCreated 新建的分组数。",
+                    "type": "integer"
+                },
+                "skipped": {
+                    "description": "Skipped 跳过的书签数：同组同 URL 已存在、文件内重复、非 http/https、URL 过长。",
+                    "type": "integer"
                 }
             }
         },
@@ -5172,6 +5787,62 @@
                 }
             }
         },
+        "service.OPMLImportError": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.OPMLImportResult": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "description": "Created 新建的订阅源数。",
+                    "type": "integer"
+                },
+                "errors": {
+                    "description": "Errors 校验或写入失败的条目；不影响其余条目。",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.OPMLImportError"
+                    }
+                },
+                "groups_created": {
+                    "description": "GroupsCreated 新建的分组数。",
+                    "type": "integer"
+                },
+                "skipped": {
+                    "description": "Skipped 因 URL 已存在（库里或文件内重复）而跳过的数目。",
+                    "type": "integer"
+                }
+            }
+        },
+        "service.PasteSearchItem": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "public_id": {
+                    "description": "PublicID 是 /pastes/:id 与 /paste/:id 使用的公开 ID。",
+                    "type": "string"
+                },
+                "snippet": {
+                    "type": "string"
+                }
+            }
+        },
         "service.RSSEntryView": {
             "type": "object",
             "properties": {
@@ -5195,6 +5866,13 @@
                 },
                 "id": {
                     "type": "integer"
+                },
+                "is_read": {
+                    "description": "IsRead / IsStarred 是**当前用户**的阅读状态。",
+                    "type": "boolean"
+                },
+                "is_starred": {
+                    "type": "boolean"
                 },
                 "link": {
                     "type": "string"
@@ -5425,6 +6103,16 @@
                     "description": "Page / PerPage 回传生效值：前端传了超限的 per_page 时，\n它需要知道实际用了多少才能正确算页数。",
                     "type": "integer"
                 },
+                "pastes": {
+                    "description": "Pastes 只含未过期的粘贴；剪贴板关闭时恒为空。",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.PasteSearchItem"
+                    }
+                },
+                "pastes_total": {
+                    "type": "integer"
+                },
                 "per_page": {
                     "type": "integer"
                 },
@@ -5443,6 +6131,15 @@
                 "scope": {
                     "description": "Scope 原样回传，让前端知道这次返回覆盖了哪些源。",
                     "type": "string"
+                },
+                "todos": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/service.TodoSearchItem"
+                    }
+                },
+                "todos_total": {
+                    "type": "integer"
                 },
                 "took_ms": {
                     "description": "TookMs 是服务端耗时，便于判断慢查询。",
@@ -5498,6 +6195,55 @@
                 },
                 "type": {
                     "type": "string"
+                }
+            }
+        },
+        "service.TodoSearchItem": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "snippet": {
+                    "description": "Snippet 是描述里命中关键词附近的一段；为空表示命中在标题。",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.UnreadCounts": {
+            "type": "object",
+            "properties": {
+                "by_feed": {
+                    "description": "ByFeed 按源计数，一个条目被两个源收录时在两个源下各算一次。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "by_group": {
+                    "description": "ByGroup 按分组计数，同一分组内去重；未分组的源不计入任何分组。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "total": {
+                    "description": "Total 是去重后的未读条目数：同一条目被多个源收录只算一次。",
+                    "type": "integer"
                 }
             }
         },

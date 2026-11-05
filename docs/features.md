@@ -164,6 +164,25 @@ PDF 带 `Content-Disposition: inline`，由浏览器内建阅读器打开。
   可通过 `bookmark.proxy_names` 指定代理链。
 - **归属**：书签必须属于某个分组，删除分组会级联删除其下书签。
 
+### 导入导出
+
+格式是浏览器通用的 Netscape Bookmark File（Chrome / Firefox / Edge / Safari
+的「导出书签」都产出这种 HTML）。
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/bookmarks/export` | 登录 | 附件 `homehub-bookmarks.html` |
+| POST | `/bookmarks/import` | 3 级 | multipart 字段 `file`，≤5MB |
+
+- 导出：每个分组一个 `<H3>` 文件夹，书签为 `<A HREF ADD_DATE>`，文本与属性全部
+  HTML 转义
+- 导入：`<H3>` 作为分组名，嵌套文件夹拍平成「父/子」，按 rune 截断到 100；
+  不在任何文件夹里的书签归入「导入的书签」；分组按名字匹配已有的，没有就建
+- 只接受 http/https，同组同 URL 去重（含库里已有的），其余计入 `skipped`
+- 整次导入一个事务；返回 `{created, skipped, groups_created}`
+- 解析用 `x/net/html` 的 Tokenizer 而不是 `html.Parse`：书签文件里的
+  `<DT>`/`<p>` 从不闭合，按 HTML5 规则建 DOM 会把文件夹层级「修复」乱
+
 ---
 
 ## RSS 订阅
@@ -286,6 +305,48 @@ HTML——那一步在首屏对 20 条正文做一遍，是白花的。
 正文端点对已删除/被 retention 清理的条目返回 **404**。这是正常竞态：
 列表刚加载完，条目可能就被清理了，不应回升成 500。
 
+### 已读、未读与星标
+
+阅读状态**按用户**存在 `rss_entry_states`（主键 `user_id, entry_id`）。
+它是个人数据，不是内容写：所有端点**登录即可**，5 级只读用户也能用。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| PUT / DELETE | `/rss/entries/:id/read` | 标记已读 / 未读，幂等 |
+| PUT / DELETE | `/rss/entries/:id/star` | 加星 / 取消，幂等 |
+| POST | `/rss/entries/mark-read` | 批量已读，返回 `{marked}` |
+| GET | `/rss/unread-counts` | `{total, by_feed, by_group}` |
+
+- 列表 `GET /rss/entries` 每条带当前用户的 `is_read`、`is_starred`，
+  可用 `state=unread|read|starred` 筛选。状态在取详情那条 SQL 里 LEFT JOIN
+  带出，不逐条再查
+- 批量已读 body `{feed_id?, group_id?, entry_ids?, before?}`，条件之间是 AND，
+  全部省略即「全部已读」；`before` 是 RFC3339，按条目发布时间比较；
+  `entry_ids` 给空数组会被拒绝（否则就退化成全部已读）。一条
+  `INSERT ... SELECT ... ON CONFLICT DO UPDATE ... WHERE read_at IS NULL`，
+  已读的不重写，`marked` 就是这次新标记的条数
+- 未读计数按 `rss_entry_feeds` 关联表算，一条 `GROUPING SETS` 查询：
+  `total` 与 `by_group` 对共享条目去重，`by_feed` 每个源各算一次；未分组的源
+  不进 `by_group`；计数为 0 的键不出现。JSON 里 map 的键是字符串（`"3": 12`）
+- 清理：条目成为孤儿被物理删除时（删源、保留期清理）连同状态行一起删；
+  删除用户时在同一事务里删掉该用户的全部状态行
+
+### OPML 导入导出
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/rss/opml` | 登录 | OPML 2.0，附件 `homehub-feeds.opml` |
+| POST | `/rss/opml` | 3 级 | multipart 字段 `file`，≤2MB，≤2000 个源 |
+
+- 导出：分组按 `sort_order` 嵌套为一级 `<outline>`，未分组（或分组已删）的源
+  在顶层；源带 `text`/`title`/`type="rss"`/`xmlUrl`/`htmlUrl`
+- 导入：任意深度的嵌套都接受，分组名取最近一级带子节点的 outline 的 `text`
+  （RSS 分组只有一级）；分组按名字匹配已有的，没有就建
+- 按 URL 去重（库里已有或文件内重复都计入 `skipped`）；每条 URL 走与
+  `POST /rss/feeds` 相同的 SSRF 校验，失败的记入 `errors`，不影响其余条目
+- **只保存不抓取**，与 `POST /rss/feeds` 的约定一致，由后台调度去抓
+- 返回 `{created, skipped, groups_created, errors: [{url, reason}]}`
+
 ### 管理窗口
 
 「订阅管理」按源下手：多选后批量移入分组、切换抓取方式、暂停恢复、
@@ -361,12 +422,38 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 
 ## 待办事项
 
-所有登录用户**共享**同一个任务集合（不是每人一份）。
+所有登录用户**共享**同一个任务集合（不是每人一份），每条记录创建者
+（`created_by`）与被指派者（`assignee_id`）。
 
 - 状态：`planned` / `pending` / `in_progress` / `completed` / `paused`，
   由 `model.IsValidTodoStatus` 校验
 - 排序：`POST /todos/reorder`
 - 状态切换走 `PATCH /todos/{id}/status`
+- 列表与详情附带 `creator` / `assignee` 的 `{id, username}`（一条批量查询）
+- 过滤：`assignee=me|<用户ID>`、`mine=1`（我创建的），可与 `status` 组合
+- `PUT /todos/:id` 的 `description`、`due_date`、`assignee_id` 是三态：
+  省略=不改；`null`（`description`/`due_date` 也接受空串）=清空；值=写入。
+  清空的描述存为空串，清空的截止日期与指派存为 NULL
+- 指派选择器的数据来自 `GET /users/directory`（登录即可）：只含启用用户的
+  `{id, username}`，不带邮箱与等级
+
+### 权限
+
+写路由门槛是 **4 级**，逐条归属在 service 层校验：
+
+| 操作 | ≤3 级 | 4 级 |
+|------|-------|------|
+| 创建 | ✓ | ✓（`created_by` 记为自己） |
+| 编辑、删除 | 任意 | 只限自己创建的 |
+| 只改状态 | 任意 | 自己创建的，或指派给自己的 |
+| 重排 | 任意 | 全部 id 都是自己创建的才执行，否则整体 403 |
+
+- 归属条件直接写进 `UPDATE` / `DELETE` 的 `WHERE`，不是先查后改；没命中时
+  再查一次区分 404（不存在）与 403（不是你的）
+- 被指派者在改状态之外多带任何字段（含改指派），就按「只限自己创建的」判
+- `created_by` 为 NULL 的旧数据（或创建者已被删除）只有 ≤3 级能动
+- 5 级与非法等级（含 0）一律 403，不碰数据库
+- 删除用户时，在同一事务里把其 `created_by` / `assignee_id` 引用置 NULL
 
 ---
 
@@ -399,13 +486,27 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 
 ## 全局搜索
 
-`GET /api/v1/search?q=关键词&scope=all|bookmarks|rss`（需登录）
+`GET /api/v1/search?q=关键词&scope=all|bookmarks|rss|todos|pastes`（需登录）
 
-- 使用 `ILIKE '%关键词%'`，依赖 pg_trgm GIN 索引加速
+| scope | 匹配列 | 结果字段 |
+|-------|--------|----------|
+| `bookmarks` | 标题、URL、分组名 | `bookmarks`、`bookmarks_total` |
+| `rss` | 标题、正文、作者 | `rss_entries`、`rss_entries_total` |
+| `todos` | 标题、描述 | `todos`、`todos_total` |
+| `pastes` | 正文（未过期的；粘贴没有标题） | `pastes`、`pastes_total` |
+
+`all` 包含全部四类；未搜索的分组是空数组。
+
+- 待办与粘贴的片段在 SQL 里按字符位置截取（`strpos`/`substr`），不把整段
+  正文拉回应用层，也不会切碎多字节字符
+- 粘贴结果不含 `delete_token`；剪贴板关闭（`pastebin.enabled=false`）时恒为空，
+  搜索不能绕开这个开关
+- 使用 `ILIKE '%关键词%'`，依赖 pg_trgm GIN 索引加速（书签 title/url、RSS
+  title/content/author、待办 title/description、日志 message）
 - 索引由 `database.EnsureSearchIndexes` 在启动时自动创建；
   扩展不可用（账号无 `CREATE EXTENSION` 权限）时只记警告，
   搜索退化为全表扫描
-- 每个数据源最多返回 10 条
+- 分页：`page` / `per_page`（默认 20，上限 100），每个数据源各自分页
 
 ---
 
@@ -471,8 +572,10 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 |----------|---------|
 | `/config/*` | 1 |
 | `/admin/*` | 2（具体到某账号再比一次等级） |
-| `/bookmarks/*`、`/rss/*` 写、`/todos/*` 写、`/background` | 3 |
+| `/bookmarks/*` 写、`/rss/*` 写、`/background` | 3 |
+| `/todos/*` 写 | 4（再按 `created_by` / `assignee_id` 校验） |
 | `/media-assets` 写 | 4（再校验 `owner_id`） |
+| `/rss/entries/:id/read`、`/star`、`mark-read`、`unread-counts` | 登录即可（个人阅读状态） |
 | 其余只读 | 登录即可 |
 
 ### 防提权
