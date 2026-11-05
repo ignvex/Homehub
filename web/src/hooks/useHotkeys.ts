@@ -16,7 +16,8 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 //
 // keys 的写法：单键用 KeyboardEvent.key 的值（"j"、"/"、"?"、"Escape"），
 // 序列用空格分隔（"g d" = 先按 g 再按 d，间隔不超过 SEQUENCE_TIMEOUT_MS）。
-// 字母不区分大小写。
+// 字母不区分大小写；需要 Shift 的字母写成 "Shift+A"（按住 Shift 时
+// 普通的 "a" 不触发，反之亦然）。
 // ============================================================
 
 export interface Hotkey {
@@ -57,7 +58,15 @@ let pending: string[] = []
 let pendingTimer: number | undefined
 
 function normalizeKey(key: string): string {
+  const shifted = /^shift\+(.)$/i.exec(key)
+  if (shifted && /[a-z]/i.test(shifted[1])) return `shift+${shifted[1].toLowerCase()}`
   return key.length === 1 ? key.toLowerCase() : key
+}
+
+/** eventKey 把按键事件转成与 parseKeys 同一写法；只有字母区分 Shift。 */
+function eventKey(event: KeyboardEvent): string {
+  const key = normalizeKey(event.key)
+  return event.shiftKey && /^[a-z]$/.test(key) ? `shift+${key}` : key
 }
 
 function parseKeys(keys: string): string[] {
@@ -97,7 +106,7 @@ function onKeyDown(event: KeyboardEvent) {
   // 单独按下的修饰键（例如为了打 ? 先按的 Shift）不打断序列。
   if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Meta' || event.key === 'Alt') return
 
-  const key = normalizeKey(event.key)
+  const key = eventKey(event)
   // 后登记的优先：页面的快捷键覆盖外壳的同名快捷键。
   const runnable = entries.filter(entry => entry.run).reverse()
 

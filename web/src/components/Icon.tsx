@@ -16,6 +16,10 @@ export function CopyIcon() {
   return <Svg><rect x="8" y="8" width="11" height="12" rx="1" /><path d="M5 15V4h10" /></Svg>
 }
 
+export function StarIcon() {
+  return <Svg><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" /></Svg>
+}
+
 /** 删除按钮：垃圾桶图标 + 危险色。label 应包含对象名，如「删除书签“GitHub”」。 */
 export function DeleteButton({ label, onClick, disabled = false }: { label: string; onClick: () => void; disabled?: boolean }) {
   return <button type="button" className="icon-button icon-button--danger" aria-label={label} title={label} disabled={disabled} onClick={onClick}><TrashIcon /></button>

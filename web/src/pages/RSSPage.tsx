@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react'
-import { DeleteButton } from '@/components/Icon'
+import { DeleteButton, StarIcon } from '@/components/Icon'
+import { ImportFileButton, ImportResultModal } from '@/components/ImportResult'
 import { ConfirmDialog, Modal, PageState, Pagination } from '@/components/WorkspaceUI'
 import { useHotkeys, type Hotkey } from '@/hooks/useHotkeys'
 import { errorMessage, useNotice } from '@/hooks/useNotice'
 import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
-import { isAbortError } from '@/lib/api'
+import { downloadFile, isAbortError } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
-import { rssApi, type FetchBy, type RSSEntry, type RSSFeed, type RSSGroup } from '@/lib/rss'
+import { rssApi, type EntryState, type FetchBy, type MarkReadBody, type OPMLImportResult, type RSSEntry, type RSSFeed, type RSSGroup, type UnreadCounts } from '@/lib/rss'
 import { RSSFeedManager, RSSGroupManager } from '@/pages/RSSManage'
 import { extensionHubApi, type RemoteSubscription } from '@/lib/extensionHub'
 import { MagnetCopyButton } from '@/components/MagnetCopyButton'
@@ -55,8 +56,23 @@ const fetchModes: { value: FetchBy; label: string; note: string }[] = [
   { value: 'extension', label: 'Extension', note: '对端抓取，去 Extension 阅读' },
 ]
 
-/** rssHotkeys 是订阅阅读页的快捷键（group 统一用「订阅阅读」）。具体按键由后续任务接入。 */
-const rssHotkeys: Hotkey[] = []
+/** 快捷键在帮助弹窗里的分组名。 */
+const RSS_HOTKEY_GROUP = '订阅阅读'
+
+/** 阅读状态筛选。空串是「全部」，不写进 URL。 */
+const entryStates: { value: EntryState; label: string }[] = [
+  { value: '', label: '全部' },
+  { value: 'unread', label: '未读' },
+  { value: 'starred', label: '星标' },
+]
+
+/** isEntryRead 把缺失的 is_read 当作已读：旧后端不下发时，整页都标成未读只会误导。 */
+function isEntryRead(entry: RSSEntry): boolean {
+  return entry.is_read !== false
+}
+
+/** 计数延迟重拉的间隔：连续 j/m 标记时只拉一次，用服务端数字校正本地调整。 */
+const COUNTS_REFRESH_DELAY_MS = 1500
 
 export function RSSPage() {
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
@@ -64,8 +80,6 @@ export function RSSPage() {
   const { auth } = useAuth()
   const canWrite = hasLevel(auth, CONTENT_WRITE_LEVEL)
   const notice = useNotice()
-  // 阅读快捷键的接入点：往 rssHotkeys 里加条目即可同时生效并出现在 ? 帮助里。
-  useHotkeys(rssHotkeys)
   const [entries, setEntries] = useState<RSSEntry[]>([])
   const [total, setTotal] = useState(0)
   // 「全部条目」的计数：与当前筛选范围无关，单独请求。
@@ -74,6 +88,18 @@ export function RSSPage() {
   const [feedParam, setFeedParam] = useQueryState('feed', '')
   const [groupParam, setGroupParam] = useQueryState('group', '')
   const [page, setPage] = useQueryNumber('page', 1)
+  const [stateParam, setStateParam] = useQueryState('state', '')
+  const entryState = (entryStates.some(item => item.value === stateParam) ? stateParam : '') as EntryState
+  // 未读计数：侧栏的每个源、每个分组与「全部条目」都从这一份读。
+  const [unread, setUnread] = useState<UnreadCounts | null>(null)
+  const countsSeq = useRef(0)
+  const countsTimer = useRef<number | undefined>(undefined)
+  // 键盘选中的条目下标（-1 = 未选中）与已展开正文的条目。
+  const [selectedIndex, setSelectedIndex] = useState(-1)
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
+  const entryRefs = useRef(new Map<number, HTMLElement>())
+  const [confirmMarkAll, setConfirmMarkAll] = useState(false)
+  const [opmlResult, setOpmlResult] = useState<OPMLImportResult | null>(null)
   const selectedFeed = Number(feedParam) > 0 ? Number(feedParam) : null
   const selectedGroup = Number(groupParam) > 0 ? Number(groupParam) : null
   const setSelectedFeed = (id: number | null) => setFeedParam(id ? String(id) : '')
@@ -136,6 +162,7 @@ export function RSSPage() {
       if (selectedFeed && feedList?.length && !feedList.some(f => f.id === selectedFeed)) setSelectedFeed(null)
       setLoadError('')
       void loadAllTotal()
+      void loadCounts()
       // 远端状态是侧栏状态点与计数的依据，单独拉、失败不阻塞列表。
       void loadRemote()
     } catch (cause) {
@@ -151,6 +178,143 @@ export function RSSPage() {
   async function loadAllTotal() {
     try { setAllTotal((await rssApi.listEntries(null, null, 1, 1)).total ?? 0) }
     catch { setAllTotal(null) }
+  }
+
+  /** loadCounts 取未读计数。只认最后一次请求的结果，慢的旧响应不能覆盖新数字。 */
+  async function loadCounts() {
+    window.clearTimeout(countsTimer.current)
+    const seq = ++countsSeq.current
+    try {
+      const counts = await rssApi.unreadCounts()
+      if (seq === countsSeq.current) setUnread({ total: counts.total ?? 0, by_feed: counts.by_feed ?? {}, by_group: counts.by_group ?? {} })
+    } catch {
+      // 计数只是辅助信息：失败时保留上一份，不打断阅读。
+    }
+  }
+
+  /** scheduleCounts 在一串单条标记之后重拉一次计数。 */
+  function scheduleCounts() {
+    window.clearTimeout(countsTimer.current)
+    countsTimer.current = window.setTimeout(() => void loadCounts(), COUNTS_REFRESH_DELAY_MS)
+  }
+
+  /** adjustCounts 按一条条目的已读变化本地调整计数（delta = -1 标已读，+1 标未读）。
+   *
+   * 服务端按源计数不去重、按分组在组内去重、总数全局去重，这里照同样的口径算，
+   * 稍后再由 scheduleCounts 用服务端数字校正。 */
+  function adjustCounts(entry: RSSEntry, delta: number) {
+    // 失败回滚的那一次调整也要让在途的计数响应作废，否则它会盖掉回滚结果。
+    countsSeq.current += 1
+    setUnread(current => {
+      if (!current) return current
+      const byFeed = { ...current.by_feed }
+      const byGroup = { ...current.by_group }
+      const touchedGroups = new Set<number>()
+      for (const id of entry.feed_ids ?? []) {
+        byFeed[id] = Math.max(0, (byFeed[id] ?? 0) + delta)
+        const groupID = feeds.find(feed => feed.id === id)?.group_id
+        if (groupID) touchedGroups.add(groupID)
+      }
+      for (const id of touchedGroups) byGroup[id] = Math.max(0, (byGroup[id] ?? 0) + delta)
+      return { total: Math.max(0, current.total + delta), by_feed: byFeed, by_group: byGroup }
+    })
+  }
+
+  function patchEntry(id: number, patch: Partial<RSSEntry>) {
+    setEntries(list => list.map(item => item.id === id ? { ...item, ...patch } : item))
+  }
+
+  /** setEntryRead 乐观更新已读状态；请求失败时回滚列表与计数。 */
+  async function setEntryRead(entry: RSSEntry, read: boolean) {
+    if (isEntryRead(entry) === read) return
+    patchEntry(entry.id, { is_read: read })
+    adjustCounts(entry, read ? -1 : 1)
+    try {
+      await rssApi.setRead(entry.id, read)
+      scheduleCounts()
+    } catch (cause) {
+      patchEntry(entry.id, { is_read: !read })
+      adjustCounts(entry, read ? 1 : -1)
+      notice.error(errorMessage(cause, read ? '标记已读失败' : '标记未读失败'))
+    }
+  }
+
+  /** toggleStar 乐观切换星标；失败回滚。 */
+  async function toggleStar(entry: RSSEntry) {
+    const next = !entry.is_starred
+    patchEntry(entry.id, { is_starred: next })
+    try {
+      await rssApi.setStarred(entry.id, next)
+    } catch (cause) {
+      patchEntry(entry.id, { is_starred: !next })
+      notice.error(errorMessage(cause, next ? '加星标失败' : '取消星标失败'))
+    }
+  }
+
+  /** toggleExpanded 展开或收起正文；展开即视为读过。 */
+  function toggleExpanded(entry: RSSEntry, open = !expanded.has(entry.id)) {
+    setExpanded(current => {
+      if (current.has(entry.id) === open) return current
+      const next = new Set(current)
+      if (open) next.add(entry.id)
+      else next.delete(entry.id)
+      return next
+    })
+    if (open) void setEntryRead(entry, true)
+  }
+
+  /** openOriginal 在新标签打开原文并标为已读。 */
+  function openOriginal(entry: RSSEntry) {
+    if (!entry.link) return
+    window.open(entry.link, '_blank', 'noopener,noreferrer')
+    void setEntryRead(entry, true)
+  }
+
+  /** scopeBody 是「全部标为已读」作用的范围：当前选中的源、分组或全部。 */
+  function scopeBody(): MarkReadBody {
+    if (selectedFeed) return { feed_id: selectedFeed }
+    if (selectedGroup) return { group_id: selectedGroup }
+    return {}
+  }
+
+  async function markAllRead() {
+    setBusy(true)
+    setFormError('')
+    try {
+      const { marked } = await rssApi.markRead(scopeBody())
+      setConfirmMarkAll(false)
+      notice.success(marked ? `已将 ${marked.toLocaleString()} 条标为已读` : '没有需要标记的未读条目')
+      // 当前页的条目都在这个范围里，直接置为已读；未读视图则整页重拉。
+      setEntries(list => list.map(item => ({ ...item, is_read: true })))
+      await loadCounts()
+      if (entryState === 'unread') await loadEntries()
+    } catch (cause) {
+      setFormError(errorMessage(cause, '标记已读失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function exportOPML() {
+    try {
+      await downloadFile('/rss/opml', 'homehub-feeds.opml')
+    } catch (cause) {
+      notice.error(errorMessage(cause, '导出 OPML 失败'))
+    }
+  }
+
+  async function importOPML(file: File) {
+    setBusy(true)
+    try {
+      const result = await rssApi.importOPML(file)
+      setOpmlResult({ ...result, errors: result.errors ?? [] })
+      await loadFeeds(true)
+      await loadEntries()
+    } catch (cause) {
+      notice.error(errorMessage(cause, '导入 OPML 失败'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   /** loadRemote 取远端订阅状态。签名通道没启用时静默留空。 */
@@ -191,16 +355,18 @@ export function RSSPage() {
    * 新请求会取消上一个未完成的请求：快速切换订阅源时，慢的旧响应
    * 不能覆盖新选择的结果。翻页时保留旧列表（降低透明度）直到新数据到达。
    */
-  async function loadEntries(feed = selectedFeed, group = selectedGroup, targetPage = page) {
+  async function loadEntries(feed = selectedFeed, group = selectedGroup, targetPage = page, state = entryState) {
     entriesAbort.current?.abort()
     const controller = new AbortController()
     entriesAbort.current = controller
     setEntriesLoading(true)
     try {
-      const result = await rssApi.listEntries(feed, group, targetPage, perPage, { signal: controller.signal })
+      const result = await rssApi.listEntries(feed, group, targetPage, perPage, { signal: controller.signal }, state)
       setEntries(result.list ?? [])
       setTotal(result.total ?? 0)
       setEntriesError('')
+      setSelectedIndex(-1)
+      setExpanded(new Set())
       entriesRef.current?.scrollTo({ top: 0 })
     } catch (cause) {
       if (isAbortError(cause)) return
@@ -213,8 +379,8 @@ export function RSSPage() {
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadFeeds() }, [])
   // oxlint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void loadEntries(selectedFeed, selectedGroup, page) }, [selectedFeed, selectedGroup, page])
-  useEffect(() => () => entriesAbort.current?.abort(), [])
+  useEffect(() => { void loadEntries(selectedFeed, selectedGroup, page, entryState) }, [selectedFeed, selectedGroup, page, entryState])
+  useEffect(() => () => { entriesAbort.current?.abort(); window.clearTimeout(countsTimer.current) }, [])
 
   /** run 执行一次写操作并刷新列表。
    *
@@ -411,6 +577,38 @@ export function RSSPage() {
     })
   }
 
+  function selectState(next: EntryState) { setStateParam(next); setPage(1) }
+
+  // ---------- 键盘阅读 ----------
+  const active = selectedIndex >= 0 ? entries[selectedIndex] ?? null : null
+  const pages = Math.max(1, Math.ceil(total / perPage))
+
+  /** focusEntry 选中第 index 条并把它滚到可见。 */
+  function focusEntry(index: number) {
+    if (!entries.length) return
+    const next = Math.min(Math.max(index, 0), entries.length - 1)
+    setSelectedIndex(next)
+    const element = entryRefs.current.get(entries[next].id)
+    element?.focus({ preventScroll: true })
+    element?.scrollIntoView({ block: 'nearest' })
+  }
+
+  const rssHotkeys: Hotkey[] = [
+    { keys: 'j', description: '下一条', group: RSS_HOTKEY_GROUP, handler: () => focusEntry(selectedIndex + 1) },
+    { keys: 'k', description: '上一条', group: RSS_HOTKEY_GROUP, handler: () => focusEntry(selectedIndex < 0 ? 0 : selectedIndex - 1) },
+    { keys: 'o', description: '展开 / 收起当前条', group: RSS_HOTKEY_GROUP, handler: () => { if (active) toggleExpanded(active) } },
+    // Enter 只在焦点落在条目上时生效（由条目自己处理），否则会吞掉按钮的回车。
+    { keys: 'Enter', description: '展开 / 收起当前条（焦点在条目上时）', group: RSS_HOTKEY_GROUP },
+    { keys: 's', description: '切换星标', group: RSS_HOTKEY_GROUP, handler: () => { if (active) void toggleStar(active) } },
+    { keys: 'm', description: '切换已读 / 未读', group: RSS_HOTKEY_GROUP, handler: () => { if (active) void setEntryRead(active, !isEntryRead(active)) } },
+    { keys: 'v', description: '新标签打开原文', group: RSS_HOTKEY_GROUP, handler: () => { if (active) openOriginal(active) } },
+    { keys: 'Shift+A', description: '当前范围全部标为已读', group: RSS_HOTKEY_GROUP, handler: () => { if (feeds.length) { setFormError(''); setConfirmMarkAll(true) } } },
+    { keys: 'r', description: '刷新列表', group: RSS_HOTKEY_GROUP, handler: () => { void loadEntries(); void loadCounts() } },
+    { keys: '[', description: '上一页', group: RSS_HOTKEY_GROUP, handler: () => { if (page > 1 && !entriesLoading) setPage(page - 1) } },
+    { keys: ']', description: '下一页', group: RSS_HOTKEY_GROUP, handler: () => { if (page < pages && !entriesLoading) setPage(page + 1) } },
+  ]
+  useHotkeys(rssHotkeys)
+
   // ---------- 派生 ----------
   const grouped = useMemo(() => {
     const byGroup = new Map<number, RSSFeed[]>()
@@ -430,6 +628,9 @@ export function RSSPage() {
   const activeFeed = selectedFeed ? feeds.find(feed => feed.id === selectedFeed) ?? null : null
   const activeGroup = selectedGroup ? groups.find(group => group.id === selectedGroup) ?? null : null
   const heading = activeGroup ? activeGroup.name : activeFeed ? (activeFeed.title || activeFeed.url) : '全部条目'
+  const scopeUnread = unread
+    ? selectedFeed ? unread.by_feed[selectedFeed] ?? 0 : selectedGroup ? unread.by_group[selectedGroup] ?? 0 : unread.total
+    : null
   const errorFeeds = feeds.filter(feed => feed.error_msg)
   const remoteCount = feeds.filter(feed => feed.fetch_by === 'extension').length
   const pausedCount = feeds.filter(feed => feed.fetch_enabled === false).length
@@ -457,7 +658,10 @@ export function RSSPage() {
         kind="empty"
         title="还没有订阅源"
         description={canWrite ? '添加 RSS 或 Atom 链接后，抓取到的文章会出现在这里。' : '管理员或编辑添加订阅源后，文章会出现在这里。'}
-        action={canWrite ? <button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button> : undefined}
+        action={canWrite ? <div className="toolbar-actions">
+          <button className="button button--primary" onClick={() => setFeedDraft({ ...emptyFeedDraft })}>添加第一个订阅源</button>
+          <ImportFileButton label="导入 OPML" accept=".opml,.xml,text/x-opml,text/xml,application/xml" busy={busy} onFile={file => void importOPML(file)} />
+        </div> : undefined}
       />
       : <section className="rss-panel">
         {/* 顶部工具栏：所有动作同一层级、同一形态，按使用顺序排。
@@ -497,6 +701,9 @@ export function RSSPage() {
             全部抓取
           </button>
           </>}
+          {canWrite && <span className="rss-tool-sep" aria-hidden="true" />}
+          <button type="button" className="rss-tool" onClick={() => void exportOPML()}>导出 OPML</button>
+          {canWrite && <ImportFileButton className="rss-tool" label="导入 OPML" accept=".opml,.xml,text/x-opml,text/xml,application/xml" busy={busy} onFile={file => void importOPML(file)} />}
           <span className="rss-toolbar-summary">
             {feeds.length} 个源 · {groups.length} 个分组
             {remoteCount > 0 && ` · ${remoteCount} 远端`}
@@ -519,6 +726,7 @@ export function RSSPage() {
               onClick={selectAll}
             >
               <span className="rss-nav-label">全部条目</span>
+              <UnreadBadge count={unread?.total} />
               <span className="rss-nav-count">{allTotal === null ? '—' : allTotal.toLocaleString()}</span>
             </button>
             {groups.map(group => {
@@ -537,6 +745,7 @@ export function RSSPage() {
                 >
                   <span className="rss-group-arrow" aria-hidden="true">▾</span>
                   <span className="rss-nav-label">{group.name}</span>
+                  <UnreadBadge count={unread?.by_group[group.id]} />
                   <span className="rss-nav-count">{groupFeeds.length}</span>
                 </button>
                 {expanded && <div className="rss-group-feeds">
@@ -547,6 +756,7 @@ export function RSSPage() {
                       feed={feed}
                       active={selectedFeed === feed.id}
                       remote={remoteByURL[feed.url]}
+                      unread={unread?.by_feed[feed.id]}
                       onSelect={() => selectFeed(feed.id)}
                       dragging={draggingFeed === feed.id}
                       draggable={canWrite}
@@ -581,6 +791,7 @@ export function RSSPage() {
                   feed={feed}
                   active={selectedFeed === feed.id}
                   remote={remoteByURL[feed.url]}
+                  unread={unread?.by_feed[feed.id]}
                   onSelect={() => selectFeed(feed.id)}
                   dragging={draggingFeed === feed.id}
                   draggable={canWrite}
@@ -597,9 +808,34 @@ export function RSSPage() {
           <header className="rss-main-head">
             <div>
               <h2>{heading}</h2>
-              <p>{total.toLocaleString()} 条内容{activeFeed?.last_fetch ? ` · 最近抓取 ${relativeTime(activeFeed.last_fetch)}` : ''}</p>
+              <p>
+                {total.toLocaleString()} 条{entryState === 'unread' ? '未读' : entryState === 'starred' ? '星标' : '内容'}
+                {scopeUnread !== null && entryState !== 'unread' ? ` · ${scopeUnread.toLocaleString()} 未读` : ''}
+                {activeFeed?.last_fetch ? ` · 最近抓取 ${relativeTime(activeFeed.last_fetch)}` : ''}
+              </p>
             </div>
             <div className="rss-main-actions">
+              <div className="segmented" role="radiogroup" aria-label="阅读状态">
+                {entryStates.map(option => <label key={option.value || 'all'} className={entryState === option.value ? 'is-on' : ''}>
+                  <input
+                    type="radio"
+                    name="rss-entry-state"
+                    className="visually-hidden"
+                    value={option.value}
+                    checked={entryState === option.value}
+                    onChange={() => selectState(option.value)}
+                  />
+                  {option.label}
+                </label>)}
+              </div>
+              <button
+                type="button"
+                className="rss-tool"
+                disabled={busy || scopeUnread === 0}
+                onClick={() => { setFormError(''); setConfirmMarkAll(true) }}
+              >
+                全部标为已读
+              </button>
               {activeFeed && canWrite && <>
                 <button type="button" className="rss-tool" disabled={busy} onClick={() => void run(() => rssApi.fetchFeed(activeFeed.id), `已抓取「${activeFeed.title || activeFeed.url}」`, true)}>抓取</button>
                 <button type="button" className="rss-tool" onClick={() => setFeedDraft({ id: activeFeed.id, url: activeFeed.url, title: activeFeed.title, remark: activeFeed.remark ?? '', fetch_interval: activeFeed.fetch_interval, fetch_by: activeFeed.fetch_by ?? 'local', fetch_enabled: activeFeed.fetch_enabled ?? true, group_id: activeFeed.group_id, fetch_now: false })}>编辑</button>
@@ -617,13 +853,34 @@ export function RSSPage() {
             : !entries.length
               ? <PageState
                 kind="empty"
-                title="没有可显示的条目"
-                description={activeFeed ? '这个订阅源还没有抓到文章，试试手动抓取。' : '切换订阅源，或调整筛选范围。'}
+                title={entryState === 'unread' ? '没有未读条目' : entryState === 'starred' ? '没有星标条目' : '没有可显示的条目'}
+                description={entryState ? '切换到「全部」查看其余条目。' : activeFeed ? '这个订阅源还没有抓到文章，试试手动抓取。' : '切换订阅源，或调整筛选范围。'}
               />
               : <div className={`rss-entries${entriesLoading ? ' is-stale' : ''}`} ref={entriesRef} aria-busy={entriesLoading}>
-                {entries.map(entry => <article className="rss-entry" key={entry.id}>
+                {entries.map((entry, index) => {
+                  const read = isEntryRead(entry)
+                  return <article
+                  className={`rss-entry${read ? '' : ' is-unread'}${index === selectedIndex ? ' is-selected' : ''}`}
+                  key={entry.id}
+                  tabIndex={-1}
+                  aria-current={index === selectedIndex || undefined}
+                  ref={element => {
+                    if (element) entryRefs.current.set(entry.id, element)
+                    else entryRefs.current.delete(entry.id)
+                  }}
+                  onClick={() => setSelectedIndex(index)}
+                  onKeyDown={event => {
+                    if (event.key !== 'Enter' || event.target !== event.currentTarget) return
+                    event.preventDefault()
+                    toggleExpanded(entry)
+                  }}
+                >
+                  <span className={`rss-entry-dot${read ? '' : ' is-unread'}`} aria-hidden="true" />
                   <div className="rss-entry-body">
-                    <a className="rss-entry-title" href={entry.link} target="_blank" rel="noreferrer">{entry.title}</a>
+                    <a className="rss-entry-title" href={entry.link} target="_blank" rel="noreferrer" onClick={() => void setEntryRead(entry, true)}>
+                      {!read && <span className="visually-hidden">未读：</span>}
+                      {entry.title}
+                    </a>
                     <div className="rss-entry-meta">
                       {entry.author && <><span>{entry.author}</span><span className="meta-dot" aria-hidden="true">·</span></>}
                       <time dateTime={isUsableTimestamp(entry.published) ? entry.published : undefined}>{relativeTime(entry.published) || '时间未知'}</time>
@@ -632,7 +889,27 @@ export function RSSPage() {
                         <span className="rss-entry-source">{feedTitles(entry.feed_ids)}</span>
                       </>}
                     </div>
-                    {hasBody(entry) && <EntryContent entryID={entry.id} inline={entry.content} />}
+                    {hasBody(entry) && <EntryContent entryID={entry.id} inline={entry.content} open={expanded.has(entry.id)} onOpenChange={open => toggleExpanded(entry, open)} />}
+                  </div>
+                  <div className="rss-entry-actions">
+                    <button
+                      type="button"
+                      className={`icon-button rss-star${entry.is_starred ? ' is-on' : ''}`}
+                      aria-pressed={Boolean(entry.is_starred)}
+                      aria-label={`星标「${entry.title}」`}
+                      title={entry.is_starred ? '取消星标' : '加星标'}
+                      onClick={() => void toggleStar(entry)}
+                    >
+                      <StarIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--quiet"
+                      aria-label={`将「${entry.title}」标为${read ? '未读' : '已读'}`}
+                      onClick={() => void setEntryRead(entry, !read)}
+                    >
+                      {read ? '标为未读' : '标为已读'}
+                    </button>
                   </div>
                   {entry.magnet_url && <MagnetCopyButton
                     className="rss-magnet"
@@ -640,7 +917,8 @@ export function RSSPage() {
                     title={entry.title}
                     onCopied={ok => ok ? notice.success('磁力链接已复制') : notice.info('自动复制不可用，已选中链接，按 Ctrl+C 复制')}
                   />}
-                </article>)}
+                </article>
+                })}
               </div>}
           <Pagination page={page} perPage={perPage} total={total} disabled={entriesLoading} onChange={setPage} />
         </section>
@@ -837,6 +1115,19 @@ export function RSSPage() {
     />
 
     <ConfirmDialog
+      open={confirmMarkAll}
+      title="全部标为已读"
+      description={`将把${activeFeed ? `订阅源「${activeFeed.title || activeFeed.url}」` : activeGroup ? `分组「${activeGroup.name}」` : '全部订阅源'}的${scopeUnread !== null ? ` ${scopeUnread.toLocaleString()} 条` : ''}未读条目标为已读。之后仍可逐条标回未读。`}
+      confirmLabel="标为已读"
+      busy={busy}
+      error={formError}
+      onClose={() => { setConfirmMarkAll(false); setFormError('') }}
+      onConfirm={() => void markAllRead()}
+    />
+
+    <ImportResultModal title="OPML 导入结果" unit="个订阅源" result={opmlResult} onClose={() => setOpmlResult(null)} />
+
+    <ConfirmDialog
       open={pendingDeleteFeed !== null}
       title="删除订阅源"
       description={`将删除「${pendingDeleteFeed?.title || pendingDeleteFeed?.url || ''}」以及它收录的条目关联。其他源仍收录的内容会保留。`}
@@ -857,9 +1148,20 @@ export function RSSPage() {
  * 侧栏是导航，不是控制台——把操作塞进这里会挤掉标题，而且每行
  * 五个可点区域，误触比操作本身更常发生。
  */
-function FeedNavItem({ feed, active, remote, dragging, draggable, onSelect, onDragStart, onDragEnd }: {
+/** UnreadBadge 是侧栏的未读数；0 或未知时不渲染。 */
+function UnreadBadge({ count }: { count?: number }) {
+  if (!count) return null
+  return <span className="rss-unread" title={`${count} 条未读`}>
+    {count > 999 ? '999+' : count}
+    <span className="visually-hidden"> 条未读</span>
+  </span>
+}
+
+function FeedNavItem({ feed, active, remote, unread, dragging, draggable, onSelect, onDragStart, onDragEnd }: {
   feed: RSSFeed
   active: boolean
+  /** 这个源的未读数。 */
+  unread?: number
   /** 只有内容写权限（≤3 级）才能拖拽归组。 */
   draggable: boolean
   remote?: RemoteSubscription
@@ -912,6 +1214,7 @@ function FeedNavItem({ feed, active, remote, dragging, draggable, onSelect, onDr
       <span className="rss-nav-label">{title}</span>
       {feed.remark && <span className="rss-nav-remark">{feed.remark}</span>}
     </span>
+    <UnreadBadge count={unread} />
     <span className="rss-nav-count">{meta}</span>
   </button>
 }
@@ -995,8 +1298,13 @@ function hasBody(entry: RSSEntry): boolean {
  *
  * inline 是旧版列表接口已经下发的正文：有它就直接用，不发请求。
  */
-function EntryContent({ entryID, inline }: { entryID: number; inline?: string }) {
-  const [open, setOpen] = useState(false)
+function EntryContent({ entryID, inline, open, onOpenChange }: {
+  entryID: number
+  inline?: string
+  /** 展开状态由列表持有：快捷键 o / Enter 与点击 summary 改的是同一份。 */
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
   // 惰性初始化：只有旧接口才会带 inline，不必在每次渲染里解析 HTML。
   const [html, setHtml] = useState(() => (inline ? deferImages(inline) : ''))
   const [loading, setLoading] = useState(false)
@@ -1027,13 +1335,16 @@ function EntryContent({ entryID, inline }: { entryID: number; inline?: string })
   }
 
   useLazyImages(containerRef, open && loaded)
+  // 由快捷键展开时不会经过 summary 的点击，所以按 open 拉正文而不是在 onToggle 里拉。
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) void load() }, [open])
 
   return <details
     className="rss-entry-detail"
+    open={open}
     onToggle={event => {
       const next = event.currentTarget.open
-      setOpen(next)
-      if (next) void load()
+      if (next !== open) onOpenChange(next)
     }}
   >
     <summary>{open ? '收起正文' : '展开正文'}</summary>

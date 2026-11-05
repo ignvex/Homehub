@@ -109,6 +109,37 @@ export interface RSSEntry extends EntityBase {
   magnet_url?: string
   published: string
   fetched_at: string
+  /** 当前用户是否已读。旧后端不下发时视为已读，避免整页都显示成未读。 */
+  is_read?: boolean
+  /** 当前用户是否加了星标。 */
+  is_starred?: boolean
+}
+
+/** 条目列表的阅读状态筛选；空串表示全部。 */
+export type EntryState = '' | 'unread' | 'read' | 'starred'
+
+/** MarkReadBody 批量标记已读的范围，条件之间是 AND；全空即全部已读。 */
+export interface MarkReadBody {
+  feed_id?: number
+  group_id?: number
+  entry_ids?: number[]
+  /** RFC3339，只标记发布时间不晚于它的条目。 */
+  before?: string
+}
+
+/** UnreadCounts 的键是 ID 字符串；计数为 0 的键不出现。 */
+export interface UnreadCounts {
+  total: number
+  by_feed: Record<string, number>
+  by_group: Record<string, number>
+}
+
+/** OPMLImportResult 是 POST /rss/opml 的结果。 */
+export interface OPMLImportResult {
+  created: number
+  skipped: number
+  groups_created: number
+  errors: { url: string; reason: string }[] | null
 }
 
 /** EntryContent 是 GET /rss/entries/:id/content 的响应。 */
@@ -130,14 +161,27 @@ export const rssApi = {
   deleteFeed: (id: number) => api.delete<void>(`/rss/feeds/${id}`),
   fetchFeed: (id: number) => api.post<void>(`/rss/feeds/${id}/fetch`),
   fetchAll: () => api.post<void>('/rss/fetch-all'),
-  listEntries: (feedID: number | null, groupID: number | null, page: number, perPage = 20, init?: RequestInit) => {
+  listEntries: (feedID: number | null, groupID: number | null, page: number, perPage = 20, init?: RequestInit, state: EntryState = '') => {
     const query = new URLSearchParams({ page: String(page), per_page: String(perPage) })
     if (feedID) query.set('feed_id', String(feedID))
     if (groupID) query.set('group_id', String(groupID))
+    if (state) query.set('state', state)
     return api.get<PageResult<RSSEntry>>(`/rss/entries?${query}`, init)
   },
   // 正文按需取：列表只带摘要，展开某条时才调这个端点。
   entryContent: (id: number) => api.get<RSSEntryContent>(`/rss/entries/${id}/content`),
+  // 阅读状态是按用户的个人数据，登录即可；四个单条端点都是幂等的。
+  setRead: (id: number, read: boolean) =>
+    read ? api.put<null>(`/rss/entries/${id}/read`) : api.delete<null>(`/rss/entries/${id}/read`),
+  setStarred: (id: number, starred: boolean) =>
+    starred ? api.put<null>(`/rss/entries/${id}/star`) : api.delete<null>(`/rss/entries/${id}/star`),
+  markRead: (body: MarkReadBody) => api.post<{ marked: number }>('/rss/entries/mark-read', body),
+  unreadCounts: () => api.get<UnreadCounts>('/rss/unread-counts'),
+  importOPML: (file: File) => {
+    const data = new FormData()
+    data.append('file', file)
+    return api.post<OPMLImportResult>('/rss/opml', data)
+  },
   listGroups: () => api.get<RSSGroup[]>('/rss/groups'),
   createGroup: (name: string) => api.post<RSSGroup>('/rss/groups', { name }),
   updateGroup: (id: number, body: { name?: string; sort_order?: number }) => api.put<void>(`/rss/groups/${id}`, body),

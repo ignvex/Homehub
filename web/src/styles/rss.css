@@ -849,3 +849,47 @@
   display: flex;
   gap: var(--space-2);
 }
+
+/* ---------- 阅读状态 ---------- *
+ * 未读靠左侧圆点 + 标题字重区分。圆点位置对已读条目也保留（透明），
+ * 否则标记已读的瞬间整行标题会左移一格。 */
+.rss-entry-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: var(--space-3);
+  border-radius: var(--radius-circle);
+  background: transparent;
+}
+.rss-entry-dot.is-unread { background: var(--color-interactive); }
+.rss-entry.is-unread .rss-entry-title { font-weight: 600; }
+
+/* 键盘选中的条目（j/k）：左边框 + 底色，与侧栏 is-active 同一语言。 */
+.rss-entry.is-selected {
+  background: color-mix(in srgb, var(--color-interactive) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-interactive);
+}
+.rss-entry:focus-visible { outline-offset: -2px; }
+
+.rss-entry-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+.rss-star.is-on { color: var(--color-warning); }
+.rss-star.is-on .icon { fill: currentColor; }
+
+/* 侧栏未读数：与右侧的总数/状态区分开，用强调色的胶囊。 */
+.rss-unread {
+  flex: none;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-interactive) 14%, var(--color-surface));
+  color: var(--color-interactive);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
