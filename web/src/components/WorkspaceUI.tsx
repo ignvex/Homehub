@@ -56,8 +56,9 @@ export function Modal({ open, title, description, children, onClose, footer, siz
     if (open && !dialog.open) {
       returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       dialog.showModal()
-      // showModal 会聚焦第一个可聚焦元素；如果内容里有 autoFocus 元素，以它为准。
-      const preferred = dialog.querySelector<HTMLElement>('[autofocus], .modal-body :is(input, select, textarea, button):not(:disabled)')
+      // showModal 默认聚焦第一个可聚焦元素，也就是标题栏的 ×。有表单时改为聚焦正文里的第一个控件。
+      // （React 的 autoFocus 只在挂载时生效，而弹窗内容在关闭时就已挂载，所以这里手动处理。）
+      const preferred = dialog.querySelector<HTMLElement>('.modal-body :is(input, select, textarea, button):not(:disabled):not([readonly])')
       preferred?.focus()
     }
     if (!open && dialog.open) {
