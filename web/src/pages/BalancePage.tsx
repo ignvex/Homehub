@@ -1,16 +1,44 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Pie } from 'react-chartjs-2'
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js'
+import { DeleteButton } from '@/components/Icon'
 import { ConfirmDialog, Modal, Notice, PageState, StatusBadge } from '@/components/WorkspaceUI'
+import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { useAuth } from '@/lib/auth'
+import { CONTENT_WRITE_LEVEL, hasLevel } from '@/lib/permissions'
 import { balanceApi, type BalanceStatus, type BalanceTarget, type BalanceTargetInput } from '@/lib/balance'
 import { formatDateTime } from '@/lib/types'
 
 ChartJS.register(ArcElement, Tooltip, Legend)
 
-const typeColors: Record<string, string> = {
-  deepseek: '#4F8B89',
+// 图表色板来自 variables.css 的 --chart-1..6 令牌。Chart.js 画在 canvas 上，
+// 不认 var(...)，所以在渲染时用 getComputedStyle 读出实际颜色值。
+const CHART_TOKENS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6']
+/** 每种供应商固定用色板里的哪一档，其余按顺序轮换。 */
+const typeColorIndex: Record<string, number> = { deepseek: 0 }
+
+function readToken(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
-const fallbackColors = ['#4F8B89', '#E8804F', '#6B8AC4', '#A07BB8', '#C4A35A', '#D4737A']
+
+function readChartPalette(): { colors: string[]; surface: string } {
+  return { colors: CHART_TOKENS.map(readToken), surface: readToken('--color-surface') }
+}
+
+/** useChartPalette 读取色板，并在切换明暗主题（html[data-theme] 变化）时重读。 */
+function useChartPalette() {
+  const [palette, setPalette] = useState(readChartPalette)
+  useEffect(() => {
+    const observer = new MutationObserver(() => setPalette(readChartPalette()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] })
+    return () => observer.disconnect()
+  }, [])
+  return palette
+}
+
+function colorIndex(type: string, index: number): number {
+  return (typeColorIndex[type] ?? index) % CHART_TOKENS.length
+}
 
 const supportedTypes = [{ value: 'deepseek', label: 'DeepSeek' }]
 
@@ -30,7 +58,8 @@ interface Draft {
   /** 显式清空已存的密钥。只有编辑态且原来有密钥时才有意义。 */
   clearKey: boolean
   enabled: boolean
-  sort_order: number
+  /** 字符串草稿：清空输入框时不会被 Number('') 变成 0 静默保存。 */
+  sort_order: string
 }
 
 const emptyDraft: Draft = {
@@ -40,7 +69,7 @@ const emptyDraft: Draft = {
   api_key: '',
   clearKey: false,
   enabled: true,
-  sort_order: 0,
+  sort_order: '0',
 }
 
 /** statusTone 把监控点状态映射成徽章色调。 */
@@ -68,39 +97,45 @@ export function BalancePage() {
   const [status, setStatus] = useState<BalanceStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [formError, setFormError] = useState('')
+  const notice = useNotice()
+  const { auth } = useAuth()
+  const canWrite = hasLevel(auth, CONTENT_WRITE_LEVEL)
+  const palette = useChartPalette()
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [pendingDelete, setPendingDelete] = useState<BalanceTarget | null>(null)
 
-  const describeError = (cause: unknown) => cause instanceof Error ? cause.message : '操作失败'
+  const describeError = (cause: unknown) => errorMessage(cause, '操作失败')
 
-  async function load() {
-    setLoading(true)
+  /** silent=true 时保留当前列表，失败只给提示。 */
+  async function load(silent = false) {
+    if (!silent) setLoading(true)
     try {
       const [list, stat] = await Promise.all([balanceApi.list(), balanceApi.status()])
       setItems(list ?? [])
       setStatus(stat)
-      setError('')
+      setLoadError('')
     } catch (cause) {
-      setError(describeError(cause))
+      if (silent) notice.error(describeError(cause))
+      else setLoadError(describeError(cause))
     } finally {
       setLoading(false)
     }
   }
 
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void load() }, [])
 
   async function refreshAll() {
     setBusy(true)
     try {
       await balanceApi.refresh()
-      setMessage('已刷新全部监控点')
-      setError('')
-      await load()
+      notice.success('已刷新全部监控点')
+      await load(true)
     } catch (cause) {
-      setError(describeError(cause))
+      notice.error(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -111,15 +146,14 @@ export function BalancePage() {
     try {
       const updated = await balanceApi.refreshOne(item.id)
       if (updated.status === 'ok') {
-        setMessage(`「${item.name}」余额 ${updated.balance.toFixed(2)} ${updated.currency ?? ''}`)
-        setError('')
+        notice.success(`「${item.name}」余额 ${updated.balance.toFixed(2)} ${updated.currency ?? ''}`)
       } else {
         // 查询失败是业务结果，不是请求失败：用 error 提示但保留列表。
-        setError(updated.last_error || '查询失败')
+        notice.error(updated.last_error || '查询失败')
       }
-      await load()
+      await load(true)
     } catch (cause) {
-      setError(describeError(cause))
+      notice.error(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -131,11 +165,16 @@ export function BalancePage() {
 
     const isCreate = draft.id === undefined
     if (isCreate && !draft.api_key.trim()) {
-      setError('新建监控点必须填写 API Key')
+      setFormError('新建监控点必须填写 API Key')
       return
     }
     if (draft.clearKey && draft.api_key.trim()) {
-      setError('「清除密钥」与填写新密钥只能选一个')
+      setFormError('「清除密钥」与填写新密钥只能选一个')
+      return
+    }
+    const sortText = draft.sort_order.trim()
+    if (!sortText || !Number.isInteger(Number(sortText))) {
+      setFormError('排序需要填写整数')
       return
     }
 
@@ -144,26 +183,26 @@ export function BalancePage() {
       type: draft.type,
       base_url: draft.base_url.trim(),
       enabled: draft.enabled,
-      sort_order: draft.sort_order,
+      sort_order: Number(sortText),
     }
     // 三态：留空 = 不发（保留原值）；填了 = 覆盖；勾选清除 = 发空串。
     if (draft.clearKey) input.api_key = ''
     else if (draft.api_key.trim()) input.api_key = draft.api_key.trim()
 
     setBusy(true)
+    setFormError('')
     try {
       if (isCreate) {
         await balanceApi.create(input)
-        setMessage(`已创建「${input.name}」`)
+        notice.success(`已创建「${input.name}」`)
       } else {
         await balanceApi.update(draft.id as number, input)
-        setMessage(`已更新「${input.name}」`)
+        notice.success(`已更新「${input.name}」`)
       }
       setDraft(null)
-      setError('')
-      await load()
+      await load(true)
     } catch (cause) {
-      setError(describeError(cause))
+      setFormError(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -172,15 +211,14 @@ export function BalancePage() {
   async function remove() {
     if (!pendingDelete) return
     setBusy(true)
+    setFormError('')
     try {
       await balanceApi.remove(pendingDelete.id)
-      setMessage(`已删除「${pendingDelete.name}」`)
-      setError('')
+      notice.success(`已删除「${pendingDelete.name}」`)
       setPendingDelete(null)
-      await load()
+      await load(true)
     } catch (cause) {
-      setError(describeError(cause))
-      setPendingDelete(null)
+      setFormError(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -190,9 +228,10 @@ export function BalancePage() {
     setBusy(true)
     try {
       await balanceApi.update(item.id, { enabled: !item.enabled })
-      await load()
+      notice.success(`「${item.name}」已${item.enabled ? '停用' : '启用'}`)
+      await load(true)
     } catch (cause) {
-      setError(describeError(cause))
+      notice.error(describeError(cause))
     } finally {
       setBusy(false)
     }
@@ -205,33 +244,33 @@ export function BalancePage() {
     labels: active.length ? active.map(item => item.name) : ['无数据'],
     datasets: [{
       data: active.length ? active.map(item => item.balance || 0) : [1],
-      backgroundColor: active.map((item, i) => typeColors[item.type] || fallbackColors[i % fallbackColors.length]),
-      borderColor: 'var(--color-surface)',
+      backgroundColor: active.length ? active.map((item, i) => palette.colors[colorIndex(item.type, i)]) : [palette.colors[0]],
+      borderColor: palette.surface,
       borderWidth: 3,
     }],
-  }), [active])
+  }), [active, palette])
 
   if (loading && !items.length) return <PageState kind="loading" title="正在读取余额信息" />
+  if (loadError && !items.length) return <PageState kind="error" title="无法读取余额信息" description={loadError} action={<button type="button" className="button button--primary" onClick={() => void load()}>重试</button>} />
 
   const editing = draft?.id !== undefined
+  const closeForm = () => { setDraft(null); setPendingDelete(null); setFormError('') }
+  const openCreate = () => setDraft({ ...emptyDraft, sort_order: String(items.length) })
 
   return <div className="business-page">
-    <div className="page-toolbar">
-      <div>
-        <p>余额监控</p>
-        <h2>LLM 余额</h2>
-      </div>
+    <div className="page-toolbar page-toolbar--end">
       <div className="toolbar-actions">
-        {status && <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+        {status && <span className="toolbar-summary">
           {status.ok_count}/{status.target_count} 可用 · {isZeroTime(status.last_refresh_at) ? '未刷新' : formatDateTime(status.last_refresh_at)}
         </span>}
-        <button className="button button--quiet" disabled={busy} onClick={() => void refreshAll()}>刷新全部</button>
-        <button className="button button--primary" disabled={busy} onClick={() => setDraft({ ...emptyDraft, sort_order: items.length })}>新增监控点</button>
+        {canWrite && <>
+          <button type="button" className="button button--quiet" disabled={busy} onClick={() => void refreshAll()}>刷新全部</button>
+          <button type="button" className="button button--primary" disabled={busy} onClick={openCreate}>新增监控点</button>
+        </>}
       </div>
     </div>
 
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} onDismiss={() => setMessage('')} />
+    {notice.element}
 
     {status && !status.enabled && <Notice
       message="余额监控模块未启用：在 config.json 里把 balance_monitor.enabled 设为 true。监控点本身已经存在数据库里，不受这个开关影响。"
@@ -242,40 +281,40 @@ export function BalancePage() {
       ? <PageState
         kind="empty"
         title="还没有监控点"
-        description="添加一个供应商账号即可开始追踪余额。密钥只保存在服务端，读取时只显示掩码。"
-        action={<button className="button button--primary" onClick={() => setDraft({ ...emptyDraft })}>新增监控点</button>}
+        description={canWrite ? '添加一个供应商账号即可开始追踪余额。密钥只保存在服务端，读取时只显示掩码。' : '管理员或编辑添加监控点后会显示在这里。'}
+        action={canWrite ? <button type="button" className="button button--primary" onClick={openCreate}>新增监控点</button> : undefined}
       />
       : <div className="balance-grid">
-        <section className="data-panel" style={{ gridColumn: '1 / -1' }}>
+        <section className="data-panel balance-panel--wide">
           <header className="data-panel-head">
             <div><h2>数据资产</h2><p>启用中的监控点总余额与占比</p></div>
-            <strong style={{ fontSize: 26, color: 'var(--color-primary)' }}>{total.toFixed(2)}</strong>
+            <strong className="balance-total">{total.toFixed(2)}</strong>
           </header>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 28, padding: 20, flexWrap: 'wrap' }}>
-            <div style={{ width: 200, height: 200, flexShrink: 0 }}>
+          <div className="balance-overview">
+            <div className="balance-chart">
               <Pie data={chartData} options={{ plugins: { legend: { display: false } }, maintainAspectRatio: false }} />
             </div>
-            <div style={{ display: 'grid', gap: 8, flex: 1, minWidth: 200 }}>
-              {active.map((item, i) => <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 4, background: typeColors[item.type] || fallbackColors[i % fallbackColors.length], flexShrink: 0 }} />
+            <ul className="balance-legend">
+              {active.map((item, i) => <li key={item.id}>
+                <span className="balance-legend-name">
+                  <span className={`balance-swatch balance-swatch--${colorIndex(item.type, i) + 1}`} aria-hidden="true" />
                   <span>{item.name}</span>
-                </div>
+                </span>
                 <strong>{item.balance?.toFixed(2) ?? '—'} {item.currency || ''}</strong>
-              </div>)}
-              {!active.length && <p style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>没有启用的监控点</p>}
-            </div>
+              </li>)}
+              {!active.length && <li className="balance-legend-empty">没有启用的监控点</li>}
+            </ul>
           </div>
         </section>
 
-        <section className="data-panel" style={{ gridColumn: '1 / -1' }}>
+        <section className="data-panel balance-panel--wide">
           <header className="data-panel-head">
             <div><h2>监控点</h2><p>密钥只显示掩码；编辑时留空表示保持原值</p></div>
           </header>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>名称</th><th>类型</th><th>余额</th><th>状态</th><th>最后检查</th><th>操作</th></tr>
+                <tr><th>名称</th><th>类型</th><th>余额</th><th>状态</th><th>最后检查</th>{canWrite && <th>操作</th>}</tr>
               </thead>
               <tbody>
                 {items.map(item => <tr key={item.id}>
@@ -291,11 +330,12 @@ export function BalancePage() {
                     {item.last_error && <p className="table-subtext">{item.last_error}</p>}
                   </td>
                   <td data-label="最后检查">{isZeroTime(item.last_checked_at) ? '—' : formatDateTime(item.last_checked_at)}</td>
-                  <td data-label="操作">
+                  {canWrite && <td data-label="操作">
                     <div className="table-actions">
-                      <button className="button button--quiet" disabled={busy || !item.enabled} onClick={() => void refreshOne(item)}>查询</button>
-                      <button className="button button--quiet" disabled={busy} onClick={() => void toggle(item)}>{item.enabled ? '停用' : '启用'}</button>
+                      <button type="button" className="button button--quiet" disabled={busy || !item.enabled} onClick={() => void refreshOne(item)}>查询</button>
+                      <button type="button" className="button button--quiet" disabled={busy} onClick={() => void toggle(item)}>{item.enabled ? '停用' : '启用'}</button>
                       <button
+                        type="button"
                         className="button button--quiet"
                         onClick={() => setDraft({
                           id: item.id,
@@ -305,14 +345,14 @@ export function BalancePage() {
                           api_key: '',
                           clearKey: false,
                           enabled: item.enabled,
-                          sort_order: item.sort_order,
+                          sort_order: String(item.sort_order),
                         })}
                       >
                         编辑
                       </button>
-                      <button className="icon-button" aria-label={`删除 ${item.name}`} onClick={() => setPendingDelete(item)}>×</button>
+                      <DeleteButton label={`删除监控点「${item.name}」`} onClick={() => setPendingDelete(item)} />
                     </div>
-                  </td>
+                  </td>}
                 </tr>)}
               </tbody>
             </table>
@@ -326,11 +366,13 @@ export function BalancePage() {
       description={editing
         ? 'API Key 留空表示保持原值；要彻底删除已存的密钥请勾选下面的「清除密钥」。'
         : 'API Key 只保存在服务端，之后任何接口都只返回掩码。'}
-      onClose={() => !busy && setDraft(null)}
+      error={formError}
+      busy={busy}
+      onClose={closeForm}
       footer={<>
-        <button className="button button--quiet" type="button" disabled={busy} onClick={() => setDraft(null)}>取消</button>
+        <button className="button button--quiet" type="button" disabled={busy} onClick={closeForm}>取消</button>
         <button className="button button--primary" type="submit" form="balance-form" disabled={busy}>
-          {busy ? '保存中...' : '保存'}
+          {busy ? '保存中…' : '保存'}
         </button>
       </>}
     >
@@ -379,8 +421,10 @@ export function BalancePage() {
           排序
           <input
             type="number"
-            value={draft?.sort_order ?? 0}
-            onChange={event => setDraft(current => current ? { ...current, sort_order: Number(event.target.value) } : current)}
+            step={1}
+            required
+            value={draft?.sort_order ?? ''}
+            onChange={event => setDraft(current => current ? { ...current, sort_order: event.target.value } : current)}
           />
         </label>
         <label className="choice-tile">
@@ -411,7 +455,8 @@ export function BalancePage() {
       confirmLabel="删除"
       danger
       busy={busy}
-      onClose={() => setPendingDelete(null)}
+      error={formError}
+      onClose={closeForm}
       onConfirm={() => void remove()}
     />
   </div>

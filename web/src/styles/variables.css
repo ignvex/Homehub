@@ -50,6 +50,15 @@
   --color-nav-text: #fffdf4;
   --color-overlay: rgba(47, 79, 79, .48);
 
+  /* ---------- 图表色板 ----------
+     Chart.js 画在 canvas 上不认 var()，BalancePage 用 getComputedStyle 读取。 */
+  --chart-1: #4f8b89;
+  --chart-2: #e8804f;
+  --chart-3: #6b8ac4;
+  --chart-4: #a07bb8;
+  --chart-5: #c4a35a;
+  --chart-6: #d4737a;
+
   /* ---------- 圆角：三档 + 圆形 ----------
      全站只允许引用这四个值，禁止再写裸数字。 */
   --radius-control: 2px;   /* 按钮、输入框、下拉、图标按钮、徽章（非胶囊） */
@@ -184,6 +193,13 @@ html[data-theme="dark"] {
   --color-nav-text: #fffdf4;
 
   --color-overlay: rgba(7, 15, 13, .66);
+
+  --chart-1: #6fb0ad;
+  --chart-2: #f09a6e;
+  --chart-3: #8ea8dc;
+  --chart-4: #bb9ad0;
+  --chart-5: #d8bc78;
+  --chart-6: #e3929a;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, .28);
   --shadow-md: 0 14px 40px rgba(0, 0, 0, .34);
 }

@@ -248,6 +248,59 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--panel-gap);
 }
+.balance-panel--wide { grid-column: 1 / -1; }
+.balance-total {
+  color: var(--color-primary);
+  font-size: var(--text-xl);
+}
+.balance-overview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-7);
+}
+.balance-chart {
+  flex: none;
+  width: 200px;
+  height: 200px;
+}
+.balance-legend {
+  flex: 1;
+  min-width: 200px;
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.balance-legend li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+.balance-legend-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.balance-legend .balance-legend-empty {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.balance-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-control);
+}
+.balance-swatch--1 { background: var(--chart-1); }
+.balance-swatch--2 { background: var(--chart-2); }
+.balance-swatch--3 { background: var(--chart-3); }
+.balance-swatch--4 { background: var(--chart-4); }
+.balance-swatch--5 { background: var(--chart-5); }
+.balance-swatch--6 { background: var(--chart-6); }
 
 /* ============ 响应式 ============ */
 @media (max-width: 900px) {
