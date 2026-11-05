@@ -1,10 +1,14 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ignvex/HomeHub/internal/config"
+	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/model"
 	"gorm.io/gorm"
 )
@@ -28,9 +32,12 @@ type LogQuery struct {
 	Since, Until  time.Time
 }
 
-// LogService 提供日志条目的查询功能。
+// LogService 提供日志条目的查询与保留期清理。
 type LogService struct {
 	db *gorm.DB
+
+	// afterPurge 在每轮保留期检查结束后调用，仅供测试同步。
+	afterPurge func()
 }
 
 // NewLogService 创建 LogService 实例。
@@ -183,4 +190,64 @@ func (s *LogService) DeleteAll() error {
 		return fmt.Errorf("清除日志失败: %w", err)
 	}
 	return nil
+}
+
+// PurgeOlderThan 物理删除 log_time 早于 cutoff 的日志，返回删除行数。
+//
+// 用 Unscoped：软删除只会打标记，表不会变小，保留期就失去了意义。
+// 按 log_time 而不是 created_at：数据库写入是批量的，created_at 可能
+// 比事件实际发生晚。
+func (s *LogService) PurgeOlderThan(cutoff time.Time) (int64, error) {
+	result := s.db.Unscoped().Where("log_time < ?", cutoff).Delete(&model.LogEntry{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("清理过期日志失败: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// logRetentionInterval 是保留期清理的执行间隔。
+const logRetentionInterval = 6 * time.Hour
+
+// logRetentionCutoff 把保留天数换算成截止时间；days <= 0 表示不清理。
+func logRetentionCutoff(days int, now time.Time) (time.Time, bool) {
+	if days <= 0 {
+		return time.Time{}, false
+	}
+	return now.AddDate(0, 0, -days), true
+}
+
+// StartRetentionLoop 启动日志保留期清理：启动时跑一次，之后每 6 小时一次。
+//
+// 每轮重新读取 log.retention_days，热更新在下一轮生效；为 0 时跳过。
+// goroutine 登记在 wg 上，ctx 取消时退出。
+func (s *LogService) StartRetentionLoop(ctx context.Context, wg *sync.WaitGroup) {
+	wg.Go(func() {
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Info("[log] 日志保留期清理已停止")
+				return
+			case <-timer.C:
+			}
+
+			days := 0
+			if cfg := config.Get(); cfg != nil {
+				days = cfg.Log.RetentionDays
+			}
+			if cutoff, ok := logRetentionCutoff(days, time.Now()); ok {
+				if n, err := s.PurgeOlderThan(cutoff); err != nil {
+					logger.Warn("[log] 日志保留期清理失败", "error", err)
+				} else if n > 0 {
+					logger.Info("[log] 已清理过期日志", "deleted", n, "retention_days", days)
+				}
+			}
+			if s.afterPurge != nil {
+				s.afterPurge()
+			}
+
+			timer.Reset(logRetentionInterval)
+		}
+	})
 }

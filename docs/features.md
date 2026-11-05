@@ -412,6 +412,8 @@ ID 与结果（`pikpak_status` / `pikpak_task_id`），之后 PikPak 那边怎�
 ## 系统日志
 
 - 控制台 + 数据库双写（`log.db_writer` 控制后者）
+- 数据库日志保留 `log.retention_days` 天（默认 30，0 = 不限），
+  启动时与之后每 6 小时清理一次
 - 日志面板通过 SSE 实时推送：`GET /api/v1/admin/logs/stream`
 - 数据库写入是异步批量（缓冲区满时丢弃，不阻塞主流程）
 - 2 级（operator）及以上可访问

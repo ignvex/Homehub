@@ -356,8 +356,9 @@ erDiagram
 索引：`idx_log_entries_level`、`idx_log_entries_log_time`、
 `idx_log_entries_deleted_at`。
 
-**评审要点**：没有任何自动清理。`log.db_writer=true` 时日志会无限增长，
-是长期运行后最可能失控的表。建议加按 `log_time` 的保留天数和定期物理删除。
+**保留期**：`log.retention_days`（默认 30，0 = 不限，范围 0–3650）。
+启动时与之后每 6 小时按 `log_time` 物理删除过期行
+（`DELETE FROM log_entries WHERE log_time < $1`），每轮读取最新配置。
 
 `message` 入库前会按字符截断到 2048 并补 "..."（`model.TruncateEllipsis`）。
 这层保护是必须的：日志消息会包含抓取错误、上游响应片段等不受控内容，

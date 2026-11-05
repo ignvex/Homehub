@@ -170,11 +170,13 @@ func Run(opts Options) error {
 	svc.RSS.StartImageJanitor(ctx, &bg)
 	svc.Balance.StartBackgroundRefresh(ctx, &bg)
 	svc.Paste.StartPurgeLoop(ctx, &bg)
+	svc.Log.StartRetentionLoop(ctx, &bg)
 
 	logger.Info("后台任务已启动",
 		"rss", cfg.RSS.BackgroundFetchEnabled,
 		"balance", cfg.BalanceMonitor.Enabled,
 		"pastebin", cfg.Pastebin.Enabled,
+		"log_retention_days", cfg.Log.RetentionDays,
 	)
 
 	// ============================================================
