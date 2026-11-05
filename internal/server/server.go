@@ -21,6 +21,26 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
+// 服务器超时。
+//
+// 只设读请求头与空闲超时，**不设 WriteTimeout**：日志 SSE 流
+// （/admin/logs/stream）是长连接，WriteTimeout 会把它按时掐断。
+// ReadHeaderTimeout 挡住慢速发送请求头的连接（Slowloris）占满 fd。
+const (
+	readHeaderTimeout = 10 * time.Second
+	idleTimeout       = 120 * time.Second
+)
+
+// newHTTPServer 构造带超时设置的 http.Server。
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 // Run 启动 HTTP 服务并阻塞，直至收到 SIGINT/SIGTERM 后优雅关闭。
 //
 // 启动序列：
@@ -63,10 +83,7 @@ func Run() error {
 	registerSPAFallback(r)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
-	}
+	srv := newHTTPServer(addr, r)
 
 	// 信号监听
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
