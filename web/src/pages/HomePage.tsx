@@ -8,6 +8,7 @@ import { MagnetCopyButton } from '@/components/MagnetCopyButton'
 import { getWebUIConfig } from '@/lib/webui'
 import { useAuth } from '@/lib/auth'
 import { useNavigate } from '@/lib/navigation'
+import { LEVEL_ADMIN, hasLevel, levelLabel } from '@/lib/permissions'
 import { mediaURL } from '@/lib/media'
 
 type Preferences = { bookmarks: number[]; feeds: number[] }
@@ -150,11 +151,11 @@ function UserMenu({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }
       <span className="user-menu-caret" aria-hidden="true">▾</span>
     </button>
     {open && <div className="user-menu-panel" id="home-user-menu">
-      <p className="user-menu-meta">{auth.role === 'admin' ? '已登录 · 管理员' : '已登录 · 成员'}</p>
+      <p className="user-menu-meta">已登录 · {levelLabel(auth.level)}</p>
       <a href="/dashboard">进入面板</a>
       <a href="/profile">个人资料</a>
       <a href="/appearance">界面外观</a>
-      {auth.role === 'admin' && <a href="/settings">系统设置</a>}
+      {hasLevel(auth, LEVEL_ADMIN) && <a href="/settings">系统设置</a>}
       <button type="button" className="is-danger" onClick={() => { setOpen(false); onLogout() }}>退出登录</button>
     </div>}
   </div>

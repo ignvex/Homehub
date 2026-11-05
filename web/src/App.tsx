@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'r
 import { AppShell, type ShellPageMeta } from '@/components/AppShell'
 import { AuthContext, type AuthValue } from '@/lib/auth'
 import { homeApi, type AuthStatus } from '@/lib/home'
+import { LEVEL_ADMIN, LEVEL_OPERATOR, hasLevel, levelLabel } from '@/lib/permissions'
 import { NavigationContext, confirmLeave, currentHref, notifyLocationChange, readLocation, type AppLocation, type NavigateOptions } from '@/lib/navigation'
 import { BalancePage } from '@/pages/BalancePage'
 import { AppearancePage } from '@/pages/AppearancePage'
@@ -109,7 +110,8 @@ function RouteLoading() {
 interface PageDefinition {
   component: ComponentType
   meta: ShellPageMeta
-  admin?: boolean
+  /** 访问页面所需的最低等级（数值上限，见 lib/permissions.ts）；缺省为任何已登录用户。 */
+  minLevel?: number
 }
 
 const pages: Record<string, PageDefinition> = {
@@ -120,10 +122,10 @@ const pages: Record<string, PageDefinition> = {
   '/media': { component: MediaPage, meta: { eyebrow: '资源库', title: '媒体资源', description: '上传、检查和清理背景媒体。' } },
   '/search': { component: SearchPage, meta: { eyebrow: '跨域检索', title: '数据搜索', description: '检索书签与 RSS 条目。' } },
   '/profile': { component: ProfilePage, meta: { eyebrow: '账户', title: '个人中心', description: '维护个人资料、头像与登录密码。' } },
-  '/users': { component: UsersPage, meta: { eyebrow: '访问控制', title: '用户管理', description: '管理成员、角色与账户状态。' }, admin: true },
-  '/logs': { component: LogsPage, meta: { eyebrow: '系统事件', title: '系统日志', description: '筛选和定位后端运行事件。' }, admin: true },
-  '/settings': { component: SettingsPage, meta: { eyebrow: '系统配置', title: '设置', description: '按配置域修改后端支持的参数。' }, admin: true },
-  '/extension': { component: ExtensionPage, meta: { eyebrow: '跳实例集成', title: 'Extension 对接', description: '把订阅镜像到 Extension，并为用户签发访问密钥。' }, admin: true },
+  '/users': { component: UsersPage, meta: { eyebrow: '访问控制', title: '用户管理', description: '管理成员、角色与账户状态。' }, minLevel: LEVEL_OPERATOR },
+  '/logs': { component: LogsPage, meta: { eyebrow: '系统事件', title: '系统日志', description: '筛选和定位后端运行事件。' }, minLevel: LEVEL_OPERATOR },
+  '/settings': { component: SettingsPage, meta: { eyebrow: '系统配置', title: '设置', description: '按配置域修改后端支持的参数。' }, minLevel: LEVEL_ADMIN },
+  '/extension': { component: ExtensionPage, meta: { eyebrow: '跳实例集成', title: 'Extension 对接', description: '把订阅镜像到 Extension，并为用户签发访问密钥。' }, minLevel: LEVEL_OPERATOR },
   '/appearance': { component: AppearancePage, meta: { eyebrow: '界面偏好', title: '外观', description: '管理当前浏览器主题与服务端背景配置。' } },
   '/balance': { component: BalancePage, meta: { eyebrow: '服务监视', title: 'LLM 余额', description: '查看各平台 API 余额与监控状态。' } },
 }
@@ -168,12 +170,12 @@ function Routes({ path, auth }: { path: string; auth: AuthStatus | null }) {
     )
   }
 
-  // 管理员权限检查
-  if (page.admin && auth.role !== 'admin') {
+  // 等级检查（fail closed：等级缺失视为无权）
+  if (page.minLevel !== undefined && !hasLevel(auth, page.minLevel)) {
     return (
       <main className="route-state" role="alert">
         <h1>无权访问</h1>
-        <p>此页面仅对管理员开放。</p>
+        <p>此页面需要「{levelLabel(page.minLevel)}」或更高等级。</p>
         <a href="/dashboard">返回仪表盘</a>
       </main>
     )

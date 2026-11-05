@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
 import type { AuthStatus } from '@/lib/home'
+import { LEVEL_ADMIN, LEVEL_OPERATOR, hasLevel } from '@/lib/permissions'
 
 // ============================================================
 // AppShell — 控制台侧边栏布局
@@ -12,7 +13,7 @@ import type { AuthStatus } from '@/lib/home'
 // 页面正文不再画标题块（顶栏已有页面名），页面只放操作按钮。
 // ============================================================
 
-interface NavItem { href: string; label: string; icon: ReactNode; admin?: boolean; children?: NavItem[] }
+interface NavItem { href: string; label: string; icon: ReactNode; minLevel?: number; children?: NavItem[] }
 interface NavGroup { label: string; items: NavItem[] }
 
 const icon = (path: ReactNode) => <svg viewBox="0 0 24 24" aria-hidden="true">{path}</svg>
@@ -41,10 +42,10 @@ const navigation: NavGroup[] = [
   },
   {
     label: '系统管理', items: [
-      { href: '/users', label: '用户管理', admin: true, icon: icon(<><circle cx="9" cy="8" r="3" /><path d="M3 20c.5-4 2.5-6 6-6s5.5 2 6 6M16 7h5m-2.5-2.5v5" /></>) },
-      { href: '/logs', label: '系统日志', admin: true, icon: icon(<><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></>) },
-      { href: '/settings', label: '设置', admin: true, icon: icon(<><circle cx="12" cy="12" r="3" /><path d="m19 13.5 1-1.5-1-1.5.1-1.8-1.7-.7-.9-1.5-1.8.2L14.2 5 12.5 4l-1.4 1.1-1.8-.2-.9 1.6-1.7.7.1 1.8-1 1.5 1 1.5-.1 1.8 1.7.7.9 1.5 1.8-.2 1.4 1.1 1.7-1.1 1.8.2.9-1.5 1.7-.7z" /></>) },
-      { href: '/extension', label: 'Extension 对接', admin: true, icon: icon(<><path d="M9 3v6m6-6v6M7 9h10v3a5 5 0 0 1-10 0z" /><path d="M12 17v4" /></>) },
+      { href: '/users', label: '用户管理', minLevel: LEVEL_OPERATOR, icon: icon(<><circle cx="9" cy="8" r="3" /><path d="M3 20c.5-4 2.5-6 6-6s5.5 2 6 6M16 7h5m-2.5-2.5v5" /></>) },
+      { href: '/logs', label: '系统日志', minLevel: LEVEL_OPERATOR, icon: icon(<><path d="M5 4h14v16H5zM8 8h8m-8 4h8m-8 4h5" /></>) },
+      { href: '/settings', label: '设置', minLevel: LEVEL_ADMIN, icon: icon(<><circle cx="12" cy="12" r="3" /><path d="m19 13.5 1-1.5-1-1.5.1-1.8-1.7-.7-.9-1.5-1.8.2L14.2 5 12.5 4l-1.4 1.1-1.8-.2-.9 1.6-1.7.7.1 1.8-1 1.5 1 1.5-.1 1.8 1.7.7.9 1.5 1.8-.2 1.4 1.1 1.7-1.1 1.8.2.9-1.5 1.7-.7z" /></>) },
+      { href: '/extension', label: 'Extension 对接', minLevel: LEVEL_OPERATOR, icon: icon(<><path d="M9 3v6m6-6v6M7 9h10v3a5 5 0 0 1-10 0z" /><path d="M12 17v4" /></>) },
     ]
   },
 ]
@@ -206,7 +207,9 @@ export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; met
           <button type="button" onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '展开侧栏' : '收起侧栏'}>{collapsed ? '›' : '‹'}</button>
         </div>
         <nav className="shell-nav" aria-label="主导航">
-          {navigation.map(group => {
+          {navigation.map(navGroup => {
+            const group = { ...navGroup, items: navGroup.items.filter(item => item.minLevel === undefined || hasLevel(auth, item.minLevel)) }
+            if (!group.items.length) return null
             const isFolded = foldedGroups.has(group.label)
             const hasActiveChild = group.items.some(item =>
               isActivePath(item.href) || item.children?.some(c => isActivePath(c.href))
@@ -228,7 +231,7 @@ export function AppShell({ auth, meta, path, children }: { auth: AuthStatus; met
                     {!collapsed && <span className="shell-nav-group-arrow" aria-hidden="true">{effectiveFolded ? '▸' : '▾'}</span>}
                   </button>
                 </h2>
-                {!collapsed && !effectiveFolded && group.items.filter(item => !item.admin || auth.role === 'admin').map(renderNavItem)}
+                {!collapsed && !effectiveFolded && group.items.map(renderNavItem)}
               </section>
             )
           })}

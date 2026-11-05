@@ -1,6 +1,6 @@
 import { api } from '@/lib/api'
 
-export interface AuthStatus { logged_in: boolean; id?: number; username?: string; role?: string; email?: string; avatar_url?: string }
+export interface AuthStatus { logged_in: boolean; id?: number; username?: string; role?: string; level?: number; email?: string; avatar_url?: string }
 export interface Bookmark { id: number; title: string; url: string; icon?: string }
 export interface BookmarkGroup { id: number; name: string; bookmarks?: Bookmark[] }
 export interface RSSFeed { id: number; title: string; url: string; site_url?: string; icon_url?: string }

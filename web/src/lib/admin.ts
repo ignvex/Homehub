@@ -1,11 +1,13 @@
 import { api } from '@/lib/api'
 import type { EntityBase, PageResult } from '@/lib/types'
 
-export type UserRole = 'admin' | 'user'
 export interface ManagedUser extends EntityBase {
   username: string
   email?: string
-  role: UserRole
+  /** 1–5，数值越小权限越高，见 lib/permissions.ts。 */
+  level: number
+  /** 等级英文名，仅用于展示兜底。 */
+  role: string
   is_active: boolean
 }
 
@@ -32,8 +34,8 @@ function localDateToRFC3339(value: string): string {
 
 export const adminApi = {
   listUsers: () => api.get<ManagedUser[]>('/admin/users'),
-  createUser: (body: { username: string; password: string; email?: string; role: UserRole }) => api.post<ManagedUser>('/admin/users', body),
-  updateUser: (id: number, body: Partial<Pick<ManagedUser, 'username' | 'email' | 'role' | 'is_active'>>) => api.put<ManagedUser>(`/admin/users/${id}`, body),
+  createUser: (body: { username: string; password: string; email?: string; level: number }) => api.post<ManagedUser>('/admin/users', body),
+  updateUser: (id: number, body: Partial<Pick<ManagedUser, 'username' | 'email' | 'level' | 'is_active'>>) => api.put<ManagedUser>(`/admin/users/${id}`, body),
   deleteUser: (id: number) => api.delete<void>(`/admin/users/${id}`),
   resetPassword: (id: number, newPassword: string) => api.put<void>(`/admin/users/${id}/reset-password`, { new_password: newPassword }),
   refreshAvatar: (id: number) => api.post<void>(`/admin/users/${id}/refresh-avatar`),

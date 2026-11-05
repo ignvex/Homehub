@@ -12,6 +12,7 @@ export interface UserProfile {
   username: string
   email: string
   role: string
+  level?: number
   avatar_url: string
 }
 
