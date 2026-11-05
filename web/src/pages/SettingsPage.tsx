@@ -27,7 +27,7 @@ import { extensionHubApi, type ExtensionHubStatus, type KeyInfo } from '@/lib/ex
 // ============================================================
 
 /** 设置页上实际渲染的模块（bookmark 段目前没有面板）。 */
-const allSections: SettingsSection[] = ['connection', 'auth', 'log', 'appearance', 'gravatar', 'rss', 'extension']
+const allSections: SettingsSection[] = ['connection', 'auth', 'log', 'appearance', 'gravatar', 'rss', 'balance', 'extension']
 
 /** sectionFields 取出某个模块对应的配置片段。 */
 function sectionFields(cfg: SafeConfig, section: SettingsSection): Partial<SafeConfig> {
@@ -39,6 +39,7 @@ function sectionFields(cfg: SafeConfig, section: SettingsSection): Partial<SafeC
     case 'gravatar': return { gravatar: cfg.gravatar }
     case 'bookmark': return { bookmark: cfg.bookmark }
     case 'rss': return { rss: cfg.rss }
+    case 'balance': return { balance_monitor: cfg.balance_monitor }
     case 'extension': return { extension: cfg.extension }
   }
 }
@@ -309,6 +310,11 @@ export function SettingsPage() {
               <input type="password" value={secrets.database_password} placeholder="留空不修改"
                 onChange={event => setSecrets(current => ({ ...current, database_password: event.target.value }))} />
             </Field>
+            <Field label="可信反向代理" wide>
+              <LineListInput value={draft.server.trusted_proxies} placeholder={'172.17.0.1\n10.0.0.0/8'}
+                onChange={value => patch(current => ({ ...current, server: { ...current.server, trusted_proxies: value } }))} />
+              <span className="settings-hint">部署在反向代理后面时填写代理的 IP 或 CIDR，一行一个；留空表示不信任任何转发头。服务地址、端口与此项修改后需重启生效。</span>
+            </Field>
           </div>
         </Section>
 
@@ -534,6 +540,33 @@ export function SettingsPage() {
               <input type="checkbox" checked={draft.rss.image_allow_private_hosts}
                 onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_allow_private_hosts: event.target.checked } }))} />
               <span>允许缓存内网图片（降低 SSRF 防护）</span>
+            </label>
+          </div>
+        </Section>
+
+        <Section
+          section="balance"
+          title="余额监控"
+          description="后台按间隔查询各监控点的余额。监控点本身在「余额监控」页面管理。"
+          dirty={dirty('balance')}
+          saving={saving === 'balance'}
+          onSave={event => void saveSection('balance', event)}
+          onReset={() => confirmDiscard(() => patch(current => ({ ...current, balance_monitor: config.balance_monitor })))}
+        >
+          <div className="form-grid form-grid--three">
+            <label className="choice-tile">
+              <input type="checkbox" checked={draft.balance_monitor.enabled}
+                onChange={event => patch(current => ({ ...current, balance_monitor: { ...current.balance_monitor, enabled: event.target.checked } }))} />
+              <span>启用后台刷新</span>
+            </label>
+            <Field label="刷新间隔（秒）">
+              <NumberInput min="10" max="3600" value={draft.balance_monitor.refresh_interval_seconds}
+                onChange={value => patch(current => ({ ...current, balance_monitor: { ...current.balance_monitor, refresh_interval_seconds: value } }))} />
+            </Field>
+            <label className="choice-tile form-field--wide">
+              <input type="checkbox" checked={draft.balance_monitor.allow_private_hosts}
+                onChange={event => patch(current => ({ ...current, balance_monitor: { ...current.balance_monitor, allow_private_hosts: event.target.checked } }))} />
+              <span>允许余额监控访问内网/回环地址。仅在自建中转服务时开启。</span>
             </label>
           </div>
         </Section>
@@ -902,6 +935,34 @@ function parseConfigJSON(text: string): SafeConfig {
   return parsed as SafeConfig
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="form-field">{label}{children}</label>
+function Field({ label, children, wide = false }: { label: string; children: ReactNode; wide?: boolean }) {
+  return <label className={wide ? 'form-field form-field--wide' : 'form-field'}>{label}{children}</label>
+}
+
+/**
+ * LineListInput 编辑「一行一项」的字符串列表。
+ *
+ * 草稿保存原始文本，失焦或提交时才不会吃掉用户正在输入的空行；
+ * 对外只回传去空白、去空行后的列表。
+ */
+function LineListInput({ value, onChange, placeholder }: { value: string[]; onChange: (value: string[]) => void; placeholder?: string }) {
+  const [text, setText] = useState(value.join('\n'))
+  useEffect(() => {
+    setText(current => (sameLines(current, value) ? current : value.join('\n')))
+  }, [value])
+  return <textarea
+    className="code-textarea code-textarea--short"
+    spellCheck={false}
+    placeholder={placeholder}
+    value={text}
+    onChange={event => { setText(event.target.value); onChange(splitLines(event.target.value)) }}
+  />
+}
+
+function splitLines(text: string): string[] {
+  return text.split('\n').map(line => line.trim()).filter(Boolean)
+}
+
+function sameLines(text: string, value: string[]): boolean {
+  return JSON.stringify(splitLines(text)) === JSON.stringify(value)
 }

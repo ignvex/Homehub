@@ -71,8 +71,18 @@ export interface ProxyConfig {
   default: string[]
 }
 
+/** BalanceMonitorConfig 只含开关；监控点（含 api_key）走 /balances，不在配置视图里。 */
+export interface BalanceMonitorConfig {
+  enabled: boolean
+  /** 后台刷新间隔（秒），范围 10–3600。 */
+  refresh_interval_seconds: number
+  /** 允许监控点指向内网/回环地址。默认关闭。 */
+  allow_private_hosts: boolean
+}
+
 export interface SafeConfig {
-  server: { host: string; port: number }
+  /** trusted_proxies：可信反向代理的 IP/CIDR，修改后需重启生效。 */
+  server: { host: string; port: number; trusted_proxies: string[] }
   database: { host: string; port: number; user: string; dbname: string; sslmode: string }
   auth: { username: string }
   /** retention_days：数据库日志保留天数，0 表示永久保留，范围 0–3650。 */
@@ -83,6 +93,7 @@ export interface SafeConfig {
   bookmark: Record<string, never>
   rss: RSSConfig
   extension: ExtensionConfig
+  balance_monitor: BalanceMonitorConfig
 }
 
 /** Secrets 是不从服务端回传的字段，单独维护，留空表示不改。 */
@@ -107,6 +118,7 @@ export type SettingsSection =
   | 'gravatar'
   | 'bookmark'
   | 'rss'
+  | 'balance'
   | 'extension'
 
 /** updatePayload 是一个模块的完整更新请求。 */
@@ -150,6 +162,8 @@ export function buildPayload(
       return { bookmark: draft.bookmark }
     case 'rss':
       return { rss: draft.rss }
+    case 'balance':
+      return { balance_monitor: draft.balance_monitor }
     case 'extension':
       // 私钥不在这里：它走 setKey，避免整段覆盖时被清空。
       return {
@@ -173,6 +187,7 @@ export const sectionLabels: Record<SettingsSection, string> = {
   gravatar: 'Gravatar 头像',
   bookmark: '书签',
   rss: 'RSS',
+  balance: '余额监控',
   extension: 'Extension 对接',
 }
 
@@ -181,7 +196,7 @@ export const sectionLabels: Record<SettingsSection, string> = {
 // ============================================================
 
 interface BackendSafeConfig {
-  server: SafeConfig['server']
+  server: Omit<SafeConfig['server'], 'trusted_proxies'> & { trusted_proxies?: string[] | null }
   database: SafeConfig['database']
   auth: SafeConfig['auth']
   log: Omit<SafeConfig['log'], 'retention_days'> & { retention_days?: number }
@@ -194,6 +209,7 @@ interface BackendSafeConfig {
   bookmark?: Record<string, never>
   rss?: Partial<RSSConfig>
   extension?: Partial<ExtensionConfig>
+  balance_monitor?: Partial<BalanceMonitorConfig>
 }
 
 const defaultBackground: BackgroundSettings = {
@@ -206,7 +222,7 @@ const defaultBackground: BackgroundSettings = {
 
 function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
   return {
-    server: raw.server,
+    server: { ...raw.server, trusted_proxies: raw.server.trusted_proxies ?? [] },
     database: raw.database,
     auth: raw.auth,
     log: { ...raw.log, retention_days: raw.log.retention_days ?? 30 },
@@ -251,6 +267,11 @@ function transformBackendToSafe(raw: BackendSafeConfig): SafeConfig {
       proxy_names: raw.extension?.proxy_names ?? [],
       timeout_seconds: raw.extension?.timeout_seconds ?? 30,
       private_key_set: raw.extension?.private_key_set ?? false,
+    },
+    balance_monitor: {
+      enabled: raw.balance_monitor?.enabled ?? false,
+      refresh_interval_seconds: raw.balance_monitor?.refresh_interval_seconds ?? 60,
+      allow_private_hosts: raw.balance_monitor?.allow_private_hosts ?? false,
     },
   }
 }
