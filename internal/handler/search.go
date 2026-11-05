@@ -17,11 +17,11 @@ import (
 // SearchAll 跨书签和 RSS 条目的联合搜索。
 //
 //	@Summary		联合搜索
-//	@Description	在书签（标题/URL/分组名）与 RSS 条目（标题/正文/作者）中搜索，支持分页、按源与分组过滤
+//	@Description	在书签（标题/URL/分组名）、RSS 条目（标题/正文/作者）、待办（标题/描述）与未过期的剪贴板（正文）中搜索，支持分页、按源与分组过滤
 //	@Tags			搜索
 //	@Produce		json
 //	@Param			q			query		string	true	"搜索关键词"
-//	@Param			scope		query		string	false	"搜索范围：all / bookmarks / rss（默认 all）"
+//	@Param			scope		query		string	false	"搜索范围：all / bookmarks / rss / todos / pastes（默认 all）"
 //	@Param			page		query		int		false	"页码，从 1 开始（默认 1）"
 //	@Param			per_page	query		int		false	"每页条数（默认 20，上限 100）"
 //	@Param			feed_id		query		int		false	"只搜该订阅源收录的条目"

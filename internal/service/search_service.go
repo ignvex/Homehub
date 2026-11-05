@@ -34,7 +34,7 @@ type SearchService struct {
 // SearchOptions 是一次搜索的参数。
 type SearchOptions struct {
 	Query string
-	// Scope 取 all / bookmarks / rss。
+	// Scope 取 all / bookmarks / rss / todos / pastes。
 	Scope string
 	// Page 从 1 开始；PerPage 默认 DefaultSearchPerPage。
 	Page    int
@@ -65,6 +65,13 @@ type SearchResult struct {
 	RssEntries      []RssEntrySearchItem `json:"rss_entries"`
 	RssEntriesTotal int                  `json:"rss_entries_total"`
 
+	Todos      []TodoSearchItem `json:"todos"`
+	TodosTotal int              `json:"todos_total"`
+
+	// Pastes 只含未过期的粘贴；剪贴板关闭时恒为空。
+	Pastes      []PasteSearchItem `json:"pastes"`
+	PastesTotal int               `json:"pastes_total"`
+
 	// Page / PerPage 回传生效值：前端传了超限的 per_page 时，
 	// 它需要知道实际用了多少才能正确算页数。
 	Page    int `json:"page"`
@@ -84,6 +91,27 @@ type RssEntrySearchItem struct {
 	// Snippet 是正文里命中关键词附近的一小段纯文本，供前端高亮。
 	// 为空表示命中在标题或作者上，正文摘要没有意义。
 	Snippet string `json:"snippet,omitempty"`
+}
+
+// TodoSearchItem 待办搜索结果。
+type TodoSearchItem struct {
+	ID      uint64     `json:"id"`
+	Title   string     `json:"title"`
+	Status  string     `json:"status"`
+	DueDate *time.Time `json:"due_date,omitempty"`
+	// Snippet 是描述里命中关键词附近的一段；为空表示命中在标题。
+	Snippet   string    `json:"snippet,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// PasteSearchItem 剪贴板搜索结果。刻意不含 delete_token 与完整正文。
+type PasteSearchItem struct {
+	ID uint64 `json:"id"`
+	// PublicID 是 /pastes/:id 与 /paste/:id 使用的公开 ID。
+	PublicID  string    `json:"public_id"`
+	Snippet   string    `json:"snippet"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // BookmarkSearchItem 书签搜索结果。
@@ -165,6 +193,8 @@ func (s *SearchService) Search(opts SearchOptions) (*SearchResult, error) {
 		// JSON 里也不会出现 null。
 		Bookmarks:  []BookmarkSearchItem{},
 		RssEntries: []RssEntrySearchItem{},
+		Todos:      []TodoSearchItem{},
+		Pastes:     []PasteSearchItem{},
 	}
 
 	var wg sync.WaitGroup
@@ -206,17 +236,49 @@ func (s *SearchService) Search(opts SearchOptions) (*SearchResult, error) {
 		mu.Unlock()
 	}
 
+	searchTodos := func() {
+		defer wg.Done()
+		items, total, err := s.searchTodos(pattern, opts, offset)
+		if err != nil {
+			recordErr(err)
+			return
+		}
+		mu.Lock()
+		result.Todos, result.TodosTotal = items, total
+		mu.Unlock()
+	}
+
+	searchPastes := func() {
+		defer wg.Done()
+		items, total, err := s.searchPastes(pattern, opts, offset)
+		if err != nil {
+			recordErr(err)
+			return
+		}
+		mu.Lock()
+		result.Pastes, result.PastesTotal = items, total
+		mu.Unlock()
+	}
+
 	switch opts.Scope {
 	case "all":
-		wg.Add(2)
+		wg.Add(4)
 		safeGo("bookmarks", searchBookmarks)
 		safeGo("rss", searchRssEntries)
+		safeGo("todos", searchTodos)
+		safeGo("pastes", searchPastes)
 	case "bookmarks":
 		wg.Add(1)
 		safeGo("bookmarks", searchBookmarks)
 	case "rss":
 		wg.Add(1)
 		safeGo("rss", searchRssEntries)
+	case "todos":
+		wg.Add(1)
+		safeGo("todos", searchTodos)
+	case "pastes":
+		wg.Add(1)
+		safeGo("pastes", searchPastes)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrSearchBadScope, opts.Scope)
 	}
@@ -352,6 +414,106 @@ func (s *SearchService) searchRssEntries(pattern string, opts SearchOptions, off
 	return items, total, nil
 }
 
+// snippetWindowSQL 在 SQL 里截出命中位置附近的一段文本。
+//
+// strpos 按字符计位，substr 按字符截取，结果不会切碎多字节字符；
+// 只把这一小段传回应用层，而不是整段正文（粘贴可能有几百 KB）。
+// 第一个参数是列名（调用方写死的常量），占位符依次是关键词。
+func snippetWindowSQL(col string) string {
+	return `substr(` + col + `, greatest(strpos(lower(` + col + `), lower(?::text)) - 120, 1), 400)`
+}
+
+// searchTodos 查待办（标题、描述），返回一页结果与总数。
+func (s *SearchService) searchTodos(pattern string, opts SearchOptions, offset int) ([]TodoSearchItem, int, error) {
+	where := `t.deleted_at IS NULL AND (t.title ILIKE ? OR t.description ILIKE ?)`
+	args := []any{pattern, pattern}
+
+	var total int
+	if err := s.db.Raw(`SELECT count(*) FROM todos t WHERE `+where, args...).Scan(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("统计待办失败: %w", err)
+	}
+	items := []TodoSearchItem{}
+	if total == 0 {
+		return items, 0, nil
+	}
+
+	var rows []struct {
+		ID         uint64
+		Title      string
+		Status     string
+		DueDate    *time.Time
+		CreatedAt  time.Time
+		DescWindow string
+	}
+	queryArgs := append([]any{opts.Query}, args...)
+	queryArgs = append(queryArgs, pattern, opts.PerPage, offset)
+	if err := s.db.Raw(`
+		SELECT t.id, t.title, t.status, t.due_date, t.created_at,
+		       COALESCE(`+snippetWindowSQL("t.description")+`, '') AS desc_window
+		FROM todos t
+		WHERE `+where+`
+		ORDER BY CASE WHEN t.title ILIKE ? THEN 0 ELSE 1 END,
+			t.priority DESC, t.sort_order ASC, t.id ASC
+		LIMIT ? OFFSET ?`, queryArgs...).Scan(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询待办失败: %w", err)
+	}
+	for _, r := range rows {
+		items = append(items, TodoSearchItem{
+			ID: r.ID, Title: r.Title, Status: r.Status, DueDate: r.DueDate, CreatedAt: r.CreatedAt,
+			Snippet: plainSnippet(r.DescWindow, opts.Query),
+		})
+	}
+	return items, total, nil
+}
+
+// searchPastes 查未过期的粘贴（正文），返回一页结果与总数。
+//
+// 剪贴板关闭时直接返回空：关掉后 /pastes 读接口全部拒绝，搜索不能
+// 成为绕开开关的旁路。delete_token 从不进 SELECT。
+func (s *SearchService) searchPastes(pattern string, opts SearchOptions, offset int) ([]PasteSearchItem, int, error) {
+	items := []PasteSearchItem{}
+	if !pasteEnabled() {
+		return items, 0, nil
+	}
+	now := time.Now()
+	where := `p.deleted_at IS NULL AND p.expires_at > ? AND p.content ILIKE ?`
+	args := []any{now, pattern}
+
+	var total int
+	if err := s.db.Raw(`SELECT count(*) FROM pastes p WHERE `+where, args...).Scan(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("统计粘贴失败: %w", err)
+	}
+	if total == 0 {
+		return items, 0, nil
+	}
+
+	var rows []struct {
+		ID          uint64
+		PublicID    string
+		CreatedAt   time.Time
+		ExpiresAt   time.Time
+		PasteWindow string
+	}
+	queryArgs := append([]any{opts.Query}, args...)
+	queryArgs = append(queryArgs, opts.PerPage, offset)
+	if err := s.db.Raw(`
+		SELECT p.id, p.public_id, p.created_at, p.expires_at,
+		       `+snippetWindowSQL("p.content")+` AS paste_window
+		FROM pastes p
+		WHERE `+where+`
+		ORDER BY p.created_at DESC, p.id DESC
+		LIMIT ? OFFSET ?`, queryArgs...).Scan(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询粘贴失败: %w", err)
+	}
+	for _, r := range rows {
+		items = append(items, PasteSearchItem{
+			ID: r.ID, PublicID: r.PublicID, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt,
+			Snippet: plainSnippet(r.PasteWindow, opts.Query),
+		})
+	}
+	return items, total, nil
+}
+
 // rssEntrySearchRow 是搜索中间行，避免把 content 直接暴露到 API 结构上。
 type rssEntrySearchRow struct {
 	ID          uint64 `gorm:"column:id"`
@@ -424,8 +586,18 @@ func buildSnippet(content, query string) string {
 		return ""
 	}
 
-	text := htmlTagRe.ReplaceAllString(content, " ")
-	text = strings.Join(strings.Fields(text), " ")
+	return plainSnippet(htmlTagRe.ReplaceAllString(content, " "), query)
+}
+
+// plainSnippet 从纯文本里截出关键词附近的一段，空白折叠成单个空格。
+//
+// 与 buildSnippet 的区别只是不去 HTML 标签：待办描述和粘贴是纯文本，
+// 代码片段里的 `<T>` 不该被当成标签吃掉。找不到关键词时返回空串。
+func plainSnippet(content, query string) string {
+	if content == "" || query == "" {
+		return ""
+	}
+	text := strings.Join(strings.Fields(content), " ")
 	if text == "" {
 		return ""
 	}
