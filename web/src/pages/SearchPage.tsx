@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { Notice, PageState, Pagination } from '@/components/WorkspaceUI'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { PageState, Pagination } from '@/components/WorkspaceUI'
+import { errorMessage } from '@/hooks/useNotice'
+import { useQueryNumber, useQueryState } from '@/hooks/useQueryState'
+import { isAbortError } from '@/lib/api'
 import { searchApi, type SearchResult, type SearchScope } from '@/lib/search'
 import { rssApi, type RSSFeed } from '@/lib/rss'
 
@@ -66,51 +69,49 @@ function Highlight({ text, query }: { text: string; query: string }): ReactNode 
 }
 
 export function SearchPage() {
-  const params = new URLSearchParams(window.location.search)
-  const initialQuery = params.get('q') || ''
+  // 已提交的检索条件放在 URL（replaceState），刷新、前进后退与 /search?q= 链接都能还原。
+  const [q, setQ] = useQueryState('q', '')
+  const [scopeParam, setScopeParam] = useQueryState('scope', 'all')
+  const [page, setPage] = useQueryNumber('page', 1)
+  const scope = (scopes.some(option => option.value === scopeParam) ? scopeParam : 'all') as SearchScope
 
-  const [query, setQuery] = useState(initialQuery)
-  const [scope, setScope] = useState<SearchScope>('all')
+  // 输入框是草稿，提交后才写进 URL 触发检索。
+  const [query, setQuery] = useState(q)
   const [feedId, setFeedId] = useState(0)
-  const [page, setPage] = useState(1)
   const [result, setResult] = useState<SearchResult | null>(null)
   const [feeds, setFeeds] = useState<RSSFeed[]>([])
   const [history, setHistory] = useState<string[]>(() => loadHistory())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const [retry, setRetry] = useState(0)
 
-  const doSearch = useCallback(async (q: string, s: SearchScope, targetPage: number, feed: number) => {
+  // URL 里的 q 被外部改动（例如首页搜索框跳转过来）时同步输入框。
+  useEffect(() => { setQuery(q) }, [q])
+
+  // 检索条件变化即重新搜索；新请求取消旧请求，慢响应不会覆盖新结果。
+  useEffect(() => {
     const trimmed = q.trim()
-    if (!trimmed) return
+    abortRef.current?.abort()
+    if (!trimmed) { setResult(null); setLoading(false); return }
+    const controller = new AbortController()
+    abortRef.current = controller
     setLoading(true)
-    try {
-      const next = await searchApi.search({
-        q: trimmed,
-        scope: s,
-        page: targetPage,
-        perPage: perPage,
-        feedId: feed || undefined,
+    searchApi.search({ q: trimmed, scope, page, perPage, feedId: feedId || undefined }, { signal: controller.signal })
+      .then(next => {
+        setResult(next)
+        setError('')
+        setHistory(current => pushHistory(current, trimmed))
       })
-      setResult(next)
-      setError('')
-      setHistory(current => pushHistory(current, trimmed))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '搜索失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+      .catch(cause => { if (!isAbortError(cause)) setError(errorMessage(cause, '搜索失败')) })
+      .finally(() => { if (abortRef.current === controller) setLoading(false) })
+    return () => controller.abort()
+  }, [q, scope, page, feedId, retry])
 
   useEffect(() => {
     // 源列表只为了筛选下拉。失败不影响搜索本身。
     rssApi.listFeeds().then(value => setFeeds(value ?? [])).catch(() => undefined)
-  }, [])
-
-  useEffect(() => {
-    if (initialQuery) void doSearch(initialQuery, 'all', 1, 0)
-    // 只跑一次：URL 里的 q 是首次进入的初始值。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Ctrl/Cmd+K 与 / 聚焦搜索框。列表页里手不离键盘找搜索框是常态。
@@ -133,15 +134,14 @@ export function SearchPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  async function submit(event: FormEvent) {
-    event.preventDefault()
+  function commit(next: string) {
     setPage(1)
-    await doSearch(query, scope, 1, feedId)
+    setQ(next.trim())
   }
 
-  async function changePage(next: number) {
-    setPage(next)
-    await doSearch(query, scope, next, feedId)
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    commit(query)
   }
 
   const bookmarks = result?.bookmarks ?? []
@@ -149,17 +149,9 @@ export function SearchPage() {
   const hitCount = (result?.bookmarks_total ?? 0) + (result?.rss_entries_total ?? 0)
 
   return <div className="business-page">
-    <div className="page-toolbar">
-      <div>
-        <p>跨域检索</p>
-        <h2>数据搜索</h2>
-      </div>
-      <div className="toolbar-actions">
-        <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Ctrl/⌘ + K 聚焦</span>
-      </div>
+    <div className="page-toolbar page-toolbar--end">
+      <span className="toolbar-summary">Ctrl/⌘ + K 聚焦</span>
     </div>
-
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
 
     <form className="filter-bar" onSubmit={submit}>
       <input
@@ -171,34 +163,32 @@ export function SearchPage() {
         aria-label="搜索关键词"
         required
       />
-      <select value={scope} onChange={event => setScope(event.target.value as SearchScope)} aria-label="搜索范围">
+      <select value={scope} onChange={event => { setPage(1); setScopeParam(event.target.value) }} aria-label="搜索范围">
         {scopes.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
-      <select value={feedId} onChange={event => setFeedId(Number(event.target.value))} aria-label="限定订阅源">
+      <select value={feedId} onChange={event => { setPage(1); setFeedId(Number(event.target.value)) }} aria-label="限定订阅源">
         <option value={0}>所有订阅源</option>
         {feeds.map(feed => <option key={feed.id} value={feed.id}>{feed.title || feed.url}</option>)}
       </select>
-      <button className="button button--primary" disabled={loading}>{loading ? '搜索中...' : '搜索'}</button>
+      <button type="submit" className="button button--primary" disabled={loading}>{loading ? '搜索中…' : '搜索'}</button>
     </form>
 
-    {history.length > 0 && <div className="filter-bar" style={{ gap: 8, flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>最近：</span>
+    {history.length > 0 && <div className="filter-bar search-history">
+      <span className="toolbar-summary">最近：</span>
       {history.map(item => <button
         key={item}
         type="button"
         className="button button--quiet"
-        onClick={() => {
-          setQuery(item)
-          setPage(1)
-          void doSearch(item, scope, 1, feedId)
-        }}
+        onClick={() => { setQuery(item); commit(item) }}
       >
         {item}
       </button>)}
     </div>}
 
-    {loading
+    {loading && !result
       ? <PageState kind="loading" title="正在搜索" />
+      : error && !loading
+        ? <PageState kind="error" title="搜索失败" description={error} action={<button type="button" className="button button--primary" onClick={() => { setError(''); setRetry(value => value + 1) }}>重试</button>} />
       : !result
         ? <PageState
           kind="empty"
@@ -211,8 +201,8 @@ export function SearchPage() {
             title="没有匹配结果"
             description={`「${result.query}」没有命中。试试更短的关键词，或换个搜索范围。`}
           />
-          : <>
-            <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: '0 0 12px' }}>
+          : <div className={`search-results${loading ? ' is-stale' : ''}`} aria-busy={loading}>
+            <p className="toolbar-summary">
               「{result.query}」命中 {hitCount} 条 · 第 {result.page} 页 · 服务端耗时 {result.took_ms} ms
             </p>
 
@@ -249,8 +239,8 @@ export function SearchPage() {
               perPage={result.per_page || perPage}
               total={Math.max(result.bookmarks_total, result.rss_entries_total)}
               disabled={loading}
-              onChange={next => void changePage(next)}
+              onChange={setPage}
             />
-          </>}
+          </div>}
   </div>
 }

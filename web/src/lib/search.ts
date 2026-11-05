@@ -50,13 +50,13 @@ export interface SearchParams {
 }
 
 export const searchApi = {
-  search: (params: SearchParams) => {
+  search: (params: SearchParams, init?: RequestInit) => {
     const query = new URLSearchParams({ q: params.q })
     if (params.scope) query.set('scope', params.scope)
     if (params.page && params.page > 1) query.set('page', String(params.page))
     if (params.perPage) query.set('per_page', String(params.perPage))
     if (params.feedId) query.set('feed_id', String(params.feedId))
     if (params.groupId) query.set('group_id', String(params.groupId))
-    return api.get<SearchResult>(`/search?${query.toString()}`)
+    return api.get<SearchResult>(`/search?${query.toString()}`, init)
   },
 }
