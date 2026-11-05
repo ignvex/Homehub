@@ -30,7 +30,7 @@ export function useQueryState(key: string, defaultValue = ''): [string, (value: 
   const update = useCallback((next: string) => {
     setValue(next)
     const url = new URL(window.location.href)
-    if (next === defaultValue || next === '') url.searchParams.delete(key)
+    if (next === defaultValue) url.searchParams.delete(key)
     else url.searchParams.set(key, next)
     const target = `${url.pathname}${url.search}${url.hash}`
     if (target !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
