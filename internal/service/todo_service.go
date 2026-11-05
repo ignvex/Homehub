@@ -113,38 +113,71 @@ func (s *TodoService) CreateTodo(title, description string, priority int, dueDat
 // 更新
 // ============================================================
 
-// UpdateTodo 部分更新待办事项。
+// Optional 表达三态更新：Set=false 不改；Set=true 且 Value=nil 清空；否则写入 *Value。
 //
-// 所有字段均为可选：非零值/非 nil 的字段才会被更新。
-//   - title, description, status: 空字符串表示不更新
-//   - priority: nil 表示不更新
-//   - dueDate: nil 表示不更新
-func (s *TodoService) UpdateTodo(id uint64, title, description, status string, priority *int, dueDate *time.Time) error {
+// 与 RSS 的 GroupUpdate 同一个理由：只用指针分不清「没传」与「传了 null」。
+type Optional[T any] struct {
+	Set   bool
+	Value *T
+}
+
+// TodoUpdate 表达对一条待办的全部更新意图。nil / Set=false 表示不改。
+type TodoUpdate struct {
+	Title    *string
+	Status   *string
+	Priority *int
+	// Description 清空时写入空串（列是 text，旧数据也都是空串而非 NULL）。
+	Description Optional[string]
+	// DueDate 清空时写入 NULL。
+	DueDate Optional[time.Time]
+}
+
+// buildTodoUpdates 把更新意图翻译成 SET 子句。
+func buildTodoUpdates(u TodoUpdate) (map[string]interface{}, error) {
 	updates := map[string]interface{}{}
 
-	title = strings.TrimSpace(title)
-	if title != "" {
-		updates["title"] = title
-	}
-	if description != "" {
-		updates["description"] = description
-	}
-
-	status = strings.TrimSpace(status)
-	if status != "" {
-		if !model.IsValidTodoStatus(status) {
-			return fmt.Errorf("无效的待办状态: %s", status)
+	if u.Title != nil {
+		title := strings.TrimSpace(*u.Title)
+		// 标题是必填列：传空串视为「不改」，而不是写一个空标题。
+		if title != "" {
+			updates["title"] = model.TruncateRunes(title, 500)
 		}
-		updates["status"] = status
 	}
+	if u.Description.Set {
+		if u.Description.Value == nil {
+			updates["description"] = ""
+		} else {
+			updates["description"] = *u.Description.Value
+		}
+	}
+	if u.Status != nil {
+		status := strings.TrimSpace(*u.Status)
+		if status != "" {
+			if !model.IsValidTodoStatus(status) {
+				return nil, fmt.Errorf("%w: %s", ErrTodoBadStatus, status)
+			}
+			updates["status"] = status
+		}
+	}
+	if u.Priority != nil {
+		updates["priority"] = *u.Priority
+	}
+	if u.DueDate.Set {
+		if u.DueDate.Value == nil {
+			updates["due_date"] = nil
+		} else {
+			updates["due_date"] = *u.DueDate.Value
+		}
+	}
+	return updates, nil
+}
 
-	if priority != nil {
-		updates["priority"] = *priority
+// UpdateTodo 部分更新待办事项。
+func (s *TodoService) UpdateTodo(id uint64, u TodoUpdate) error {
+	updates, err := buildTodoUpdates(u)
+	if err != nil {
+		return err
 	}
-	if dueDate != nil {
-		updates["due_date"] = *dueDate
-	}
-
 	if len(updates) == 0 {
 		return nil
 	}
@@ -194,4 +227,8 @@ func (s *TodoService) ReorderTodos(ids []uint64) error {
 // 业务错误
 // ============================================================
 
-var ErrTodoNotFound = errors.New("待办事项不存在")
+var (
+	ErrTodoNotFound = errors.New("待办事项不存在")
+	// ErrTodoBadStatus 表示状态值不在白名单内，handler 据此回 400。
+	ErrTodoBadStatus = errors.New("无效的待办状态")
+)

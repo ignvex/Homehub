@@ -1,13 +1,32 @@
 package handler
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/model"
+	"github.com/ignvex/HomeHub/internal/service"
 )
+
+// respondTodoError 把 service 错误映射成状态码。
+//
+// 「不存在」曾一律报 500：前端看到的是服务端故障，而不是这条已被删除。
+func respondTodoError(c *gin.Context, err error, fallback string) {
+	switch {
+	case errors.Is(err, service.ErrTodoNotFound):
+		Fail(c, http.StatusNotFound, CodeNotFound, "待办不存在")
+	case errors.Is(err, service.ErrTodoBadStatus):
+		FailBadRequest(c, err.Error())
+	case errors.Is(err, service.ErrForbidden):
+		Fail(c, http.StatusForbidden, CodeForbidden, "只能修改自己创建的待办")
+	default:
+		FailInternal(c, fallback)
+	}
+}
 
 // ============================================================
 // TODO 待办事项 API
@@ -22,12 +41,61 @@ type createTodoRequest struct {
 }
 
 // updateTodoRequest 更新 TODO 请求体（全部可选）。
+//
+// description 与 due_date 是三态：省略=不改；null 或空串=清空；值=写入。
 type updateTodoRequest struct {
-	Title       *string    `json:"title"`
-	Description *string    `json:"description"`
-	Status      *string    `json:"status"`
-	Priority    *int       `json:"priority"`
-	DueDate     *time.Time `json:"due_date"`
+	Title       *string           `json:"title"`
+	Description optionalString    `json:"description" swaggertype:"string" extensions:"x-nullable"`
+	Status      *string           `json:"status"`
+	Priority    *int              `json:"priority"`
+	DueDate     optionalTimestamp `json:"due_date" swaggertype:"string" format:"date-time" extensions:"x-nullable"`
+}
+
+// optionalString 区分字段缺失、显式 null / 空串（清空）与具体值。
+// 与 optionalGroupID 同一个思路：UnmarshalJSON 只在字段出现时被调用。
+type optionalString struct {
+	Set   bool
+	Value *string
+}
+
+// UnmarshalJSON 记录字段出现过；null 与空串都表示清空。
+func (o *optionalString) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	if v == "" {
+		o.Value = nil
+		return nil
+	}
+	o.Value = &v
+	return nil
+}
+
+// optionalTimestamp 区分字段缺失、显式 null / 空串（清空）与 RFC3339 时间。
+type optionalTimestamp struct {
+	Set   bool
+	Value *time.Time
+}
+
+// UnmarshalJSON 记录字段出现过；null 与空串都表示清空。
+func (o *optionalTimestamp) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" || string(data) == `""` {
+		o.Value = nil
+		return nil
+	}
+	var v time.Time
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
 }
 
 // updateTodoStatusRequest 快捷修改状态请求体。
@@ -118,7 +186,7 @@ func TodoCreate(c *gin.Context) {
 // TodoUpdate 更新 TODO。
 //
 //	@Summary		更新待办
-//	@Description	更新待办事项的标题、描述、状态、优先级或截止日期
+//	@Description	更新待办事项的标题、描述、状态、优先级或截止日期。description / due_date 省略=不改，null 或空串=清空
 //	@Tags			待办事项
 //	@Accept			json
 //	@Produce		json
@@ -149,21 +217,14 @@ func TodoUpdate(c *gin.Context) {
 		}
 	}
 
-	title := ""
-	if req.Title != nil {
-		title = *req.Title
-	}
-	desc := ""
-	if req.Description != nil {
-		desc = *req.Description
-	}
-	status := ""
-	if req.Status != nil {
-		status = *req.Status
-	}
-
-	if err := svc.Todo.UpdateTodo(id, title, desc, status, req.Priority, req.DueDate); err != nil {
-		FailInternal(c, "更新待办失败")
+	if err := svc.Todo.UpdateTodo(id, service.TodoUpdate{
+		Title:       req.Title,
+		Status:      req.Status,
+		Priority:    req.Priority,
+		Description: service.Optional[string]{Set: req.Description.Set, Value: req.Description.Value},
+		DueDate:     service.Optional[time.Time]{Set: req.DueDate.Set, Value: req.DueDate.Value},
+	}); err != nil {
+		respondTodoError(c, err, "更新待办失败")
 		return
 	}
 	Success(c, nil)
@@ -225,8 +286,8 @@ func TodoUpdateStatus(c *gin.Context) {
 		return
 	}
 
-	if err := svc.Todo.UpdateTodo(id, "", "", req.Status, nil, nil); err != nil {
-		FailInternal(c, "更新状态失败")
+	if err := svc.Todo.UpdateTodo(id, service.TodoUpdate{Status: &req.Status}); err != nil {
+		respondTodoError(c, err, "更新状态失败")
 		return
 	}
 	Success(c, nil)
