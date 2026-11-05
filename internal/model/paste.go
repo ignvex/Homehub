@@ -25,9 +25,11 @@ func (Paste) TableName() string {
 	return "pastes"
 }
 
-// CreatePastesTable 创建 pastes 表（独立于 AutoMigrate）。
+// CreatePastesTable 创建 pastes 表与 expires_at 索引（独立于 AutoMigrate）。
+//
+// 列表与过期清理都按 expires_at 过滤，没有索引时每次清理都是全表扫描。
 func CreatePastesTable(db *gorm.DB) error {
-	return db.Exec(`
+	if err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS pastes (
 			id BIGSERIAL PRIMARY KEY,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -38,7 +40,10 @@ func CreatePastesTable(db *gorm.DB) error {
 			delete_token VARCHAR(64) NOT NULL,
 			expires_at TIMESTAMPTZ
 		)
-	`).Error
+	`).Error; err != nil {
+		return err
+	}
+	return db.Exec(`CREATE INDEX IF NOT EXISTS idx_pastes_expires_at ON pastes (expires_at)`).Error
 }
 
 // NanoID 生成指定长度的随机字母数字 ID。
