@@ -74,3 +74,20 @@ func TestEntryContentReturnsSanitizedHTML(t *testing.T) {
 		t.Fatalf("响应内容不符: %+v", body.Data)
 	}
 }
+
+// TestListEntriesBadMagnetReturns400 确认非法磁力筛选是 400 而不是 500。
+func TestListEntriesBadMagnetReturns400(t *testing.T) {
+	db, _, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+	swapServices(t, &service.Services{RSS: service.NewRSSService(db)})
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/rss/entries?magnet=nope", nil)
+	RSSListEntries(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，got %d: %s", w.Code, w.Body.String())
+	}
+}

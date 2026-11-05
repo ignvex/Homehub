@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -136,5 +137,20 @@ func TestListEntriesCapsPerPage(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("SQL 期望未满足: %v", err)
+	}
+}
+
+// TestListEntriesBadMagnetIsSentinel 锁住「非法筛选条件」的判定方式。
+//
+// handler 曾靠匹配错误文案决定回 400 还是 500：改一个字就会把输入
+// 错误报成服务端故障。这里要求它能被 errors.Is 识别。
+func TestListEntriesBadMagnetIsSentinel(t *testing.T) {
+	db, _, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	svc := &RSSService{db: db}
+	_, _, err := svc.ListEntries(EntryFilter{Magnet: "nope"})
+	if !errors.Is(err, ErrRSSBadMagnetFilter) {
+		t.Fatalf("期望 ErrRSSBadMagnetFilter，got %v", err)
 	}
 }

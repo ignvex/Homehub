@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -382,7 +381,7 @@ func RSSListEntries(c *gin.Context) {
 	})
 	if err != nil {
 		// 非法筛选条件是客户端问题，不该报 500。
-		if strings.Contains(err.Error(), "无效的磁力筛选条件") {
+		if errors.Is(err, service.ErrRSSBadMagnetFilter) {
 			FailBadRequest(c, err.Error())
 			return
 		}

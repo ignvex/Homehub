@@ -31,6 +31,9 @@ var (
 	// 后台调度、手动抓取、FetchAll 是三条独立入口；并发抓同一个源只会
 	// 让两条 upsert 争同一批行，结果仍只有一份。
 	ErrRSSFeedBusy = errors.New("该订阅源正在抓取中")
+	// ErrRSSBadMagnetFilter 表示条目列表的 magnet 筛选值不在白名单内。
+	// 属于调用方输入错误，handler 据此回 400。
+	ErrRSSBadMagnetFilter = errors.New("无效的磁力筛选条件")
 	// ErrRSSBatchEmpty 表示批量操作没选中任何订阅源。
 	//
 	// 单独一个错误而不是静默返回 0：批量更新拼的是 `WHERE id IN ?`，
@@ -670,7 +673,7 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 	// 磁力链接维度。condition 为 nil 时表示参数值非法 —— 调用方应先校验，
 	// 这里不再兜底成“忽略筛选”，否则非法值会静默返回全部数据。
 	if cond, ok := magnetCondition(f.Magnet); !ok {
-		return nil, 0, fmt.Errorf("无效的磁力筛选条件 %q", f.Magnet)
+		return nil, 0, fmt.Errorf("%w %q", ErrRSSBadMagnetFilter, f.Magnet)
 	} else if cond != "" {
 		baseQuery = baseQuery.Where(cond)
 	}
