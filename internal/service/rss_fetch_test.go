@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/ignvex/HomeHub/internal/model"
+	"github.com/ignvex/HomeHub/internal/testutil"
 	"github.com/mmcdole/gofeed"
 )
 
@@ -239,5 +243,82 @@ func TestSanitizeContentKeepsRelativeImages(t *testing.T) {
 	}
 	if strings.Contains(got, srv.URL) {
 		t.Errorf("下载失败的外链图片应移除，实际: %s", got)
+	}
+}
+
+// blockingFetcher 在 release 关闭前一直阻塞，用来制造「正在抓取」的窗口。
+type blockingFetcher struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingFetcher) Fetch(ctx context.Context, url string) (*gofeed.Feed, error) {
+	close(f.entered)
+	<-f.release
+	return nil, fmt.Errorf("测试结束")
+}
+
+// TestFetchFeedRejectsConcurrentFetchOfSameFeed 防的是同一个源被同时抓两次。
+//
+// 后台调度、手动「抓取」按钮、FetchAll 是三条独立入口。同一个源并发
+// 抓取会让两条 upsert 争同一批行（死锁或重复图片下载），而结果只会
+// 有一份。第二个调用必须立刻得到明确的忙碌错误，而不是排队再抓一遍。
+func TestFetchFeedRejectsConcurrentFetchOfSameFeed(t *testing.T) {
+	db, mock, cleanup := testutil.NewUnorderedMockDB(t)
+	defer cleanup()
+
+	now := time.Now()
+	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
+		WillReturnRows(sqlmock.NewRows(scheduleFeedColumns()).
+			AddRow(1, now, now, nil, "源", "https://a.example/f", "", "", "", "",
+				3600, model.FetchByLocal, true, now, "", nil))
+	mock.ExpectExec(`UPDATE "rss_feeds"`).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	f := &blockingFetcher{entered: make(chan struct{}), release: make(chan struct{})}
+	svc := &RSSService{db: db, fetcher: f}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- svc.FetchFeed(context.Background(), 1) }()
+	<-f.entered
+
+	if err := svc.FetchFeed(context.Background(), 1); !errors.Is(err, ErrRSSFeedBusy) {
+		t.Fatalf("同一源正在抓取时第二次调用应返回 ErrRSSFeedBusy，got %v", err)
+	}
+
+	close(f.release)
+	<-firstDone
+
+	// 第一次结束后必须释放占用，否则这个源永远抓不了。
+	if svc.tryBeginFetch(1) == false {
+		t.Fatal("抓取结束后应释放占用")
+	}
+	svc.endFetch(1)
+}
+
+// TestFetchAllSkipsBusyFeedWithoutReportingFailure 确认 FetchAll 把忙碌当成跳过。
+//
+// 手动抓取正在进行时后台恰好到期：这不是失败，不该让本轮被记成
+// 「部分失败」并刷一条警告。
+func TestFetchAllSkipsBusyFeedWithoutReportingFailure(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	now := time.Now()
+	mock.ExpectQuery(`SELECT \* FROM "rss_feeds"`).
+		WillReturnRows(sqlmock.NewRows(scheduleFeedColumns()).
+			AddRow(1, now, now, nil, "源", "https://a.example/f", "", "", "", "",
+				3600, model.FetchByLocal, true, now.Add(-2*time.Hour), "", nil))
+
+	svc := &RSSService{db: db, fetcher: &fakeFetcher{}}
+	if !svc.tryBeginFetch(1) {
+		t.Fatal("占用失败")
+	}
+	defer svc.endFetch(1)
+
+	if err := svc.FetchAll(context.Background()); err != nil {
+		t.Fatalf("忙碌的源应被静默跳过，got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("不应为忙碌的源发出任何查询: %v", err)
 	}
 }

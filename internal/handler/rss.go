@@ -293,6 +293,8 @@ func RSSDeleteFeed(c *gin.Context) {
 //	@Param			id	path		int		true	"订阅源 ID"
 //	@Success		200	{object}	Response	"抓取成功"
 //	@Failure		400	{object}	Response	"无效的订阅源 ID"
+//	@Failure		404	{object}	Response	"订阅源不存在"
+//	@Failure		409	{object}	Response	"该订阅源正在抓取中"
 //	@Failure		500	{object}	Response	"抓取失败"
 //	@Router			/rss/feeds/{id}/fetch [post]
 func RSSFetchFeed(c *gin.Context) {
@@ -304,7 +306,14 @@ func RSSFetchFeed(c *gin.Context) {
 
 	// 用请求 ctx：客户端断开时中止抓取，避免无谓占用并发槽。
 	if err := svc.RSS.FetchFeed(c.Request.Context(), id); err != nil {
-		FailInternal(c, "抓取失败")
+		switch {
+		case errors.Is(err, service.ErrRSSFeedBusy):
+			Fail(c, http.StatusConflict, CodeBadRequest, "该订阅源正在抓取中，请稍后再试")
+		case errors.Is(err, service.ErrRSSFeedNotFound):
+			Fail(c, http.StatusNotFound, CodeNotFound, "订阅源不存在")
+		default:
+			FailInternal(c, "抓取失败")
+		}
 		return
 	}
 	Success(c, nil)

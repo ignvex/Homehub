@@ -26,6 +26,11 @@ var (
 	ErrRSSFeedNotFound  = errors.New("订阅源不存在")
 	ErrRSSFeedExists    = errors.New("订阅源已存在")
 	ErrRSSEntryNotFound = errors.New("条目不存在")
+	// ErrRSSFeedBusy 表示同一个订阅源已有抓取在进行。
+	//
+	// 后台调度、手动抓取、FetchAll 是三条独立入口；并发抓同一个源只会
+	// 让两条 upsert 争同一批行，结果仍只有一份。
+	ErrRSSFeedBusy = errors.New("该订阅源正在抓取中")
 	// ErrRSSBatchEmpty 表示批量操作没选中任何订阅源。
 	//
 	// 单独一个错误而不是静默返回 0：批量更新拼的是 `WHERE id IN ?`，
@@ -53,6 +58,32 @@ type RSSService struct {
 	// pikpak 是磁力链接提交的客户端；nil 表示未启用。
 	// 只在 SubmitMagnetToPikPak 里用，不影响抓取路径。
 	pikpak PikPakClient
+
+	// fetching 记录正在抓取的订阅源，保证同一个源同时只有一次抓取。
+	// 懒初始化：测试里常直接用 &RSSService{db: db} 构造。
+	fetchingMu sync.Mutex
+	fetching   map[uint64]struct{}
+}
+
+// tryBeginFetch 占用订阅源的抓取权；已被占用时返回 false。
+func (s *RSSService) tryBeginFetch(id uint64) bool {
+	s.fetchingMu.Lock()
+	defer s.fetchingMu.Unlock()
+	if s.fetching == nil {
+		s.fetching = make(map[uint64]struct{})
+	}
+	if _, busy := s.fetching[id]; busy {
+		return false
+	}
+	s.fetching[id] = struct{}{}
+	return true
+}
+
+// endFetch 释放 tryBeginFetch 占用的抓取权。
+func (s *RSSService) endFetch(id uint64) {
+	s.fetchingMu.Lock()
+	delete(s.fetching, id)
+	s.fetchingMu.Unlock()
 }
 
 // NewRSSService 创建 RSSService 实例。
@@ -759,7 +790,15 @@ func (s *RSSService) ListEntries(f EntryFilter) ([]RSSEntryView, int64, error) {
 //  4. 插入条目（ON CONFLICT ON link DO NOTHING）
 //  5. 按 retention_count 清理超量旧条目
 //  6. 更新 LastFetch 和 ErrorMsg
+//
+// 同一个源已有抓取在进行时立即返回 ErrRSSFeedBusy。
 func (s *RSSService) FetchFeed(ctx context.Context, id uint64) error {
+	// 同一个源已在抓时直接拒绝，不排队：排队等于紧接着再抓一遍。
+	if !s.tryBeginFetch(id) {
+		return ErrRSSFeedBusy
+	}
+	defer s.endFetch(id)
+
 	var feed model.RSSFeed
 	if err := s.db.First(&feed, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1043,7 +1082,13 @@ func (s *RSSService) FetchAll(ctx context.Context) error {
 			fctx, cancel := context.WithTimeout(ctx, budget)
 			defer cancel()
 
-			if err := s.FetchFeed(fctx, feedID); err != nil {
+			err := s.FetchFeed(fctx, feedID)
+			if errors.Is(err, ErrRSSFeedBusy) {
+				// 另一条入口正在抓这个源：本轮跳过，不算失败。
+				logger.Debug("[rss] 订阅源正在抓取，本轮跳过", "feed_id", feedID)
+				return
+			}
+			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("feed %d: %w", feedID, err))
 				mu.Unlock()
