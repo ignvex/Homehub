@@ -1,5 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react'
 import { ConfirmDialog, Notice, PageState, StatusBadge } from '@/components/WorkspaceUI'
+import { errorMessage, useNotice } from '@/hooks/useNotice'
+import { copyText } from '@/lib/clipboard'
+import { useLeaveGuard } from '@/lib/navigation'
 import {
   buildPayload,
   emptySecrets,
@@ -22,6 +25,9 @@ import { extensionHubApi, type ExtensionHubStatus, type KeyInfo } from '@/lib/ex
 // 后端对未提供的顶层段完全不动（指针为 nil），所以这里每个
 // 面板只提交自己那一段。
 // ============================================================
+
+/** 设置页上实际渲染的模块（bookmark 段目前没有面板）。 */
+const allSections: SettingsSection[] = ['connection', 'auth', 'log', 'appearance', 'gravatar', 'rss', 'extension']
 
 /** sectionFields 取出某个模块对应的配置片段。 */
 function sectionFields(cfg: SafeConfig, section: SettingsSection): Partial<SafeConfig> {
@@ -66,11 +72,15 @@ export function SettingsPage() {
   const [draft, setDraft] = useState<SafeConfig | null>(null)
   const [jsonText, setJsonText] = useState('')
   const [secrets, setSecrets] = useState<Secrets>(emptySecrets)
+  // jsonBase 是进入 JSON 模式时生成的文本，用来判断 JSON 草稿有没有改动。
+  const [jsonBase, setJsonBase] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [saving, setSaving] = useState<SettingsSection | 'json' | ''>('')
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
+  const notice = useNotice()
   const [confirmingJSON, setConfirmingJSON] = useState(false)
+  const [jsonError, setJsonError] = useState('')
+  const [keyDeleteError, setKeyDeleteError] = useState('')
   // 对接状态来自后端探测（不读数据库），用来把「卡在哪一步」直接显示在面板上。
   const [hubStatus, setHubStatus] = useState<ExtensionHubStatus | null>(null)
   const [hubChecking, setHubChecking] = useState(false)
@@ -79,16 +89,18 @@ export function SettingsPage() {
   const [keyBusy, setKeyBusy] = useState(false)
   const [confirmingKeyDelete, setConfirmingKeyDelete] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true)
+    setLoadError('')
     settingsApi.get()
       .then(value => {
         setConfig(value)
         setDraft(structuredClone(value))
-        setJsonText(JSON.stringify(value, null, 2))
       })
-      .catch(cause => setError(cause instanceof Error ? cause.message : '无法读取配置'))
+      .catch(cause => setLoadError(errorMessage(cause, '无法读取配置')))
       .finally(() => setLoading(false))
   }, [])
+  useEffect(load, [load])
 
   function patch(updater: (current: SafeConfig) => SafeConfig) {
     setDraft(current => (current ? updater(current) : current))
@@ -121,11 +133,10 @@ export function SettingsPage() {
       const info = await extensionHubApi.setKey(keyDraft)
       setKeyInfo(info)
       setKeyDraft('')
-      setMessage('私钥已写入 config.json（单行 base64）')
-      setError('')
+      notice.success('私钥已写入 config.json（单行 base64）')
       await probeHub()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '保存私钥失败')
+      notice.error(errorMessage(cause, '保存私钥失败'))
     } finally {
       setKeyBusy(false)
     }
@@ -133,16 +144,15 @@ export function SettingsPage() {
 
   async function deleteKey() {
     setKeyBusy(true)
+    setKeyDeleteError('')
     try {
       const result = await extensionHubApi.deleteKey()
-      setMessage(result.deleted ? '已移除数据库里的私钥' : '数据库里本来就没有私钥')
-      setError('')
+      notice.success(result.deleted ? '已移除 config.json 里的私钥' : 'config.json 里本来就没有私钥')
       setConfirmingKeyDelete(false)
       await loadKeyInfo()
       await probeHub()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '删除私钥失败')
-      setConfirmingKeyDelete(false)
+      setKeyDeleteError(errorMessage(cause, '删除私钥失败'))
     } finally {
       setKeyBusy(false)
     }
@@ -150,7 +160,8 @@ export function SettingsPage() {
 
   useEffect(() => { void probeHub(); void loadKeyInfo() }, [])
 
-  async function saveSection(section: SettingsSection) {
+  async function saveSection(section: SettingsSection, event?: FormEvent) {
+    event?.preventDefault()
     if (!draft) return
     setSaving(section)
     try {
@@ -161,10 +172,9 @@ export function SettingsPage() {
       setConfig(current => (current ? { ...current, ...fresh } : refreshed))
       setDraft(current => (current ? { ...current, ...fresh } : refreshed))
       setSecrets(current => clearSecrets(section, current))
-      setMessage(`${sectionLabels[section]} 已保存并热重载`)
-      setError('')
+      notice.success(`${sectionLabels[section]} 已保存并热重载`)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '保存失败')
+      notice.error(errorMessage(cause, '保存失败'))
     } finally {
       setSaving('')
     }
@@ -172,73 +182,88 @@ export function SettingsPage() {
 
   async function saveJSON() {
     setSaving('json')
+    setJsonError('')
     try {
-      const parsed = JSON.parse(jsonText) as SafeConfig
+      const parsed = parseConfigJSON(jsonText)
       await settingsApi.update(parsed as unknown as Record<string, unknown>)
       const refreshed = await settingsApi.get()
       setConfig(refreshed)
       setDraft(structuredClone(refreshed))
-      setJsonText(JSON.stringify(refreshed, null, 2))
-      setMessage('配置已保存并热触发重载')
-      setError('')
+      const text = JSON.stringify(refreshed, null, 2)
+      setJsonText(text)
+      setJsonBase(text)
+      notice.success('配置已保存并热触发重载')
       setConfirmingJSON(false)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '保存失败：JSON 格式错误或字段无效')
-      setConfirmingJSON(false)
+      // 确认弹窗处于 top layer，错误画在弹窗里，用户可以关掉弹窗继续改 JSON。
+      setJsonError(errorMessage(cause, '保存失败：JSON 格式错误或字段无效'))
     } finally {
       setSaving('')
     }
   }
 
-  if (loading) return <PageState kind="loading" title="正在读取系统配置" />
-  if (!draft || !config) return <PageState kind="error" title="无法读取系统配置" description={error} />
-
   const dirty = (section: SettingsSection) =>
-    sectionSnapshot(draft, section) !== sectionSnapshot(config, section) || hasPendingSecret(section, secrets)
+    !!draft && !!config && (sectionSnapshot(draft, section) !== sectionSnapshot(config, section) || hasPendingSecret(section, secrets))
+  const jsonDirty = mode === 'json' && jsonText !== jsonBase
+  const anyDirty = jsonDirty || keyDraft.trim() !== '' || allSections.some(dirty)
+  // 有未保存内容时：客户端导航前确认，刷新或关闭标签页时由浏览器提示。
+  useLeaveGuard(anyDirty, '设置有未保存的更改，确定要离开吗？')
+
+  /** 切换编辑模式：始终以当前草稿为准，未保存的编辑不会丢失。 */
+  function switchMode(next: 'form' | 'json') {
+    if (next === mode || !draft) return
+    if (next === 'json') {
+      const text = JSON.stringify(draft, null, 2)
+      setJsonText(text)
+      setJsonBase(text)
+      setMode('json')
+      return
+    }
+    if (jsonText === jsonBase) { setMode('form'); return }
+    try {
+      const parsed = parseConfigJSON(jsonText)
+      setDraft(current => (current ? { ...current, ...parsed } : current))
+      setMode('form')
+    } catch (cause) {
+      if (window.confirm(`JSON 无法解析（${errorMessage(cause, '格式错误')}）。放弃 JSON 中的修改并回到表单吗？`)) setMode('form')
+    }
+  }
+
+  function confirmDiscard(action: () => void) {
+    if (window.confirm('放弃这里未保存的更改？')) action()
+  }
+
+  if (loading && !config) return <PageState kind="loading" title="正在读取系统配置" />
+  if (!draft || !config) return <PageState kind="error" title="无法读取系统配置" description={loadError} action={<button type="button" className="button button--primary" onClick={load}>重试</button>} />
 
   const proxyNames = draft.proxy.entries.map(item => item.name)
 
   return <div className="business-page">
-    <div className="page-toolbar">
-      <div>
-        <p>系统配置</p>
-        <h2>设置</h2>
-      </div>
-      <div className="toolbar-actions">
-        <button className={`button ${mode === 'form' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('form')}>表单编辑</button>
-        <button className={`button ${mode === 'json' ? 'button--primary' : 'button--quiet'}`} onClick={() => setMode('json')}>JSON 编辑</button>
+    <div className="page-toolbar page-toolbar--end">
+      <div className="toolbar-actions" role="group" aria-label="编辑方式">
+        <button type="button" aria-pressed={mode === 'form'} className={`button ${mode === 'form' ? 'button--primary' : 'button--quiet'}`} onClick={() => switchMode('form')}>表单编辑</button>
+        <button type="button" aria-pressed={mode === 'json'} className={`button ${mode === 'json' ? 'button--primary' : 'button--quiet'}`} onClick={() => switchMode('json')}>JSON 编辑</button>
       </div>
     </div>
 
-    <Notice message={error} tone="error" onDismiss={() => setError('')} />
-    <Notice message={message} onDismiss={() => setMessage('')} />
+    {notice.element}
 
     {mode === 'json'
       ? <Section title="直接编辑 JSON" description="修改配置文件的 JSON 源，保存后立即热重载。格式错误会导致保存失败，不会写入。">
         <Notice message="秘密字段不会从服务器返回；这里看到的是脱敏后的配置，直接保存会保留原有密钥。" tone="info" />
-        <textarea
-          className="config-editor"
-          value={jsonText}
-          onChange={event => setJsonText(event.target.value)}
-          spellCheck={false}
-          style={{
-            minHeight: 480,
-            fontFamily: 'ui-monospace,monospace',
-            fontSize: 13,
-            lineHeight: 1.5,
-            width: '100%',
-            padding: 16,
-            border: '1px solid var(--color-border)',
-            borderRadius: 8,
-            background: 'var(--color-input-bg)',
-            color: 'var(--color-text)',
-            resize: 'vertical',
-          }}
-        />
+        <label className="form-field settings-json">
+          <span className="visually-hidden">配置 JSON</span>
+          <textarea
+            className="code-textarea code-textarea--tall"
+            value={jsonText}
+            onChange={event => setJsonText(event.target.value)}
+            spellCheck={false}
+          />
+        </label>
         <div className="form-actions">
-          <button className="button button--quiet" onClick={() => { setJsonText(JSON.stringify(config, null, 2)); setError('') }}>放弃更改</button>
-          <button className="button button--primary" disabled={saving === 'json'} onClick={() => setConfirmingJSON(true)}>
-            {saving === 'json' ? '保存中...' : '保存 JSON'}
+          <button type="button" className="button button--quiet" disabled={!jsonDirty} onClick={() => confirmDiscard(() => setJsonText(jsonBase))}>放弃更改</button>
+          <button type="button" className="button button--primary" disabled={saving === 'json'} onClick={() => { setJsonError(''); setConfirmingJSON(true) }}>
+            {saving === 'json' ? '保存中…' : '保存 JSON'}
           </button>
         </div>
       </Section>
@@ -250,21 +275,21 @@ export function SettingsPage() {
           title="服务与数据库"
           dirty={dirty('connection')}
           saving={saving === 'connection'}
-          onSave={() => void saveSection('connection')}
-          onReset={() => { patch(current => ({ ...current, ...sectionFields(config, 'connection') })); setSecrets(current => clearSecrets('connection', current)) }}
+          onSave={event => void saveSection('connection', event)}
+          onReset={() => confirmDiscard(() => { patch(current => ({ ...current, ...sectionFields(config, 'connection') })); setSecrets(current => clearSecrets('connection', current)) })}
         >
           <div className="form-grid form-grid--three">
             <Field label="服务主机">
               <input value={draft.server.host} onChange={event => patch(current => ({ ...current, server: { ...current.server, host: event.target.value } }))} />
             </Field>
             <Field label="服务端口">
-              <input type="number" min="1" max="65535" value={draft.server.port} onChange={event => patch(current => ({ ...current, server: { ...current.server, port: Number(event.target.value) } }))} />
+              <NumberInput min="1" max="65535" value={draft.server.port} onChange={value => patch(current => ({ ...current, server: { ...current.server, port: value } }))} />
             </Field>
             <Field label="数据库主机">
               <input value={draft.database.host} onChange={event => patch(current => ({ ...current, database: { ...current.database, host: event.target.value } }))} />
             </Field>
             <Field label="数据库端口">
-              <input type="number" min="1" max="65535" value={draft.database.port} onChange={event => patch(current => ({ ...current, database: { ...current.database, port: Number(event.target.value) } }))} />
+              <NumberInput min="1" max="65535" value={draft.database.port} onChange={value => patch(current => ({ ...current, database: { ...current.database, port: value } }))} />
             </Field>
             <Field label="数据库用户">
               <input value={draft.database.user} onChange={event => patch(current => ({ ...current, database: { ...current.database, user: event.target.value } }))} />
@@ -293,8 +318,8 @@ export function SettingsPage() {
           description="登录用户名与密码。会话密钥改动会让所有现有会话失效。"
           dirty={dirty('auth')}
           saving={saving === 'auth'}
-          onSave={() => void saveSection('auth')}
-          onReset={() => { patch(current => ({ ...current, auth: config.auth })); setSecrets(current => clearSecrets('auth', current)) }}
+          onSave={event => void saveSection('auth', event)}
+          onReset={() => confirmDiscard(() => { patch(current => ({ ...current, auth: config.auth })); setSecrets(current => clearSecrets('auth', current)) })}
         >
           <div className="form-grid form-grid--three">
             <Field label="初始用户名">
@@ -317,8 +342,8 @@ export function SettingsPage() {
           description="日志级别与输出格式，改动即时生效。"
           dirty={dirty('log')}
           saving={saving === 'log'}
-          onSave={() => void saveSection('log')}
-          onReset={() => patch(current => ({ ...current, log: config.log }))}
+          onSave={event => void saveSection('log', event)}
+          onReset={() => confirmDiscard(() => patch(current => ({ ...current, log: config.log })))}
         >
           <div className="form-grid form-grid--three">
             <Field label="日志级别">
@@ -348,8 +373,8 @@ export function SettingsPage() {
           description="控制首页背景的显示模式、轮播间隔和过渡效果。"
           dirty={dirty('appearance')}
           saving={saving === 'appearance'}
-          onSave={() => void saveSection('appearance')}
-          onReset={() => patch(current => ({ ...current, background: config.background }))}
+          onSave={event => void saveSection('appearance', event)}
+          onReset={() => confirmDiscard(() => patch(current => ({ ...current, background: config.background })))}
         >
           <div className="form-grid form-grid--three">
             <Field label="背景模式">
@@ -360,7 +385,7 @@ export function SettingsPage() {
               </select>
             </Field>
             <Field label="轮播间隔（秒）">
-              <input type="number" min="1" value={draft.background.interval_seconds} onChange={event => patch(current => ({ ...current, background: { ...current.background, interval_seconds: Number(event.target.value) } }))} />
+              <NumberInput min="1" value={draft.background.interval_seconds} onChange={value => patch(current => ({ ...current, background: { ...current.background, interval_seconds: value } }))} />
             </Field>
             <Field label="过渡效果">
               <select value={draft.background.transition_effect} onChange={event => patch(current => ({ ...current, background: { ...current.background, transition_effect: event.target.value as 'fade' | 'slide' } }))}>
@@ -369,7 +394,7 @@ export function SettingsPage() {
               </select>
             </Field>
             <Field label="过渡时长（毫秒）">
-              <input type="number" min="0" max="10000" step="100" value={draft.background.fade_duration_ms} onChange={event => patch(current => ({ ...current, background: { ...current.background, fade_duration_ms: Number(event.target.value) } }))} />
+              <NumberInput min="0" max="10000" step="100" value={draft.background.fade_duration_ms} onChange={value => patch(current => ({ ...current, background: { ...current.background, fade_duration_ms: value } }))} />
             </Field>
           </div>
         </Section>
@@ -380,8 +405,8 @@ export function SettingsPage() {
           description="头像直接向 Gravatar 取（需要代理时用下面的代理链），结果缓存到本地。"
           dirty={dirty('gravatar')}
           saving={saving === 'gravatar'}
-          onSave={() => void saveSection('gravatar')}
-          onReset={() => { patch(current => ({ ...current, gravatar: config.gravatar })); setSecrets(current => clearSecrets('gravatar', current)) }}
+          onSave={event => void saveSection('gravatar', event)}
+          onReset={() => confirmDiscard(() => { patch(current => ({ ...current, gravatar: config.gravatar })); setSecrets(current => clearSecrets('gravatar', current)) })}
         >
           <div className="form-grid form-grid--three">
             <label className="choice-tile">
@@ -399,7 +424,7 @@ export function SettingsPage() {
               </select>
             </Field>
             <Field label="默认尺寸（像素）">
-              <input type="number" min="16" max="512" value={draft.gravatar.default_size} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, default_size: Number(event.target.value) } }))} />
+              <NumberInput min="16" max="512" value={draft.gravatar.default_size} onChange={value => patch(current => ({ ...current, gravatar: { ...current.gravatar, default_size: value } }))} />
             </Field>
             <Field label="内容评级">
               <select value={draft.gravatar.rating} onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, rating: event.target.value } }))}>
@@ -417,8 +442,8 @@ export function SettingsPage() {
               </small>
             </Field>
             <Field label="请求超时（秒）">
-              <input type="number" min="1" max="120" value={draft.gravatar.timeout_seconds}
-                onChange={event => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: Number(event.target.value) } }))} />
+              <NumberInput min="1" max="120" value={draft.gravatar.timeout_seconds}
+                onChange={value => patch(current => ({ ...current, gravatar: { ...current.gravatar, timeout_seconds: value } }))} />
             </Field>
           </div>
         </Section>
@@ -429,8 +454,8 @@ export function SettingsPage() {
           description="订阅由本机按间隔抓取，条目与图片都缓存在这里。要让 Extension 抓取，请用它自己的界面或在「订阅镜像」里推送。"
           dirty={dirty('rss')}
           saving={saving === 'rss'}
-          onSave={() => void saveSection('rss')}
-          onReset={() => { patch(current => ({ ...current, rss: config.rss })); setSecrets(current => clearSecrets('rss', current)) }}
+          onSave={event => void saveSection('rss', event)}
+          onReset={() => confirmDiscard(() => { patch(current => ({ ...current, rss: config.rss })); setSecrets(current => clearSecrets('rss', current)) })}
         >
           <div className="form-grid form-grid--three">
             <label className="choice-tile">
@@ -439,21 +464,21 @@ export function SettingsPage() {
               <span>无限存储（不自动删旧条目）</span>
             </label>
             <Field label="保留条数">
-              <input type="number" min="1" value={draft.rss.retention_count}
+              <NumberInput min="1" value={draft.rss.retention_count}
                 disabled={draft.rss.retention_unlimited}
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, retention_count: Number(event.target.value) } }))} />
+                onChange={value => patch(current => ({ ...current, rss: { ...current.rss, retention_count: value } }))} />
               <small>{draft.rss.retention_unlimited
                 ? '无限存储已开启，这一项不生效'
                 : '每个订阅源最多保留的条目数，超出的从最旧的开始删'}</small>
             </Field>
             <Field label="后台抓取间隔（秒）">
-              <input type="number" min="60" value={draft.rss.background_fetch_interval} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_interval: Number(event.target.value) } }))} />
+              <NumberInput min="60" value={draft.rss.background_fetch_interval} onChange={value => patch(current => ({ ...current, rss: { ...current.rss, background_fetch_interval: value } }))} />
             </Field>
             <Field label="抓取并发">
-              <input type="number" min="1" max="32" value={draft.rss.fetch_concurrency} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, fetch_concurrency: Number(event.target.value) } }))} />
+              <NumberInput min="1" max="32" value={draft.rss.fetch_concurrency} onChange={value => patch(current => ({ ...current, rss: { ...current.rss, fetch_concurrency: value } }))} />
             </Field>
             <Field label="单源超时（秒）">
-              <input type="number" min="5" max="600" value={draft.rss.fetch_timeout_seconds} onChange={event => patch(current => ({ ...current, rss: { ...current.rss, fetch_timeout_seconds: Number(event.target.value) } }))} />
+              <NumberInput min="5" max="600" value={draft.rss.fetch_timeout_seconds} onChange={value => patch(current => ({ ...current, rss: { ...current.rss, fetch_timeout_seconds: value } }))} />
             </Field>
             <Field label="出网方式">
               <small>
@@ -480,25 +505,25 @@ export function SettingsPage() {
               <small>部分源会按 UA 返回不同内容；留空即可</small>
             </Field>
             <Field label="图片并发">
-              <input type="number" min="1" max="32" value={draft.rss.image_cache_concurrency}
+              <NumberInput min="1" max="32" value={draft.rss.image_cache_concurrency}
                 disabled={!draft.rss.image_cache_enabled}
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cache_concurrency: Number(event.target.value) } }))} />
+                onChange={value => patch(current => ({ ...current, rss: { ...current.rss, image_cache_concurrency: value } }))} />
             </Field>
             <Field label="单张图片上限（MB）">
-              <input type="number" min="1" max="2048" value={Math.round(draft.rss.image_max_bytes / 1048576)}
+              <NumberInput min="1" max="2048" value={Math.round(draft.rss.image_max_bytes / 1048576)}
                 disabled={!draft.rss.image_cache_enabled}
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_max_bytes: Number(event.target.value) * 1048576 } }))} />
+                onChange={value => patch(current => ({ ...current, rss: { ...current.rss, image_max_bytes: value * 1048576 } }))} />
               <small>超过上限的图直接丢弃，不截断</small>
             </Field>
             <Field label="无引用图片保留（天）">
-              <input type="number" min="1" max="3650" value={draft.rss.image_retention_days}
+              <NumberInput min="1" max="3650" value={draft.rss.image_retention_days}
                 disabled={!draft.rss.image_cleanup_enabled}
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_retention_days: Number(event.target.value) } }))} />
+                onChange={value => patch(current => ({ ...current, rss: { ...current.rss, image_retention_days: value } }))} />
             </Field>
             <Field label="图片清理间隔（小时）">
-              <input type="number" min="1" max="168" value={draft.rss.image_cleanup_interval_hours}
+              <NumberInput min="1" max="168" value={draft.rss.image_cleanup_interval_hours}
                 disabled={!draft.rss.image_cleanup_enabled}
-                onChange={event => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_interval_hours: Number(event.target.value) } }))} />
+                onChange={value => patch(current => ({ ...current, rss: { ...current.rss, image_cleanup_interval_hours: value } }))} />
             </Field>
             <label className="choice-tile">
               <input type="checkbox" checked={draft.rss.image_allow_private_hosts}
@@ -514,8 +539,8 @@ export function SettingsPage() {
           description="订阅镜像、抓取代理、头像代理与登录密钥共用这一份地址与密钥。"
           dirty={dirty('extension')}
           saving={saving === 'extension'}
-          onSave={() => void saveSection('extension')}
-          onReset={() => patch(current => ({ ...current, extension: config.extension }))}
+          onSave={event => void saveSection('extension', event)}
+          onReset={() => confirmDiscard(() => patch(current => ({ ...current, extension: config.extension })))}
         >
           {/* 连接：地址与网络路径 */}
           <div className="form-block">
@@ -543,8 +568,8 @@ export function SettingsPage() {
                 </select>
               </Field>
               <Field label="请求超时（秒）">
-                <input type="number" min="1" max="300" value={draft.extension.timeout_seconds}
-                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, timeout_seconds: Number(event.target.value) } }))} />
+                <NumberInput min="1" max="300" value={draft.extension.timeout_seconds}
+                  onChange={value => patch(current => ({ ...current, extension: { ...current.extension, timeout_seconds: value } }))} />
               </Field>
             </div>
           </div>
@@ -555,7 +580,7 @@ export function SettingsPage() {
               <h3>能力</h3>
               <p>三条通路可以分别开关。对端没实现的不要打开——右侧会显示探测结果。</p>
             </div>
-            <div style={{ display: 'grid', gap: 'var(--space-2)' }}>
+            <div className="settings-stack settings-stack--tight">
               <label className="feature-row">
                 <input type="checkbox" checked={draft.extension.features.hub}
                   onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, hub: event.target.checked } } }))} />
@@ -595,76 +620,59 @@ export function SettingsPage() {
               <h3>当前状态</h3>
               <p>四层依次是：配置齐全 → HTTP 可达 → 签名通过 → RSS 模块可用。</p>
             </div>
-            <div style={{ display: 'grid', gap: 12 }}>
-            <div className="metric-row" style={{ alignItems: 'center' }}>
+            <div className="settings-stack">
+            <div className="metric-row">
               <div className="metric-label">
                 <span>探测结果</span>
                 <small>{hubStatus?.base_url || '未配置对接地址'}</small>
               </div>
-              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div className="metric-value settings-inline">
                 <StatusBadge tone={hubTone(hubStatus)}>{hubLabel(hubStatus)}</StatusBadge>
                 <button type="button" className="button button--quiet" disabled={hubChecking} onClick={() => void probeHub()}>
-                  {hubChecking ? '探测中...' : '重新探测'}
+                  {hubChecking ? '探测中…' : '重新探测'}
                 </button>
               </div>
             </div>
 
             {hubStatus?.error_message && <Notice message={hubStatus.error_message} tone="error" />}
 
-            {hubStatus?.public_key_pem && <div style={{ display: 'grid', gap: 8 }}>
+            {hubStatus?.public_key_pem && <div className="settings-stack settings-stack--tight">
               <div className="metric-row">
                 <div className="metric-label">
                   <span>宿主公钥</span>
                   <small>粘进 Extension 的 auth.hub.public_key（内容是公钥本身，不是路径）</small>
                 </div>
-                <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="metric-value settings-inline">
                   <StatusBadge tone="success">与私钥配对</StatusBadge>
-                  {hubStatus.key_fingerprint && <code style={{ fontSize: 'var(--text-xs)' }}>{hubStatus.key_fingerprint}</code>}
+                  {hubStatus.key_fingerprint && <code className="settings-fingerprint">{hubStatus.key_fingerprint}</code>}
                 </div>
               </div>
-              <textarea
-                readOnly
-                value={hubStatus.public_key_pem}
-                spellCheck={false}
-                onFocus={event => event.currentTarget.select()}
-                style={{
-                  minHeight: 84,
-                  fontFamily: 'ui-monospace,monospace',
-                  fontSize: 12,
-                  padding: 10,
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 6,
-                  background: 'var(--color-input-bg)',
-                  color: 'var(--color-text)',
-                  resize: 'vertical',
-                }}
-              />
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label className="form-field">
+                <span className="visually-hidden">宿主公钥 PEM</span>
+                <textarea
+                  className="code-textarea code-textarea--short"
+                  readOnly
+                  value={hubStatus.public_key_pem}
+                  spellCheck={false}
+                  onFocus={event => event.currentTarget.select()}
+                />
+              </label>
+              <div className="settings-inline">
                 <button
                   type="button"
                   className="button button--primary"
-                  onClick={() => {
-                    const value = hubStatus.public_key_pem ?? ''
-                    void navigator.clipboard.writeText(value)
-                      .then(() => { setMessage('公钥 PEM 已复制'); setError('') })
-                      .catch(() => setError('复制失败，请手动选中上面的文本'))
-                  }}
+                  onClick={() => void copyText(hubStatus.public_key_pem ?? '').then(ok => ok ? notice.success('公钥 PEM 已复制') : notice.error('复制失败，请手动选中上面的文本'))}
                 >
                   复制公钥 PEM
                 </button>
                 {hubStatus.public_key && <button
                   type="button"
                   className="button button--quiet"
-                  onClick={() => {
-                    const value = hubStatus.public_key ?? ''
-                    void navigator.clipboard.writeText(value)
-                      .then(() => { setMessage('单行 base64 已复制，可直接粘进 auth.hub.public_key'); setError('') })
-                      .catch(() => setError('复制失败，请手动选中上面的文本'))
-                  }}
+                  onClick={() => void copyText(hubStatus.public_key ?? '').then(ok => ok ? notice.success('单行 base64 已复制，可直接粘进 auth.hub.public_key') : notice.error('复制失败，请手动选中上面的文本'))}
                 >
                   复制单行 base64
                 </button>}
-                <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                <span className="settings-hint">
                   单行 base64 可直接粘进 config.json；用 PEM 则要把换行写成 \n，否则 JSON 字符串不合法。
                 </span>
               </div>
@@ -684,11 +692,11 @@ export function SettingsPage() {
                 <span>当前私钥</span>
                 <small>{keySourceHint(keyInfo)}</small>
               </div>
-              <div className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div className="metric-value settings-inline">
                 <StatusBadge tone={keyInfo?.broken ? 'danger' : keyInfo?.source === 'config' ? 'success' : 'warning'}>
                   {keyInfo?.broken ? '私钥无法解析' : keyInfo?.source === 'config' ? '已配置' : '缺失'}
                 </StatusBadge>
-                {keyInfo?.fingerprint && <code style={{ fontSize: 'var(--text-xs)' }}>{keyInfo.fingerprint}</code>}
+                {keyInfo?.fingerprint && <code className="settings-fingerprint">{keyInfo.fingerprint}</code>}
                 {keyInfo?.configured && <button
                   type="button"
                   className="button button--quiet"
@@ -700,59 +708,49 @@ export function SettingsPage() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gap: 8 }}>
-              <label className="form-field" style={{ margin: 0 }}>
+            <div className="settings-stack settings-stack--tight">
+              <label className="form-field">
                 粘贴私钥
                 <textarea
+                  className="code-textarea code-textarea--short"
                   value={keyDraft}
                   onChange={event => setKeyDraft(event.target.value)}
                   spellCheck={false}
                   placeholder="一行 base64（44 字符），或直接的 PKCS#8 PEM"
-                  style={{
-                    minHeight: 96,
-                    fontFamily: 'ui-monospace,monospace',
-                    fontSize: 12,
-                    padding: 10,
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 6,
-                    background: 'var(--color-input-bg)',
-                    color: 'var(--color-text)',
-                    resize: 'vertical',
-                  }}
                 />
               </label>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="settings-inline">
                 <button
                   type="button"
                   className="button button--primary"
                   disabled={keyBusy || !keyDraft.trim()}
                   onClick={() => void saveKey()}
                 >
-                  {keyBusy ? '保存中...' : '保存私钥'}
+                  {keyBusy ? '保存中…' : '保存私钥'}
                 </button>
                 <button
                   type="button"
                   className="button button--quiet"
                   disabled={keyBusy}
-                  onClick={() => { setKeyDraft(''); setError('') }}
+                  onClick={() => setKeyDraft('')}
                 >
                   清空输入
                 </button>
-                <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                <span className="settings-hint">
                   接受 base64 种子、完整私钥的 base64，或 PKCS#8 PEM；保存后会规范成一行 44 字符。
                   写入前自签自验，读接口永不返回私钥。
                 </span>
               </div>
             </div>
 
-            <div style={{ background: 'var(--color-surface-muted)', borderRadius: 6, padding: 16, fontSize: 12, lineHeight: 1.7 }}>
-              <p style={{ margin: '0 0 8px', fontWeight: 600 }}>接入总共三步</p>
-              <ol style={{ margin: 0, paddingLeft: 18 }}>
+            <div className="settings-guide">
+              <p className="settings-guide-title">接入总共三步</p>
+              <ol>
                 <li>生成密钥：<code>openssl genpkey -algorithm ed25519 -out hub.key</code></li>
                 <li>把公钥粘进 Extension 主机的 <code>auth.hub.public_key</code>（内容是公钥本身，不是路径），重启它</li>
                 <li>把私钥粘进下面的输入框并保存（会自动规范成一行 44 字符），填好 <strong>API 根地址</strong>，勾上启用，然后点「重新探测」</li>
               </ol>
-              <p style={{ margin: '8px 0 0', color: 'var(--color-text-secondary)' }}>
+              <p className="settings-guide-note">
                 Extension 是单实例：一个 HomeHub 对接一个 Extension，不支持在这里添加多个。
               </p>
             </div>
@@ -767,7 +765,8 @@ export function SettingsPage() {
       confirmLabel="移除"
       danger
       busy={keyBusy}
-      onClose={() => setConfirmingKeyDelete(false)}
+      error={keyDeleteError}
+      onClose={() => { setConfirmingKeyDelete(false); setKeyDeleteError('') }}
       onConfirm={() => void deleteKey()}
     />
 
@@ -777,7 +776,8 @@ export function SettingsPage() {
       description="配置会写入 config.json 并立即热重载。监听地址、数据库、认证或代理设置错误可能导致服务不可用。"
       confirmLabel="保存并重载"
       busy={saving === 'json'}
-      onClose={() => setConfirmingJSON(false)}
+      error={jsonError}
+      onClose={() => { setConfirmingJSON(false); setJsonError('') }}
       onConfirm={() => void saveJSON()}
     />
   </div>
@@ -839,9 +839,10 @@ function Section({ title, description, children, section, dirty, saving, onSave,
   section?: SettingsSection
   dirty?: boolean
   saving?: boolean
-  onSave?: () => void
+  onSave?: (event: FormEvent) => void
   onReset?: () => void
 }) {
+  const formId = section ? `settings-${section}` : undefined
   return <section className="data-panel">
     <header className="data-panel-head">
       <div>
@@ -849,15 +850,51 @@ function Section({ title, description, children, section, dirty, saving, onSave,
         {description && <p>{description}</p>}
       </div>
       {section && <div className="toolbar-actions">
-        {dirty && <span style={{ fontSize: 11, color: 'var(--color-warning)' }}>未保存</span>}
+        {dirty && <span className="settings-dirty">未保存</span>}
         <button className="button button--quiet" type="button" disabled={!dirty || saving} onClick={onReset}>还原</button>
-        <button className="button button--primary" type="button" disabled={!dirty || saving} onClick={onSave}>
-          {saving ? '保存中...' : '保存'}
+        {/* 提交按钮在 form 外，通过 form 属性关联：浏览器校验（min/max/required）与回车提交都生效。 */}
+        <button className="button button--primary" type="submit" form={formId} disabled={!dirty || saving}>
+          {saving ? '保存中…' : '保存'}
         </button>
       </div>}
     </header>
-    <div className="modal-body">{children}</div>
+    {/* 回车提交但没有改动时不发请求。 */}
+    {section
+      ? <form id={formId} className="data-panel-body" onSubmit={event => { if (dirty && !saving) onSave?.(event); else event.preventDefault() }}>{children}</form>
+      : <div className="data-panel-body">{children}</div>}
   </section>
+}
+
+/**
+ * NumberInput 用字符串保存输入中的文本。
+ *
+ * 直接写 Number(event.target.value) 会把清空的输入框变成 0 写进草稿并被保存。
+ * 这里只在文本是合法数字时才回调；清空时草稿保持原值，而 required 让表单提交时拦下空值。
+ */
+function NumberInput({ value, onChange, ...rest }: Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type'> & { value: number; onChange: (value: number) => void }) {
+  const [text, setText] = useState(String(value))
+  // 外部值变化（还原、保存后刷新、JSON 回填）时同步显示文本。
+  useEffect(() => {
+    setText(current => (current !== '' && Number(current) === value ? current : String(value)))
+  }, [value])
+  return <input
+    {...rest}
+    type="number"
+    required
+    value={text}
+    onChange={event => {
+      const raw = event.target.value
+      setText(raw)
+      if (raw.trim() !== '' && Number.isFinite(Number(raw))) onChange(Number(raw))
+    }}
+  />
+}
+
+/** parseConfigJSON 解析 JSON 编辑器里的文本，顶层必须是对象。 */
+function parseConfigJSON(text: string): SafeConfig {
+  const parsed: unknown = JSON.parse(text)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('顶层必须是一个 JSON 对象')
+  return parsed as SafeConfig
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
