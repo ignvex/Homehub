@@ -11,6 +11,8 @@ export interface MediaAsset {
   file_size: number
   mime_type: string
   media_type: MediaKind
+  /** 上传者；0 表示升级前的历史数据，只有 1–3 级能删除。 */
+  owner_id?: number
   width?: number
   height?: number
   created_at: string
