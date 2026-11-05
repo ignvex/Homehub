@@ -484,10 +484,11 @@ func (s *BalanceService) StartBackgroundRefresh(ctx context.Context, wg *sync.Wa
 
 	logger.Info("[balance] 余额监控后台刷新已启动", "interval", interval.String())
 
-	// 立即执行一次刷新
-	s.refreshAll()
-
 	wg.Go(func() {
+		// 首轮刷新放在后台：它会逐个请求外部 API（每个最多 15 秒），
+		// 同步执行会推迟 HTTP 服务开始监听。
+		s.refreshAll()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

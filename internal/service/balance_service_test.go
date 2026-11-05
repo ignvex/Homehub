@@ -1,12 +1,14 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -363,5 +365,31 @@ func TestBalanceErrorOmitsResponseBody(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "403") {
 		t.Fatalf("错误信息应保留状态码: %v", err)
+	}
+}
+
+// TestBalanceStartDoesNotBlockOnFirstRefresh 防的是启动被余额查询拖住。
+//
+// 首轮刷新会逐个请求外部 API，每个最多 15 秒；同步执行时一个慢的
+// 供应商就能让 HTTP 服务晚几十秒才开始监听。
+func TestBalanceStartDoesNotBlockOnFirstRefresh(t *testing.T) {
+	loadConfigWith(t, `,"balance_monitor": {"enabled": true}`)
+
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+	mock.ExpectQuery(`SELECT \* FROM "balance_targets"`).
+		WillDelayFor(500 * time.Millisecond).
+		WillReturnRows(sqlmock.NewRows(balanceColumns()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	start := time.Now()
+	NewBalanceService(db).StartBackgroundRefresh(ctx, &wg)
+	elapsed := time.Since(start)
+	cancel()
+	wg.Wait()
+
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("StartBackgroundRefresh 阻塞了 %v，首轮刷新应在后台执行", elapsed)
 	}
 }
