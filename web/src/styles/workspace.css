@@ -45,7 +45,6 @@
   overflow: auto;
 }
 .paste-form { display: grid; gap: var(--space-5); }
-.paste-form .code-textarea { white-space: pre-wrap; }
 .paste-share {
   display: flex;
   gap: var(--space-4);

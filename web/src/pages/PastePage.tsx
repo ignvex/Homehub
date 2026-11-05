@@ -104,7 +104,7 @@ function PasteHome() {
       <div className="paste-share"><input aria-label="分享链接" value={shareURL(result.id)} readOnly /><button type="button" className="button button--quiet" onClick={() => void copy(shareURL(result.id))}>复制</button></div>
       <div className="form-actions"><a className="button button--quiet" href={`/paste/${result.id}`}>查看粘贴</a><button type="button" className="button button--primary" onClick={() => setResult(null)}>创建新的</button></div>
     </> : <form className="paste-form" onSubmit={create}>
-      <label className="form-field">粘贴内容<textarea className="code-textarea" value={content} onChange={event => setContent(event.target.value)} placeholder="在此粘贴文本内容…" required /></label>
+      <label className="form-field">粘贴内容<textarea className="code-textarea code-textarea--wrap" value={content} onChange={event => setContent(event.target.value)} placeholder="在此粘贴文本内容…" required /></label>
       <div className="form-actions"><button type="submit" className="button button--primary" disabled={busy || !content.trim()}>{busy ? '创建中…' : '创建粘贴'}</button></div>
     </form>}
   </section>

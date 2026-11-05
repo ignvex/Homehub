@@ -223,6 +223,7 @@ a:focus-visible,
   tab-size: 2;
 }
 .form-field textarea.code-textarea--tall { min-height: 480px; }
+.form-field textarea.code-textarea--wrap { white-space: pre-wrap; }
 .form-field textarea.code-textarea--short { min-height: 90px; white-space: pre-wrap; word-break: break-all; }
 
 /* 筛选条 */
