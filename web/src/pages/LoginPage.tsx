@@ -14,6 +14,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [passwordChanged] = useState(() => new URLSearchParams(window.location.search).get('passwordChanged') === '1')
 
   useEffect(() => { getWebUIConfig().then(value => setConfig(value.login)).catch(() => undefined) }, [])
   useEffect(() => {
@@ -42,7 +43,7 @@ export function LoginPage() {
     <a className="login-brand" href="/"><b>H</b>HomeHub</a><ThemeToggle />
     <section className="login-card">
       <p className="section-kicker">WELCOME BACK</p><h1>登录 HomeHub</h1><p>回到属于你的个人空间。</p>
-      <form onSubmit={submit}><label>用户名<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>{error && <div className="login-error">{error}</div>}<button disabled={submitting}>{submitting ? '正在登录…' : '登录'}</button></form>
+      <form onSubmit={submit}><label>用户名<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label>{passwordChanged && !error && <div className="login-info" role="status">密码已修改，请重新登录</div>}{error && <div className="login-error" role="alert">{error}</div>}<button disabled={submitting}>{submitting ? '正在登录…' : '登录'}</button></form>
       <a className="back-home" href="/">← 返回首页</a>
     </section>
   </main>

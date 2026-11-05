@@ -153,6 +153,13 @@
   color: var(--color-error);
   font-size: var(--text-sm);
 }
+.login-info {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-interactive) 13%, var(--color-surface));
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
 .back-home {
   display: inline-block;
   margin-top: var(--space-5);
