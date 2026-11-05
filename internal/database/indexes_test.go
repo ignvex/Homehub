@@ -2,6 +2,7 @@ package database
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -80,5 +81,36 @@ func TestEnsureSearchIndexes_PartialFailure(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("单个索引失败不应中断后续创建: %v", err)
+	}
+}
+
+// TestSearchIndexesCoverSearchedColumns 锁住「搜索匹配哪些列，就在哪些列上建索引」。
+//
+// 搜索 SQL 里多一个 ILIKE 列而索引没跟上，那一列就是全表扫描；
+// 反过来索引列表被误删，也只会表现为「搜索变慢」，很难归因。
+func TestSearchIndexesCoverSearchedColumns(t *testing.T) {
+	want := map[string]string{
+		"idx_bookmarks_title_trgm":     "bookmarks USING GIN (title ",
+		"idx_bookmarks_url_trgm":       "bookmarks USING GIN (url ",
+		"idx_rss_entries_title_trgm":   "rss_entries USING GIN (title ",
+		"idx_rss_entries_content_trgm": "rss_entries USING GIN (content ",
+		"idx_rss_entries_author_trgm":  "rss_entries USING GIN (author ",
+		"idx_todos_title_trgm":         "todos USING GIN (title ",
+		"idx_todos_description_trgm":   "todos USING GIN (description ",
+		"idx_log_entries_message_trgm": "log_entries USING GIN (message ",
+	}
+	got := map[string]string{}
+	for _, idx := range searchIndexes {
+		got[idx.name] = idx.sql
+	}
+	for name, frag := range want {
+		sql, ok := got[name]
+		if !ok {
+			t.Errorf("缺少索引 %s", name)
+			continue
+		}
+		if !strings.Contains(sql, frag) {
+			t.Errorf("索引 %s 的目标不符，期望含 %q:\n\t%s", name, frag, sql)
+		}
 	}
 }
