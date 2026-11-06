@@ -236,6 +236,12 @@ curl http://localhost:8080/api/v1/health
 
 > `config.json` 是单文件 bind mount。若宿主机上该文件不存在，Docker 会创建同名**目录**，导致启动失败——务必先 `cp config.example.json config.json`。
 
+### 启动与停止行为
+
+- **启动失败即退出**：配置错误、端口被占用时进程以非零码退出，交给 `restart: unless-stopped` 处理，不会出现「容器 running 但服务没起来」
+- **优雅停止**：`docker stop` 发出的 SIGTERM 会依次停止接收新请求、等在途请求最多 5 秒（打开的实时日志流会被主动断开）、等后台任务最多 10 秒、刷写数据库日志、关闭连接池。compose 把 `stop_grace_period` 设为 30 秒，避免收尾途中被 SIGKILL。正常停止的退出码为 0
+- **配置热加载**：程序监听 `config.json` 的写入。宿主机上用会「写新文件再改名」的编辑器（如 vim 默认设置）修改单文件挂载的配置时，容器内仍指向旧文件，改动不会生效，需要 `docker compose restart`；直接覆写（`cat new > config.json`、Web 端配置页）不受影响
+
 ### 升级（替换二进制）
 
 镜像只负责打包运行，不含 Go / Node.js 工具链（基础镜像 `debian:trixie-slim`）。因此升级不需要重新克隆仓库，也不会动到 `config.json` 与 `uploads/`：

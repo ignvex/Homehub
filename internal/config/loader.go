@@ -49,6 +49,15 @@ var validBackgroundTransitions = []string{"fade", "slide"}
 // 若文件不存在，生成带默认值的 config.json 并返回 ErrConfigGenerated。
 // 调用方应据此退出，提示用户编辑配置文件后重启。
 func Load(path string) error {
+	// 单文件 bind mount 的宿主机源文件不存在时，Docker 会在宿主机上建一个
+	// 同名【目录】挂进来。ReadFile 只会报 "is a directory"，看不出原因；
+	// 生成默认配置也会失败。这里给出能直接照做的指引。
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		return fmt.Errorf("配置路径 %s 是目录而不是文件。"+
+			"在 Docker 中这通常是因为宿主机上的 config.json 挂载前不存在，Docker 自动建了同名目录："+
+			"请删除宿主机上的该目录，执行 cp config.example.json config.json 并填写后重新启动", path)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

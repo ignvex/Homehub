@@ -8,9 +8,8 @@ import (
 	"context"
 	"fmt"
 	"mime"
+	"net"
 	"net/http"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -67,7 +66,16 @@ func newEngine(trustedProxies []string) (*gin.Engine, error) {
 	return r, nil
 }
 
-// Run 启动 HTTP 服务并阻塞，直至收到 SIGINT/SIGTERM 后优雅关闭。
+// shutdownTimeout 是等待在途请求完成的上限，超时后强制断开剩余连接。
+//
+// 与 app 的后台任务等待（10s）相加仍要落在容器的停止宽限期内，
+// 否则 Docker 会在收尾途中发 SIGKILL。compose 里把宽限期设为 30s。
+const shutdownTimeout = 5 * time.Second
+
+// Run 启动 HTTP 服务并阻塞，直至 ctx 取消后优雅关闭，或监听失败。
+//
+// 信号处理不在这里：app.Run 在启动最开始就把 SIGINT/SIGTERM 接到 ctx 上，
+// 这样启动阶段（例如等待数据库就绪）收到信号也能及时退出。
 //
 // 启动序列：
 //  1. 根据配置设置 Gin 运行模式
@@ -75,9 +83,9 @@ func newEngine(trustedProxies []string) (*gin.Engine, error) {
 //  3. 挂载全局中间件
 //  4. 加载模板与静态文件
 //  5. 注册所有路由
-//  6. 启动 HTTP server
-//  7. 等待信号，触发优雅关闭（5s 超时）
-func Run() error {
+//  6. 同步绑定端口，再在后台 Serve
+//  7. 等待 ctx 取消，触发优雅关闭（超时则强制关闭）
+func Run(ctx context.Context) error {
 	cfg := config.Get()
 	if cfg == nil {
 		return fmt.Errorf("server: 配置未加载，请先调用 config.Load")
@@ -114,29 +122,57 @@ func Run() error {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := newHTTPServer(addr, r)
 
-	// 信号监听
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// 先同步绑定端口。之前 ListenAndServe 放在 goroutine 里，端口被占用时
+	// 只记一条错误日志，进程却继续阻塞等信号：容器显示 running、健康检查
+	// 一直失败，restart 策略也不会介入。现在绑定失败直接返回，进程以非零
+	// 码退出，交给容器的重启策略处理。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("监听 %s 失败: %w", addr, err)
+	}
+	return serve(ctx, srv, ln, shutdownTimeout)
+}
 
-	// 启动 HTTP server
+// serve 在 ln 上提供服务，直到 ctx 取消或 Serve 出错。
+//
+// 拆出来是为了在测试里用临时端口驱动完整的关闭流程。
+func serve(ctx context.Context, srv *http.Server, ln net.Listener, timeout time.Duration) error {
+	// Shutdown 只等空闲连接，SSE 流永远不空闲：不主动断开，每次关闭都会
+	// 等满超时再被强制 Close，赶上容器的停止宽限期还可能被 SIGKILL。
+	// 所有请求的 context 都派生自 baseCtx，Shutdown 开始时取消它，
+	// 长连接处理器从 c.Request.Context() 上就能看到并自行返回。
+	// 按 server 实例持有，而不是包级一次性开关，重复启动互不影响。
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
+	srv.RegisterOnShutdown(cancelBase)
+
+	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("HTTP 服务启动", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("HTTP 服务异常退出", "error", err)
-		}
+		logger.Info("HTTP 服务启动", "addr", ln.Addr().String())
+		errCh <- srv.Serve(ln)
 	}()
 
-	<-ctx.Done()
-	logger.Info("收到终止信号，开始优雅关闭...")
+	select {
+	case err := <-errCh:
+		// Serve 只会因为错误提前返回（没人调用过 Shutdown）。
+		return fmt.Errorf("HTTP 服务异常退出: %w", err)
+	case <-ctx.Done():
+	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	logger.Info("收到终止信号，开始优雅关闭...", "timeout", timeout.String())
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("服务关闭失败", "error", err)
-		return err
+		// 超时仍有请求未完成：强制断开，而不是把错误返回后让连接悬着。
+		// 关闭流程照常继续，后台任务和数据库还要按顺序收尾。
+		logger.Warn("优雅关闭超时，强制断开剩余连接", "error", err)
+		_ = srv.Close()
 	}
+	<-errCh // 等 Serve 返回 ErrServerClosed，确保不再接受新请求
 
-	logger.Info("服务已安全关闭")
+	logger.Info("HTTP 服务已关闭")
 	return nil
 }

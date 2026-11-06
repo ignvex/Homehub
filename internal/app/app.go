@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/config"
@@ -45,6 +47,17 @@ func resolveConfigPath(explicit string) string {
 // 无需再次打印（日志已在故障点记录）。
 func Run(opts Options) error {
 	configPath := resolveConfigPath(opts.ConfigPath)
+
+	// 信号在最开始就接管，而不是等到 HTTP 服务起来：启动阶段
+	// 收到 docker stop 也要及时退出。
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	go func() {
+		// 第一个信号触发优雅关闭后恢复默认处理：前台运行时再按一次
+		// Ctrl+C 能立即终止，不必等收尾超时。
+		<-sigCtx.Done()
+		stopSignals()
+	}()
 
 	// ============================================================
 	// 1. 加载配置
@@ -169,7 +182,7 @@ func Run(opts Options) error {
 	// server.Run 在收到信号并完成 Shutdown 后返回；随后上面的 defer
 	// 依次执行：先停后台任务，再关数据库。
 	handler.Init(svc)
-	return server.Run()
+	return server.Run(sigCtx)
 }
 
 // backgroundStopTimeout 是关闭时等待后台任务退出的上限。

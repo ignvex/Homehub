@@ -185,3 +185,23 @@ func TestGeneratedDefaultConfigHasFlagsOn(t *testing.T) {
 		t.Error("生成的默认配置 rss.image_cleanup_enabled 应为 true")
 	}
 }
+
+// TestLoadRejectsDirectoryWithDockerHint 防的是 Docker 单文件挂载的经典坑：
+// 宿主机 config.json 不存在时 Docker 建了同名目录挂进来，原先只报
+// "is a directory"，看不出该怎么修。
+func TestLoadRejectsDirectoryWithDockerHint(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := Load(p)
+	if err == nil {
+		t.Fatal("配置路径是目录时 Load 应返回错误")
+	}
+	if errors.Is(err, ErrConfigGenerated) {
+		t.Fatal("不应走「生成默认配置」分支")
+	}
+	if !strings.Contains(err.Error(), "目录") || !strings.Contains(err.Error(), "cp config.example.json") {
+		t.Errorf("错误信息应说明是目录并给出修复命令: %v", err)
+	}
+}

@@ -27,11 +27,18 @@ func LogStream(c *gin.Context) {
 	listener := logger.Subscribe()
 	defer logger.Unsubscribe(listener)
 
+	// 服务关闭时 server 会取消所有请求的根 context（见 server.serve），
+	// 长连接流靠它及时结束，不拖住 Shutdown。
 	ctx := c.Request.Context()
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return
 	}
+
+	// 立即发出响应头。否则在第一条日志到来之前客户端一直收不到任何字节，
+	// 反向代理会把它当作上游无响应而超时断开。
+	c.Status(http.StatusOK)
+	flusher.Flush()
 
 	for {
 		select {

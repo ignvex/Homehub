@@ -41,6 +41,10 @@ services:
       # - /mnt/user/appdata/homehub/uploads:/app/web/static/uploads
       - homehub_uploads:/app/web/static/uploads
     restart: unless-stopped
+    # docker stop 先发 SIGTERM，宽限期结束后发 SIGKILL。程序收尾最长约 15s：
+    # 等在途请求 5s，再等后台任务（RSS 抓取、日志刷盘）10s，然后关库。
+    # Docker 默认只给 10s，会在收尾途中被强杀，这里放宽到 30s。
+    stop_grace_period: 30s
     # 健康检查继承自 Dockerfile（探测 /api/v1/health），此处不重复定义。
     # 注意它只反映进程存活：数据库不可达时该接口仍返回 200。
     security_opt:
