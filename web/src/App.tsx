@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { AppShell, type ShellPageMeta } from '@/components/AppShell'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { AuthContext, type AuthValue } from '@/lib/auth'
 import { homeApi, type AuthStatus } from '@/lib/home'
 import { LEVEL_ADMIN, LEVEL_OPERATOR, hasLevel, levelLabel } from '@/lib/permissions'
@@ -201,5 +202,11 @@ function Routes({ path, auth }: { path: string; auth: AuthStatus | null }) {
   }
 
   const Page = page.component
-  return <AppShell auth={auth} meta={page.meta} path={path}><Page /></AppShell>
+  return (
+    <AppShell auth={auth} meta={page.meta} path={path}>
+      <ErrorBoundary>
+        <Page />
+      </ErrorBoundary>
+    </AppShell>
+  )
 }

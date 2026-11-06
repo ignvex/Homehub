@@ -381,7 +381,7 @@ export function HomePage() {
   }, [reloadKey])
 
   const selectedAssets = useMemo(
-    () => background.selected_asset_ids
+    () => (background.selected_asset_ids ?? [])
       .map(id => assets.find(asset => asset.id === id))
       .filter(Boolean) as MediaAsset[],
     [assets, background.selected_asset_ids],
