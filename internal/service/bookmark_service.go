@@ -224,9 +224,14 @@ func (s *BookmarkService) ReorderBookmarks(groupID uint64, ids []uint64) error {
 // 逐行 UPDATE 是 n 次往返，且要靠事务才能保证「要么全改要么不改」；
 // 单条语句天然原子。table 只能是调用方写死的常量（不接受外部输入）；
 // extraWhere 为附加条件（可为空），extraArgs 是它的参数。
+//
+// 超过 maxReorderIDs 个 id 返回 ErrReorderTooManyIDs，不发 SQL。
 func reorderBySortOrder(db *gorm.DB, table string, ids []uint64, extraWhere string, extraArgs ...any) error {
 	if len(ids) == 0 {
 		return nil
+	}
+	if len(ids) > maxReorderIDs {
+		return ErrReorderTooManyIDs
 	}
 
 	var sb strings.Builder
@@ -272,3 +277,12 @@ var (
 	ErrGroupNotFound    = errors.New("分组不存在")
 	ErrBookmarkNotFound = errors.New("书签不存在")
 )
+
+// maxReorderIDs 是单次排序请求的 id 数量上限。
+//
+// reorderBySortOrder 每个 id 占 3 个绑定参数，PostgreSQL 单条语句最多
+// 65535 个参数；1000 远低于该上限，也远多于界面上一屏能拖动的条目。
+const maxReorderIDs = 1000
+
+// ErrReorderTooManyIDs 表示排序请求的 id 超过上限，handler 据此回 400。
+var ErrReorderTooManyIDs = fmt.Errorf("单次排序最多 %d 项", maxReorderIDs)

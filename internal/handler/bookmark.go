@@ -154,6 +154,10 @@ func BookmarkGroupReorder(c *gin.Context) {
 	}
 
 	if err := svc.Bookmark.ReorderGroups(req.IDs); err != nil {
+		if errors.Is(err, service.ErrReorderTooManyIDs) {
+			FailBadRequest(c, err.Error())
+			return
+		}
 		FailInternal(c, "更新分组排序失败")
 		return
 	}
@@ -345,6 +349,10 @@ func BookmarkReorder(c *gin.Context) {
 	}
 
 	if err := svc.Bookmark.ReorderBookmarks(req.GroupID, req.IDs); err != nil {
+		if errors.Is(err, service.ErrReorderTooManyIDs) {
+			FailBadRequest(c, err.Error())
+			return
+		}
 		FailInternal(c, "更新书签排序失败")
 		return
 	}

@@ -19,7 +19,8 @@ func respondTodoError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrTodoNotFound):
 		Fail(c, http.StatusNotFound, CodeNotFound, "待办不存在")
-	case errors.Is(err, service.ErrTodoBadStatus), errors.Is(err, service.ErrTodoBadAssignee):
+	case errors.Is(err, service.ErrTodoBadStatus), errors.Is(err, service.ErrTodoBadAssignee),
+		errors.Is(err, service.ErrReorderTooManyIDs):
 		FailBadRequest(c, err.Error())
 	case errors.Is(err, service.ErrForbidden):
 		Fail(c, http.StatusForbidden, CodeForbidden, "4 级用户只能修改自己创建的待办，被指派的待办只能改状态")

@@ -411,6 +411,10 @@ func (s *TodoService) ReorderTodos(op *model.User, ids []uint64) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	// 归属校验的 IN 查询同样带着整份 id 列表，上限要在它之前检查。
+	if len(ids) > maxReorderIDs {
+		return ErrReorderTooManyIDs
+	}
 	if !canAll {
 		uniq := make(map[uint64]struct{}, len(ids))
 		for _, id := range ids {
