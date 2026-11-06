@@ -511,3 +511,40 @@ func TestUpdateRSSKeepsPikPakSecretsWhenBlank(t *testing.T) {
 		t.Fatalf("非机密字段应正常更新: %v", pk)
 	}
 }
+
+// TestUpdatePersistsExtensionFeaturesAndReturnsThem 防的是「Extension 开关
+// 形同虚设」：设置页会提交 features.hub/fetch/avatar，但 ExtensionUpdate
+// 曾经没有这个字段，JSON 解码时被静默丢弃；GET 也不下发它，前端只能
+// 回落到 false。结果勾上「启用」后状态页仍报 disabled（Status 要求
+// enabled && features.hub），刷新后三个勾选框又全部变回未选中。
+func TestUpdatePersistsExtensionFeaturesAndReturnsThem(t *testing.T) {
+	path := loadSettingsConfig(t, strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1))
+
+	var req UpdateConfigRequest
+	// 走 JSON 解码而不是直接构造结构体：回归发生在解码阶段（未知字段被丢）。
+	body := `{"extension": {"enabled": true, "base_url": "https://ext.example.com/api/v1",
+		"features": {"hub": true, "fetch": false, "avatar": true}}}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("解码请求失败: %v", err)
+	}
+	if err := NewConfigService().Update(req); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+
+	ext := readConfigJSON(t, path)["extension"].(map[string]any)
+	features, ok := ext["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("config.json 里没有写入 extension.features：%v", ext)
+	}
+	if features["hub"] != true || features["fetch"] != false || features["avatar"] != true {
+		t.Fatalf("features 写入不对：%v", features)
+	}
+	if ext["private_key_pem"] != "super-secret-private-key" {
+		t.Fatalf("更新 features 不应碰私钥，实际 %v", ext["private_key_pem"])
+	}
+
+	safe := NewConfigService().GetSafe()
+	if !safe.Extension.Features.Hub || safe.Extension.Features.Fetch || !safe.Extension.Features.Avatar {
+		t.Fatalf("GET /config 应下发已保存的 features，实际 %+v", safe.Extension.Features)
+	}
+}

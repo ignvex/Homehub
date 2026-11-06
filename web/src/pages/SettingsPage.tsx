@@ -589,7 +589,7 @@ export function SettingsPage() {
             <div className="form-grid form-grid--three">
               <label className="choice-tile">
                 <input type="checkbox" checked={draft.extension.enabled}
-                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, enabled: event.target.checked } }))} />
+                  onChange={event => patch(current => setExtensionEnabled(current, event.target.checked))} />
                 <span>启用 Extension</span>
               </label>
               <Field label="API 根地址">
@@ -621,7 +621,7 @@ export function SettingsPage() {
             <div className="settings-stack settings-stack--tight">
               <label className="feature-row">
                 <input type="checkbox" checked={draft.extension.features.hub}
-                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, hub: event.target.checked } } }))} />
+                  onChange={event => patch(current => setExtensionFeature(current, 'hub', event.target.checked))} />
                 <span className="feature-row-body">
                   <strong>订阅镜像与访问密钥（/hub/*）
                     <CapabilityHint available={null} />
@@ -631,7 +631,7 @@ export function SettingsPage() {
               </label>
               <label className="feature-row">
                 <input type="checkbox" checked={draft.extension.features.fetch}
-                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, fetch: event.target.checked } } }))} />
+                  onChange={event => patch(current => setExtensionFeature(current, 'fetch', event.target.checked))} />
                 <span className="feature-row-body">
                   <strong>RSS 抓取代理（/fetch）
                     <CapabilityHint available={hubStatus?.fetch_available} />
@@ -641,7 +641,7 @@ export function SettingsPage() {
               </label>
               <label className="feature-row">
                 <input type="checkbox" checked={draft.extension.features.avatar}
-                  onChange={event => patch(current => ({ ...current, extension: { ...current.extension, features: { ...current.extension.features, avatar: event.target.checked } } }))} />
+                  onChange={event => patch(current => setExtensionFeature(current, 'avatar', event.target.checked))} />
                 <span className="feature-row-body">
                   <strong>头像代理（/avatar）
                     <CapabilityHint available={hubStatus?.avatar_available} />
@@ -819,6 +819,27 @@ export function SettingsPage() {
       onConfirm={() => void saveJSON()}
     />
   </div>
+}
+
+// ------------------------------------------------------------
+// Extension 开关联动
+//
+// 后端校验拒绝「能力开着、总开关关着」。若两者各自独立，取消「启用」后
+// 保存必然失败，用户只能先逐个取消能力，表现为开关关不掉。
+// ------------------------------------------------------------
+
+type ExtensionFeature = keyof SafeConfig['extension']['features']
+
+/** 关闭总开关时一并关闭全部能力；打开时保持能力原样。 */
+function setExtensionEnabled(cfg: SafeConfig, enabled: boolean): SafeConfig {
+  const features = enabled ? cfg.extension.features : { hub: false, fetch: false, avatar: false }
+  return { ...cfg, extension: { ...cfg.extension, enabled, features } }
+}
+
+/** 打开任一能力时自动打开总开关，否则保存会被后端拒绝。 */
+function setExtensionFeature(cfg: SafeConfig, feature: ExtensionFeature, on: boolean): SafeConfig {
+  const features = { ...cfg.extension.features, [feature]: on }
+  return { ...cfg, extension: { ...cfg.extension, enabled: on || cfg.extension.enabled, features } }
 }
 
 // ------------------------------------------------------------

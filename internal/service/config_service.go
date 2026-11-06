@@ -106,6 +106,8 @@ type SafeExtensionConfig struct {
 	ProxyNames     []string `json:"proxy_names"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
 	PrivateKeySet  bool     `json:"private_key_set"`
+	// Features 必须下发：设置页的三个能力勾选框以它为初值，缺了就永远显示未勾选。
+	Features config.ExtensionFeatures `json:"features"`
 }
 
 // SafeProxyConfig 是脱敏后的全局代理配置。
@@ -126,6 +128,9 @@ type ExtensionUpdate struct {
 	BaseURL        *string   `json:"base_url,omitempty"`
 	ProxyNames     *[]string `json:"proxy_names,omitempty"`
 	TimeoutSeconds *int      `json:"timeout_seconds,omitempty"`
+	// Features 整组替换。缺了它，设置页提交的能力开关会在解码时被静默丢弃，
+	// 而 Status 要求 enabled && features.hub，表现为「勾了启用也没用」。
+	Features *config.ExtensionFeatures `json:"features,omitempty"`
 }
 
 // SafeProxyEntry 脱敏后的代理配置，不暴露完整的代理 URL。
@@ -187,6 +192,7 @@ func (s *ConfigService) GetSafe() SafeConfig {
 			ProxyNames:     cfg.Extension.ProxyNames,
 			TimeoutSeconds: cfg.Extension.TimeoutSeconds,
 			PrivateKeySet:  strings.TrimSpace(cfg.Extension.PrivateKeyPEM) != "",
+			Features:       cfg.Extension.Features,
 		},
 		BalanceMonitor: SafeBalanceMonitorConfig{
 			Enabled:                cfg.BalanceMonitor.Enabled,
@@ -466,6 +472,13 @@ func mergeExtension(raw map[string]any, update ExtensionUpdate) {
 	}
 	if update.TimeoutSeconds != nil {
 		section["timeout_seconds"] = *update.TimeoutSeconds
+	}
+	if update.Features != nil {
+		section["features"] = map[string]any{
+			"hub":    update.Features.Hub,
+			"fetch":  update.Features.Fetch,
+			"avatar": update.Features.Avatar,
+		}
 	}
 }
 

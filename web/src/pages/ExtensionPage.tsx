@@ -240,8 +240,11 @@ export function ExtensionPage() {
       <PageState
         kind="empty"
         title="Extension 对接未启用"
-        description="在 config.json 的 extension 段填写 base_url 与 private_key_pem，把 enabled 设为 true，保存后配置会自动热重载。"
-        action={<button type="button" className="button button--primary" disabled={busy} onClick={() => void refresh()}>重新探测</button>}
+        description="到「设置 → Extension 连接」填写 API 根地址与签名私钥，勾选「启用 Extension」和「订阅镜像与访问密钥」后保存，配置会自动热重载。"
+        action={<div className="toolbar-actions">
+          <a className="button button--primary" href="/settings">前往设置</a>
+          <button type="button" className="button button--quiet" disabled={busy} onClick={() => void refresh()}>重新探测</button>
+        </div>}
       />
       <Notice message={status.error_message} tone="info" />
     </div>
