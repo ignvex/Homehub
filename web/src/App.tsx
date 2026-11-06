@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { AppShell, type ShellPageMeta } from '@/components/AppShell'
 import { AuthContext, type AuthValue } from '@/lib/auth'
 import { homeApi, type AuthStatus } from '@/lib/home'
 import { LEVEL_ADMIN, LEVEL_OPERATOR, hasLevel, levelLabel } from '@/lib/permissions'
-import { NavigationContext, confirmLeave, currentHref, notifyLocationChange, readLocation, type AppLocation, type NavigateOptions } from '@/lib/navigation'
+import { LOCATION_CHANGE_EVENT, NavigationContext, confirmLeave, currentHref, notifyLocationChange, readLocation, type AppLocation, type NavigateOptions } from '@/lib/navigation'
 import { BalancePage } from '@/pages/BalancePage'
 import { AppearancePage } from '@/pages/AppearancePage'
 import { BookmarksPage } from '@/pages/BookmarksPage'
@@ -42,9 +42,28 @@ function useClientNavigation() {
     window.scrollTo(0, 0)
   }, [])
 
-  // 浏览器前进/后退
+  // 浏览器前进/后退。
+  //
+  // popstate 触发时地址栏已经变了，无法取消；有未保存更改且用户不想离开时，
+  // 把刚离开的地址推回去，界面保持原页面不动。否则后退键会绕过离开守卫，
+  // 设置页里没保存的改动就静默丢了。
+  const shownHref = useRef(currentHref())
+  // location 更新时地址栏已是新地址，记下它作为「当前显示的页面」。
+  // useQueryState 用 replaceState 改查询参数且不更新 location，单独监听它。
+  useEffect(() => { shownHref.current = currentHref() }, [location])
   useEffect(() => {
-    const handler = () => setLocation(readLocation())
+    const sync = () => { shownHref.current = currentHref() }
+    window.addEventListener(LOCATION_CHANGE_EVENT, sync)
+    return () => window.removeEventListener(LOCATION_CHANGE_EVENT, sync)
+  }, [])
+  useEffect(() => {
+    const handler = () => {
+      if (!confirmLeave()) {
+        history.pushState(null, '', shownHref.current)
+        return
+      }
+      setLocation(readLocation())
+    }
     window.addEventListener('popstate', handler)
     return () => window.removeEventListener('popstate', handler)
   }, [])
