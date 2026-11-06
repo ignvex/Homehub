@@ -140,7 +140,7 @@ export function TodosPage() {
           {anyActionable && <td data-label="操作">{can.edit && <div className="table-actions">
             <button className="icon-button" disabled={busy || index === 0 || reorderBlocked} title={reorderBlocked ? REORDER_BLOCKED_HINT : undefined} onClick={() => void move(index, -1)} aria-label={`上移待办“${item.title}”`}>↑</button>
             <button className="icon-button" disabled={busy || index === items.length - 1 || reorderBlocked} title={reorderBlocked ? REORDER_BLOCKED_HINT : undefined} onClick={() => void move(index, 1)} aria-label={`下移待办“${item.title}”`}>↓</button>
-            <button className="button button--quiet" onClick={() => openDraft({ id: item.id, title: item.title, description: item.description ?? '', priority: String(item.priority), due_date: item.due_date?.slice(0, 10) ?? '', assignee_id: item.assignee_id ? String(item.assignee_id) : '', status: item.status })}>编辑</button>
+            <button className="button button--quiet" onClick={() => openDraft({ id: item.id, title: item.title, description: item.description ?? '', priority: String(item.priority), due_date: localDateInput(item.due_date), assignee_id: item.assignee_id ? String(item.assignee_id) : '', status: item.status })}>编辑</button>
             <DeleteButton label={`删除待办“${item.title}”`} onClick={() => setPendingDelete(item)} />
           </div>}</td>}
         </tr>
@@ -161,4 +161,18 @@ export function TodosPage() {
     </Modal>
     <ConfirmDialog open={pendingDelete !== null} title="删除待办" description={`将删除“${pendingDelete?.title ?? ''}”，删除后无法恢复。`} confirmLabel="删除" danger busy={busy} error={formError} onClose={closeModals} onConfirm={() => void remove()} />
   </div>
+}
+
+/**
+ * 把服务端时间戳转成本地日历日（input[type=date] 的 YYYY-MM-DD）。
+ *
+ * 保存时用的是本地零点（UTC+8 的 11-06 存成 11-05T16:00Z）；回填若直接
+ * 截 ISO 串的前 10 位，取到的是 UTC 日期，打开再保存一次就提前一天。
+ */
+function localDateInput(value?: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
