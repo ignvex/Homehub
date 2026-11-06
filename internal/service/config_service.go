@@ -27,12 +27,43 @@ type SafeConfig struct {
 	Proxy    SafeProxyConfig       `json:"proxy"`
 	Gravatar config.GravatarConfig `json:"gravatar"`
 	Bookmark config.BookmarkConfig `json:"bookmark"`
-	RSS      config.RSSConfig      `json:"rss"`
+	// RSS 的 pikpak 段含第三方账号凭据，用 SafeRSSConfig 脱敏。
+	RSS SafeRSSConfig `json:"rss"`
 	// Extension 含连接参数，但**绝不含私钥内容**。
 	Extension SafeExtensionConfig `json:"extension"`
 	// BalanceMonitor 只含模块开关；监控点（含 api_key）在数据库里单独管理，
 	// config.json 里遗留的 targets 绝不下发。
 	BalanceMonitor SafeBalanceMonitorConfig `json:"balance_monitor"`
+}
+
+// SafeRSSConfig 是 RSS 配置视图：除 pikpak 的两个机密字段外原样下发。
+//
+// 嵌入 config.RSSConfig，再用同名 PikPak 字段遮蔽它——encoding/json
+// 取浅层字段，嵌入结构体里的 pikpak 不会再被序列化。
+type SafeRSSConfig struct {
+	config.RSSConfig
+	PikPak SafePikPakConfig `json:"pikpak"`
+}
+
+// SafePikPakConfig 不含 password / client_secret，只回「是否已设置」。
+type SafePikPakConfig struct {
+	config.PikPakConfig
+	Password        string `json:"password"`
+	ClientSecret    string `json:"client_secret"`
+	PasswordSet     bool   `json:"password_set"`
+	ClientSecretSet bool   `json:"client_secret_set"`
+}
+
+func maskRSSConfig(rss config.RSSConfig) SafeRSSConfig {
+	pk := rss.PikPak
+	return SafeRSSConfig{
+		RSSConfig: rss,
+		PikPak: SafePikPakConfig{
+			PikPakConfig:    pk,
+			PasswordSet:     pk.Password != "",
+			ClientSecretSet: pk.ClientSecret != "",
+		},
+	}
 }
 
 // SafeBalanceMonitorConfig 是余额监控的开关视图，不含 targets。
@@ -149,7 +180,7 @@ func (s *ConfigService) GetSafe() SafeConfig {
 		},
 		Gravatar: cfg.Gravatar,
 		Bookmark: cfg.Bookmark,
-		RSS:      cfg.RSS,
+		RSS:      maskRSSConfig(cfg.RSS),
 		Extension: SafeExtensionConfig{
 			Enabled:        cfg.Extension.Enabled,
 			BaseURL:        cfg.Extension.BaseURL,
@@ -309,7 +340,23 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 			replaceSection(raw, "bookmark", req.Bookmark)
 		}
 		if req.RSS != nil {
+			// 先记下旧的 pikpak 段：replaceSection 只合并顶层键，嵌套段
+			// 会被请求整体替换。视图里机密字段是空串，回传时不能拿空值
+			// 覆盖已有凭据。
+			oldPikPak, _ := nestedMap(raw, "rss", "pikpak")
 			replaceSection(raw, "rss", req.RSS)
+			if newRSS, ok := raw["rss"].(map[string]any); ok && oldPikPak != nil {
+				replaceSection(newRSS, "pikpak", newRSS["pikpak"], "password", "client_secret")
+				if pk, ok := newRSS["pikpak"].(map[string]any); ok {
+					for _, field := range []string{"password", "client_secret"} {
+						if s, _ := pk[field].(string); s == "" {
+							if old, _ := oldPikPak[field].(string); old != "" {
+								pk[field] = old
+							}
+						}
+					}
+				}
+			}
 		}
 		if req.Extension != nil {
 			mergeExtension(raw, *req.Extension)
@@ -449,6 +496,16 @@ func replaceSection(raw map[string]any, key string, value any, keepEmpty ...stri
 		}
 	}
 	raw[key] = incoming
+}
+
+// nestedMap 取 raw[a][b]，任一层不是对象时返回 nil。
+func nestedMap(raw map[string]any, a, b string) (map[string]any, bool) {
+	outer, ok := raw[a].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	inner, ok := outer[b].(map[string]any)
+	return inner, ok
 }
 
 // ensureMap 确保 raw[key] 为 map[string]any。

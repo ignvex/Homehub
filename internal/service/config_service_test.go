@@ -457,3 +457,57 @@ func TestUpdateServerTrustedProxies(t *testing.T) {
 		t.Fatalf("校验失败后文件不该被改动: %v", again)
 	}
 }
+
+// TestGetSafeMasksPikPakCredentials 确认 PikPak 账号密码与 client_secret 不随配置视图下发。
+//
+// 防的回归：SafeConfig.RSS 曾直接取 config.RSSConfig，嵌套的 pikpak 段
+// 原样带出了明文密码。数据库密码与私钥早已脱敏，这一处是漏网的。
+func TestGetSafeMasksPikPakCredentials(t *testing.T) {
+	base := strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1)
+	base = strings.Replace(base, `"retention_count": 5000`,
+		`"retention_count": 5000,
+		"pikpak": {"enabled": true, "username": "u@example.com", "password": "PIKPAKPASS", "client_id": "cid", "client_secret": "PIKPAKSECRET"}`, 1)
+	loadSettingsConfig(t, base)
+
+	safe := NewConfigService().GetSafe()
+	out, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "PIKPAKPASS") || strings.Contains(string(out), "PIKPAKSECRET") {
+		t.Fatalf("配置视图泄露了 PikPak 凭据: %s", out)
+	}
+	if !safe.RSS.PikPak.PasswordSet || !safe.RSS.PikPak.ClientSecretSet {
+		t.Fatalf("应标记凭据已设置: %+v", safe.RSS.PikPak)
+	}
+	if safe.RSS.PikPak.Username != "u@example.com" || safe.RSS.PikPak.ClientID != "cid" {
+		t.Fatalf("非机密字段应保留: %+v", safe.RSS.PikPak)
+	}
+}
+
+// TestUpdateRSSKeepsPikPakSecretsWhenBlank 确认回传脱敏后的视图不会抹掉凭据。
+//
+// 视图里 password 为空串；JSON 编辑模式会把整段 rss（含 pikpak）原样
+// 提交回来。若按值写回，保存一次设置就清空了 PikPak 密码。
+func TestUpdateRSSKeepsPikPakSecretsWhenBlank(t *testing.T) {
+	base := strings.Replace(settingsBaseConfig, "%s", strings.Repeat("a", 32), 1)
+	base = strings.Replace(base, `"retention_count": 5000`,
+		`"retention_count": 5000,
+		"pikpak": {"enabled": true, "username": "u", "password": "keep-pass", "client_id": "cid", "client_secret": "keep-secret"}`, 1)
+	path := loadSettingsConfig(t, base)
+
+	rss := config.Get().RSS
+	rss.PikPak.Password = ""
+	rss.PikPak.ClientSecret = ""
+	rss.PikPak.Username = "u2"
+	if err := NewConfigService().Update(UpdateConfigRequest{RSS: &rss}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	pk := readConfigJSON(t, path)["rss"].(map[string]any)["pikpak"].(map[string]any)
+	if pk["password"] != "keep-pass" || pk["client_secret"] != "keep-secret" {
+		t.Fatalf("空值不应覆盖已有凭据: %v", pk)
+	}
+	if pk["username"] != "u2" {
+		t.Fatalf("非机密字段应正常更新: %v", pk)
+	}
+}
