@@ -48,8 +48,8 @@ func resolveConfigPath(explicit string) string {
 func Run(opts Options) error {
 	configPath := resolveConfigPath(opts.ConfigPath)
 
-	// 信号在最开始就接管，而不是等到 HTTP 服务起来：启动阶段
-	// 收到 docker stop 也要及时退出。
+	// 信号在最开始就接管，而不是等到 HTTP 服务起来：容器里数据库可能
+	// 还没就绪，启动阶段会重试等待，这段时间收到 docker stop 也要及时退出。
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 	go func() {
@@ -83,8 +83,12 @@ func Run(opts Options) error {
 	// ============================================================
 	// 3. 数据库
 	// ============================================================
-	db, err := database.Init(&cfg.Database)
+	db, err := database.Init(sigCtx, &cfg.Database, dbConnectWait)
 	if err != nil {
+		if sigCtx.Err() != nil {
+			logger.Info("等待数据库期间收到终止信号，退出")
+			return nil
+		}
 		return fmt.Errorf("数据库初始化失败: %w", err)
 	}
 	defer func() {
@@ -184,6 +188,14 @@ func Run(opts Options) error {
 	handler.Init(svc)
 	return server.Run(sigCtx)
 }
+
+// dbConnectWait 是启动时等待数据库可达的上限。
+//
+// 容器编排下应用常常比数据库先起来（NAS 重启、compose 同时拉起两个服务），
+// 只 Ping 一次就退出会让容器在重启策略里反复抖动，日志里全是同一条
+// 连接失败。等一分钟覆盖常见的数据库冷启动；认证失败这类重试也无用的
+// 错误不在此列，会立即返回（见 database.Init）。
+const dbConnectWait = 60 * time.Second
 
 // backgroundStopTimeout 是关闭时等待后台任务退出的上限。
 //

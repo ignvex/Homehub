@@ -7,6 +7,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/imroc/req/v3 v3.59.0
+	github.com/jackc/pgx/v5 v5.6.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mmcdole/gofeed v1.4.0
 	github.com/swaggo/files v1.0.1
@@ -42,7 +43,6 @@ require (
 	github.com/icholy/digest v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.6.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
