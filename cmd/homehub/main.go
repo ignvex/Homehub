@@ -17,6 +17,11 @@ import (
 	"os"
 
 	"github.com/ignvex/HomeHub/internal/app"
+
+	// 内置一份 Mozilla 根证书：部署环境缺系统 CA 库时（精简镜像、NAS 宿主机）
+	// 出网 HTTPS 仍能校验。系统库存在时不生效；系统库过旧时可用
+	// GODEBUG=x509usefallbackroots=1 强制改用内置根。
+	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
 func main() {
