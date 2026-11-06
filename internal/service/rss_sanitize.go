@@ -174,6 +174,12 @@ func (d *contentDoc) filterAttrs(n *html.Node, tag string) {
 	}
 	n.Attr = kept
 
+	// 磁力链接不开新窗口：magnet 只会交给协议处理器或 PikPak 一类扩展，
+	// target=_blank 只会多弹一个空白标签页。源站下载页普遍这么写。
+	if tag == "a" && strings.HasPrefix(strings.ToLower(attrValue(n, "href")), "magnet:") {
+		removeAttr(n, "target")
+	}
+
 	// 新窗口链接补 rel，防止被打开的页面通过 window.opener 改回跳转。
 	if tag == "a" && hasAttr(n, "target", "_blank") && !hasAttrKey(n, "rel") {
 		n.Attr = append(n.Attr, html.Attribute{Key: "rel", Val: "noopener noreferrer"})
@@ -377,6 +383,17 @@ func hasAttrKey(n *html.Node, key string) bool {
 		}
 	}
 	return false
+}
+
+// removeAttr 删除指定属性（不区分大小写）。
+func removeAttr(n *html.Node, key string) {
+	kept := n.Attr[:0]
+	for _, attr := range n.Attr {
+		if !strings.EqualFold(attr.Key, key) {
+			kept = append(kept, attr)
+		}
+	}
+	n.Attr = kept
 }
 
 // setAttr 覆盖已有属性，不存在则追加。

@@ -145,6 +145,22 @@ func TestSanitizeAddsRelToBlankTarget(t *testing.T) {
 	}
 }
 
+// TestSanitizeDropsTargetOnMagnetLink 确认磁力链接不保留 target=_blank。
+//
+// 源站下载页常写 `<a href="magnet:..." target="_blank">`。原样保留时，
+// 点击会先弹出一个空白新标签页，再把 magnet 交给协议处理器；而 PikPak
+// 一类扩展在原页面就能接住这次点击，那个空白窗口纯属多余。
+func TestSanitizeDropsTargetOnMagnetLink(t *testing.T) {
+	got := sanitizePlain(t, `<a href="magnet:?xt=urn:btih:ABC" target="_blank">dl</a>`)
+
+	if !strings.Contains(got, `href="magnet:?xt=urn:btih:ABC"`) {
+		t.Fatalf("磁力链接 href 应保留: %s", got)
+	}
+	if strings.Contains(got, "target=") {
+		t.Errorf("磁力链接不应带 target: %s", got)
+	}
+}
+
 // TestSanitizeRejectsUnknownTarget 确认非标准 target 被移除。
 func TestSanitizeRejectsUnknownTarget(t *testing.T) {
 	got := sanitizePlain(t, `<a href="https://example.com" target="customName">x</a>`)
