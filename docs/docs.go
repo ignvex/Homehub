@@ -6016,7 +6016,12 @@ const docTemplate = `{
                     "$ref": "#/definitions/service.SafeProxyConfig"
                 },
                 "rss": {
-                    "$ref": "#/definitions/config.RSSConfig"
+                    "description": "RSS 的 pikpak 段含第三方账号凭据，用 SafeRSSConfig 脱敏。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/service.SafeRSSConfig"
+                        }
+                    ]
                 },
                 "server": {
                     "$ref": "#/definitions/config.ServerConfig"
@@ -6069,6 +6074,47 @@ const docTemplate = `{
                 }
             }
         },
+        "service.SafePikPakConfig": {
+            "type": "object",
+            "properties": {
+                "auto_lock": {
+                    "description": "AutoLock 抓取到磁力链接时自动锁定，避免后续抓取把它覆盖掉。\n默认 false：自动锁定会让“锁”失去“人工确认”的含义。",
+                    "type": "boolean"
+                },
+                "client_id": {
+                    "description": "ClientID / ClientSecret 是 PikPak 分配的客户端标识。\n留空时提交会直接失败并给出明确提示，不猜测默认值。",
+                    "type": "string"
+                },
+                "client_secret": {
+                    "type": "string"
+                },
+                "client_secret_set": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "description": "Enabled 是否启用。默认 false —— 涉及第三方账号凭据，必须显式开启。",
+                    "type": "boolean"
+                },
+                "endpoint": {
+                    "description": "Endpoint 服务地址，默认 https://api-drive.mypikpak.com。\n允许改是因为 PikPak 有多个区域端点，也可能自建反代。",
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "password_set": {
+                    "type": "boolean"
+                },
+                "timeout_seconds": {
+                    "description": "TimeoutSeconds 单次提交的超时，默认 15。",
+                    "type": "integer"
+                },
+                "username": {
+                    "description": "Username / Password 是 PikPak 账号。\n\n与 config.json 里其他凭据一样是明文存储（该文件已 gitignore 且\n权限应设为 600）。不用 refresh_token 是因为它过期需要人工续期，\n对一个个人项目来说反而更容易失效。",
+                    "type": "string"
+                }
+            }
+        },
         "service.SafeProxyConfig": {
             "type": "object",
             "properties": {
@@ -6096,6 +6142,70 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "service.SafeRSSConfig": {
+            "type": "object",
+            "properties": {
+                "background_fetch_enabled": {
+                    "description": "是否启用后台定时抓取，默认 true",
+                    "type": "boolean"
+                },
+                "background_fetch_interval": {
+                    "description": "后台抓取间隔（秒），默认 300",
+                    "type": "integer"
+                },
+                "fetch_concurrency": {
+                    "description": "FetchConcurrency 同时抓取的订阅源数量，默认 4。\n单次抓取变慢时不会拖住整轮：并发上限保证 DB 与网络不至于被打满。",
+                    "type": "integer"
+                },
+                "fetch_timeout_seconds": {
+                    "description": "FetchTimeoutSeconds 单个订阅源的抓取超时（秒），默认 30。\n超时只影响该订阅源，其他订阅源继续抓取。",
+                    "type": "integer"
+                },
+                "image_allow_private_hosts": {
+                    "description": "ImageAllowPrivateHosts 是否允许图片缓存访问内网/回环地址，默认 false。\n仅在内网 RSS 源确实引用内网图片时开启；开启会削弱 SSRF 防护。",
+                    "type": "boolean"
+                },
+                "image_cache_concurrency": {
+                    "description": "ImageCacheConcurrency 图片并发下载数，默认 6。",
+                    "type": "integer"
+                },
+                "image_cache_enabled": {
+                    "description": "ImageCacheEnabled 是否把条目内嵌图片缓存到本地，默认 true。\n关闭后保留原始外链 URL，可显著加快抓取（图片下载是抓取耗时的主要来源）。",
+                    "type": "boolean"
+                },
+                "image_cleanup_enabled": {
+                    "description": "ImageCleanupEnabled 是否自动清理没有条目引用的图片缓存，默认 true。",
+                    "type": "boolean"
+                },
+                "image_cleanup_interval_hours": {
+                    "description": "ImageCleanupIntervalHours 后台清理间隔（小时），默认 24。",
+                    "type": "integer"
+                },
+                "image_max_bytes": {
+                    "description": "ImageMaxBytes 单张图片的大小上限（字节），默认 128MB。\n超过上限的图片会被丢弃，而不是截断后写坏文件。\n上限放到 2GB 是为高分辨率原图留余量；真正的约束是抓取预算，\n单张图太大时会先撞上 fetch_timeout_seconds。",
+                    "type": "integer"
+                },
+                "image_retention_days": {
+                    "description": "ImageRetentionDays 无引用图片的保留天数，默认 30。\n只有超过这个天数仍无人引用的文件才会被删除，给历史条目留出重新抓取登记的时间。",
+                    "type": "integer"
+                },
+                "pikpak": {
+                    "$ref": "#/definitions/service.SafePikPakConfig"
+                },
+                "retention_count": {
+                    "description": "RetentionCount 是关闭无限存储时，每个订阅源保留的条目数，默认 5000。",
+                    "type": "integer"
+                },
+                "retention_unlimited": {
+                    "description": "RetentionUnlimited 关闭条目数量上限，默认开启。\n\n开启时不执行任何清理，旧条目一直保留；关闭后由 RetentionCount\n决定每个源保留多少条。默认选无限是因为清理不可逆：源站过期后\n条目再也抓不回来，而磁盘成本远低于丢掉历史。",
+                    "type": "boolean"
+                },
+                "user_agent": {
+                    "description": "自定义 User-Agent，空则默认 Chrome 150",
                     "type": "string"
                 }
             }
