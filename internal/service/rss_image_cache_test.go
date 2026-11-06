@@ -327,3 +327,28 @@ func TestRedirectToPrivateIsBlocked(t *testing.T) {
 		t.Errorf("错误信息应说明地址被拒，实际: %v", err)
 	}
 }
+
+// TestFeedClientBlocksLoopbackWhenImageHostsAllowed 防的是图片开关误伤订阅源抓取。
+//
+// rss.image_allow_private_hosts 只该放行图片下载。订阅源客户端的连接层
+// 校验曾读取同一个开关：打开图片放行后，抓订阅源也能直连 127.0.0.1，
+// 借 feed URL 或其重定向 / DNS rebinding 探测内网。
+func TestFeedClientBlocksLoopbackWhenImageHostsAllowed(t *testing.T) {
+	loadConfigWith(t, `,"rss": {"image_allow_private_hosts": true}`)
+
+	var hit atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit.Store(true)
+		_, _ = w.Write([]byte("<rss></rss>"))
+	}))
+	defer srv.Close()
+
+	resp, err := rssHTTPClient().R().Get(srv.URL)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("订阅源客户端连接 127.0.0.1 应被拒绝")
+	}
+	if hit.Load() {
+		t.Fatal("请求不应到达回环地址上的服务")
+	}
+}

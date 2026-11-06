@@ -199,8 +199,12 @@ func buildRSSHTTPClientWith(cfg *config.Config, allowPrivate bool) *req.Client {
 // 此时不做 IP 校验——目标解析发生在代理侧，HomeHub 无法干预，这是使用
 // 代理的固有边界；重定向仍逐跳校验。SOCKS5 的拨号目标就是目标地址，
 // 校验照常生效。
+//
+// 这里永不放行内网：是否放行由调用方选哪个客户端决定（见 rssImageHTTPClient
+// 改用 rssLooseHTTPClient），不在连接层读取任何开关。曾经读取
+// rss.image_allow_private_hosts，导致订阅源客户端也跟着放行内网。
 func guardDial(transport *http.Transport) *http.Transport {
-	return guardDialWith(transport, imageAllowPrivate)
+	return guardDialWith(transport, nil)
 }
 
 // guardDialWith 与 guardDial 相同，但由调用方决定何时放行内网。
