@@ -186,6 +186,18 @@ func (s *BookmarkService) UpdateBookmark(id uint64, req BookmarkUpdate) error {
 	if req.Priority != nil {
 		updates["priority"] = *req.Priority
 	}
+	// 编辑表单总会回传 group_id；只有真的换了分组才重排，否则每次编辑都会
+	// 把书签挤到末尾。查不到当前行时交给下面的 UPDATE 报 ErrBookmarkNotFound。
+	if req.GroupID != nil {
+		var current struct{ GroupID uint64 }
+		err := s.db.Model(&model.Bookmark{}).Select("group_id").Where("id = ?", id).Take(&current).Error
+		switch {
+		case err == nil && current.GroupID == *req.GroupID:
+			req.GroupID = nil
+		case err != nil && !errors.Is(err, gorm.ErrRecordNotFound):
+			return fmt.Errorf("查询书签失败: %w", err)
+		}
+	}
 	if req.GroupID != nil {
 		var count int64
 		if err := s.db.Model(&model.BookmarkGroup{}).Where("id = ?", *req.GroupID).Count(&count).Error; err != nil {
