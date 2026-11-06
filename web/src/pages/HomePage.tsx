@@ -3,7 +3,7 @@ import type { CSSProperties, FormEvent } from 'react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserAvatar } from '@/components/UserAvatar'
 import { homeApi, type AuthStatus, type BackgroundSettings, type Bookmark, type BookmarkGroup, type MediaAsset, type RSSEntry, type RSSFeed } from '@/lib/home'
-import { absoluteDate, hostnameOf, isUsableTimestamp, plainSummary, relativeTime } from '@/lib/format'
+import { absoluteDate, externalLinkProps, hostnameOf, isUsableTimestamp, plainSummary, relativeTime } from '@/lib/format'
 import { MagnetCopyButton } from '@/components/MagnetCopyButton'
 import { PageState } from '@/components/WorkspaceUI'
 import { isAbortError } from '@/lib/api'
@@ -99,7 +99,7 @@ function FeedEntryRow({ entry }: { entry: RSSEntry }) {
   const summary = entry.excerpt ?? plainSummary(entry.content)
   return <li>
     {/* is_read 缺失（旧后端）时按已读处理，不给整张卡片都加未读标记。 */}
-    <a className={`feed-item${entry.is_read === false ? ' is-unread' : ''}`} href={entry.link} target="_blank" rel="noreferrer">
+    <a className={`feed-item${entry.is_read === false ? ' is-unread' : ''}`} href={entry.link} {...externalLinkProps(entry.link)}>
       <span className="feed-item-title">{entry.is_read === false && <span className="visually-hidden">未读：</span>}{entry.title}</span>
       {summary && <span className="feed-item-summary">{summary}</span>}
       <span className="feed-item-meta">

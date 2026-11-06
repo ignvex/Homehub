@@ -12,7 +12,7 @@ import { rssApi, type EntryState, type FetchBy, type MarkReadBody, type OPMLImpo
 import { RSSFeedManager, RSSGroupManager } from '@/pages/RSSManage'
 import { extensionHubApi, type RemoteSubscription } from '@/lib/extensionHub'
 import { MagnetCopyButton } from '@/components/MagnetCopyButton'
-import { isUsableTimestamp, relativeTime } from '@/lib/format'
+import { externalLinkProps, isMagnetURL, isUsableTimestamp, relativeTime } from '@/lib/format'
 
 const perPage = 20
 
@@ -295,7 +295,9 @@ export function RSSPage() {
   /** openOriginal 在新标签打开原文并标为已读。 */
   function openOriginal(entry: RSSEntry) {
     if (!entry.link) return
-    window.open(entry.link, '_blank', 'noopener,noreferrer')
+    // 磁力链接就地交给协议处理器，不弹空白标签页。
+    if (isMagnetURL(entry.link)) window.location.assign(entry.link)
+    else window.open(entry.link, '_blank', 'noopener,noreferrer')
     void setEntryRead(entry, true)
   }
 
@@ -906,7 +908,7 @@ export function RSSPage() {
                 >
                   <span className={`rss-entry-dot${read ? '' : ' is-unread'}`} aria-hidden="true" />
                   <div className="rss-entry-body">
-                    <a className="rss-entry-title" href={entry.link} target="_blank" rel="noreferrer" onClick={() => void setEntryRead(entry, true)}>
+                    <a className="rss-entry-title" href={entry.link} {...externalLinkProps(entry.link)} onClick={() => void setEntryRead(entry, true)}>
                       {!read && <span className="visually-hidden">未读：</span>}
                       {entry.title}
                     </a>
@@ -1248,14 +1250,21 @@ function FeedNavItem({ feed, active, remote, unread, dragging, draggable, onSele
   </button>
 }
 
-/** deferImages 把正文里的图片推迟到进入视口再请求。
+/** prepareContent 在渲染前整理正文：图片推迟到进入视口再请求，磁力链接不开新窗口。
  *
  * 这是分段加载的第二段：正文 HTML 到达后先渲染文字，img 的 src 暂存到
  * data-src，由 useLazyImages 在图片滚进视口时才写回。文章带几十张图时，
  * 展开的瞬间不会同时打满连接，也不会把正文排版挤到图片加载完才出现。
+ *
+ * 顺手去掉磁力链接上的 target：magnet 在新标签页里打开只会多出一个空白窗口，
+ * PikPak 一类扩展在原页面就能接住点击。后端清洗已经会剥掉它，这里兜的是
+ * 清洗规则加入前就已入库的正文。
  */
-function deferImages(html: string): string {
+function prepareContent(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html')
+  for (const link of Array.from(doc.body.querySelectorAll('a[target]'))) {
+    if (isMagnetURL(link.getAttribute('href') ?? undefined)) link.removeAttribute('target')
+  }
   for (const img of Array.from(doc.body.querySelectorAll('img[src]'))) {
     const src = img.getAttribute('src')
     if (!src) continue
@@ -1335,7 +1344,7 @@ function EntryContent({ entryID, inline, open, onOpenChange }: {
   onOpenChange: (open: boolean) => void
 }) {
   // 惰性初始化：只有旧接口才会带 inline，不必在每次渲染里解析 HTML。
-  const [html, setHtml] = useState(() => (inline ? deferImages(inline) : ''))
+  const [html, setHtml] = useState(() => (inline ? prepareContent(inline) : ''))
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded] = useState(Boolean(inline))
   const [error, setError] = useState('')
@@ -1352,7 +1361,7 @@ function EntryContent({ entryID, inline, open, onOpenChange }: {
     setLoading(true)
     try {
       const data = await rssApi.entryContent(entryID)
-      setHtml(deferImages(data.content ?? ''))
+      setHtml(prepareContent(data.content ?? ''))
       setLoaded(true)
       setError('')
     } catch (cause) {

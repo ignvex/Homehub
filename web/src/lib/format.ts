@@ -72,3 +72,19 @@ export function plainSummary(html?: string, maxLength = 300): string {
     return ''
   }
 }
+
+/** 是否为磁力链接。 */
+export function isMagnetURL(href?: string): boolean {
+  return Boolean(href?.trim().toLowerCase().startsWith('magnet:'))
+}
+
+/**
+ * 外链的打开方式：普通链接新标签页打开；磁力链接留在当前页。
+ *
+ * 部分 RSS 源把条目 link 直接写成 magnet。带 target=_blank 时浏览器会先
+ * 弹一个空白标签页再交给协议处理器，而 PikPak 一类扩展在原页面就能接住
+ * 这次点击，那个空白窗口纯属多余。
+ */
+export function externalLinkProps(href?: string): { target?: '_blank'; rel?: string } {
+  return isMagnetURL(href) ? {} : { target: '_blank', rel: 'noreferrer' }
+}

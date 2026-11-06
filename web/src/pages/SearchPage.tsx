@@ -8,7 +8,7 @@ import { SEARCH_INPUT_ID, searchApi, type SearchResult, type SearchScope } from 
 import { rssApi, type RSSFeed } from '@/lib/rss'
 import { todoStatusLabel, todoStatusTone, type TodoStatus } from '@/lib/todos'
 import { formatDateTime } from '@/lib/types'
-import { relativeTime } from '@/lib/format'
+import { externalLinkProps, relativeTime } from '@/lib/format'
 
 const scopes: { value: SearchScope; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -229,7 +229,7 @@ export function SearchPage() {
                 <div><h2>RSS 订阅</h2><p>共 {result.rss_entries_total} 条</p></div>
               </header>
               <div className="result-list">
-                {entries.map(item => <a className="result-row" key={item.id} href={item.link} target="_blank" rel="noreferrer">
+                {entries.map(item => <a className="result-row" key={item.id} href={item.link} {...externalLinkProps(item.link)}>
                   <strong><Highlight text={item.title} query={result.query} /></strong>
                   <span>
                     {item.feed_title}
