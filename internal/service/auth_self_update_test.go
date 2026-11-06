@@ -102,3 +102,52 @@ func TestUpdateUserReportsDuplicateEmailAsTypedError(t *testing.T) {
 		t.Fatalf("期望 ErrEmailExists，得到 %v", err)
 	}
 }
+
+// TestOperatorCannotSelfEscalateViaOutOfRangeLevel 锁住「值未变即放行」的边界：
+// 2 级提交 level=0 会被 NormalizeLevel 夹成 1，与自身等级不同，必须仍按
+// 改自己等级拒绝，绝不能因为归一化而落到「未变化」分支。
+func TestOperatorCannotSelfEscalateViaOutOfRangeLevel(t *testing.T) {
+	for _, req := range []UpdateUserRequest{{Level: intPtr(0)}, {Role: strPtr("admin")}} {
+		db, mock, cleanup := testutil.NewMockDB(t)
+		op := testutil.CreateTestUser(t, "op", "admin", "")
+		op.Level = model.LevelOperator
+		rows := sqlmock.NewRows(testutil.ColumnsForUser()).AddRow(testutil.UserToRow(op)...)
+		mock.ExpectQuery(`SELECT \* FROM "users"`).WillReturnRows(rows)
+
+		if _, err := NewAuthService(db).UpdateUser(op.ID, op, req); !errors.Is(err, ErrSelfOperation) {
+			t.Errorf("%+v: 期望 ErrSelfOperation，得到 %v", req, err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Error(err)
+		}
+		cleanup()
+	}
+}
+
+// TestUnchangedLegacyEmailDoesNotBlockOtherEdits 防的是收紧邮箱校验后的连带伤害：
+// 库里已有的不规范邮箱会被表单原样回传，若无条件校验，这个用户连用户名都改不了。
+func TestUnchangedLegacyEmailDoesNotBlockOtherEdits(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+	mock.ExpectQuery(`SELECT \* FROM "users"`).WillReturnRows(adminSelfRows(t, "legacy-no-at"))
+	mock.ExpectQuery(`SELECT count\(\*\) FROM "users"`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(`UPDATE "users" SET "username"=\$1`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT \* FROM "users"`).WillReturnRows(adminSelfRows(t, "legacy-no-at"))
+
+	operator := testutil.CreateTestUser(t, "admin", "admin", "legacy-no-at")
+	name, email := "root", "legacy-no-at"
+	if _, err := NewAuthService(db).UpdateUser(1, operator, UpdateUserRequest{Username: &name, Email: &email}); err != nil {
+		t.Fatalf("未改动的历史邮箱不应阻止改用户名，得到 %v", err)
+	}
+}
+
+// TestCreateUserRejectsMalformedEmail 让入口与编辑走同一条校验，脏邮箱从源头进不来。
+func TestCreateUserRejectsMalformedEmail(t *testing.T) {
+	db, _, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+	admin := testutil.CreateTestUser(t, "admin", "admin", "")
+	if _, err := NewAuthService(db).CreateUser(admin, "u1", "password123", model.LevelViewer, "Name <a@b.com>"); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("期望 ErrInvalidEmail，得到 %v", err)
+	}
+}

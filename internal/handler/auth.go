@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ignvex/HomeHub/internal/logger"
 	"github.com/ignvex/HomeHub/internal/middleware"
 	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/ignvex/HomeHub/internal/service"
@@ -333,8 +334,9 @@ func AuthUpdateProfile(c *gin.Context) {
 			FailBadRequest(c, err.Error())
 			return
 		}
-		// 其余错误同样带上原因：笼统的「更新资料失败」让用户无从下手。
-		FailInternal(c, "更新资料失败："+err.Error())
+		// 已知的业务错误都在上面映射成 4xx；剩下的是存储层故障，原文只进日志。
+		logger.Error("更新个人资料失败", "user_id", user.ID, "error", err)
+		FailInternal(c, "更新资料失败")
 		return
 	}
 

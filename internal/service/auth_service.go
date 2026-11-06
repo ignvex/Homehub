@@ -258,12 +258,17 @@ func (s *AuthService) CreateUser(operator *model.User, username, password string
 		return nil, ErrUsernameExists
 	}
 
+	email = strings.TrimSpace(email)
+	if email != "" && !validEmail(email) {
+		return nil, ErrInvalidEmail
+	}
+
 	// 检查 email 是否已被使用
 	if email != "" {
 		var emailCount int64
 		s.db.Model(&model.User{}).Where("email = ?", email).Count(&emailCount)
 		if emailCount > 0 {
-			return nil, errors.New("邮箱已被其他用户使用")
+			return nil, ErrEmailExists
 		}
 	}
 
@@ -338,7 +343,9 @@ func (s *AuthService) UpdateUser(targetID uint64, operator *model.User, req Upda
 	if req.Email != nil {
 		trimmed := strings.TrimSpace(*req.Email)
 		req.Email = &trimmed
-		if trimmed != "" && !validEmail(trimmed) {
+		// 只校验变化了的值：库里可能有历史遗留的不规范邮箱，表单会原样回传它，
+		// 若无条件校验，这些用户连用户名都改不了。
+		if trimmed != user.Email && trimmed != "" && !validEmail(trimmed) {
 			return nil, ErrInvalidEmail
 		}
 		if *req.Email != user.Email {
