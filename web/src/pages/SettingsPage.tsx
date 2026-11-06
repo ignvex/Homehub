@@ -189,7 +189,8 @@ export function SettingsPage() {
       // 编辑器里是前端形状（background、private_key_set…），不能原样 PUT：
       // 后端不认识 background，会把背景改动静默丢掉。按模块转换成后端形状再合并。
       const merged: SafeConfig = draft ? { ...draft, ...parsed } : parsed
-      const payload = Object.assign({}, ...allSections.map(section => buildPayload(section, merged, emptySecrets)))
+      // proxy 没有表单面板，只能在这里改；后端按名字合并条目，脱敏掉的代理地址会保留。
+      const payload = Object.assign({ proxy: merged.proxy }, ...allSections.map(section => buildPayload(section, merged, emptySecrets)))
       await settingsApi.update(payload)
       const refreshed = await settingsApi.get()
       setConfig(refreshed)
