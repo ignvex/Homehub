@@ -137,3 +137,22 @@ export const extensionHubApi = {
   setKey: (privateKey: string) => api.put<KeyInfo>('/extension/key', { private_key: privateKey }),
   deleteKey: () => api.delete<{ deleted: boolean }>('/extension/key'),
 }
+
+/**
+ * hubSummary 把多层探测结果压成一句话与一个色调。
+ *
+ * 设置页、仪表盘、Extension 页共用：各写一份时，「私钥读取失败」在仪表盘上
+ * 被说成「签名未通过」，「网络不可达」也被说成「签名未通过」，用户照着错误
+ * 的提示去换密钥。顺序就是排障顺序：先配置，再网络，最后签名与依赖。
+ */
+export function hubSummary(status: ExtensionHubStatus | null): { label: string; tone: 'idle' | 'ok' | 'warn' | 'error' } {
+  if (!status) return { label: '未探测', tone: 'idle' }
+  if (!status.enabled || status.error_code === 'disabled') return { label: '未启用', tone: 'idle' }
+  if (!status.configured) return { label: '配置不完整', tone: 'error' }
+  if (!status.reachable) return { label: '网络不可达', tone: 'error' }
+  if (status.error_code === 'config') return { label: '地址配置错误', tone: 'error' }
+  if (!status.authenticated) return { label: '签名未通过', tone: 'error' }
+  if (status.ready === false) return { label: '依赖未就绪', tone: 'warn' }
+  if (status.rss_available) return { label: `已连通 · ${status.subscription_count} 条订阅`, tone: 'ok' }
+  return { label: '已连通（RSS 模块关闭）', tone: 'ok' }
+}

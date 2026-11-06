@@ -12,7 +12,7 @@ import {
   type Secrets,
   type SettingsSection,
 } from '@/lib/settings'
-import { extensionHubApi, type ExtensionHubStatus, type KeyInfo } from '@/lib/extensionHub'
+import { extensionHubApi, hubSummary, type ExtensionHubStatus, type KeyInfo } from '@/lib/extensionHub'
 
 // ============================================================
 // 设置页
@@ -867,28 +867,9 @@ function keySourceHint(info: KeyInfo | null): string {
   return '尚未配置私钥：粘贴一把 PKCS#8 PEM，或直接写 config.json'
 }
 
-/** hubLabel 把四层探测结果压成一句话。 */
-function hubLabel(status: ExtensionHubStatus | null): string {
-  if (!status) return '未探测'
-  if (!status.enabled) return '未启用'
-  if (!status.configured) return '私钥读取失败'
-  if (!status.reachable) return '网络不可达'
-  if (!status.authenticated) return '签名未通过'
-  if (status.ready === false) return '依赖未就绪'
-  if (status.rss_available) return `已连通 · ${status.subscription_count} 条订阅`
-  return '已连通（RSS 模块关闭）'
-}
-
-/** hubTone 给出状态徽章色调。 */
-function hubTone(status: ExtensionHubStatus | null): 'neutral' | 'warning' | 'danger' | 'success' {
-  if (!status) return 'neutral'
-  if (!status.enabled) return 'neutral'
-  if (!status.configured) return 'danger'
-  if (!status.reachable) return 'danger'
-  if (!status.authenticated) return 'danger'
-  if (status.ready === false) return 'warning'
-  return 'success'
-}
+const hubToneMap = { idle: 'neutral', ok: 'success', warn: 'warning', error: 'danger' } as const
+const hubLabel = (status: ExtensionHubStatus | null) => hubSummary(status).label
+const hubTone = (status: ExtensionHubStatus | null) => hubToneMap[hubSummary(status).tone]
 
 /** Section 是一个可独立保存的配置面板。 */
 function Section({ title, description, children, section, dirty, saving, onSave, onReset }: {

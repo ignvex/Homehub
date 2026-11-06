@@ -4,7 +4,7 @@ import { MetricRow, Panel, StatusDot } from '@/components/Surface'
 import { toneOf } from '@/lib/tone'
 import { dashboardApi, type HealthStatus } from '@/lib/dashboard'
 import { balanceApi, type BalanceTarget } from '@/lib/balance'
-import { extensionHubApi, type ExtensionHubStatus } from '@/lib/extensionHub'
+import { extensionHubApi, hubSummary, type ExtensionHubStatus } from '@/lib/extensionHub'
 import { relativeTime } from '@/lib/format'
 
 // ============================================================
@@ -89,9 +89,14 @@ export function DashboardPage() {
     if (healthResult.status === 'fulfilled') {
       const status = healthResult.value
       setHealth(status)
-      setHealthy(status.status === 'ok' && (!status.db || status.db === 'ok'))
+      // healthy 只表示 HTTP 服务本身：/health 能回 200 就是活着。
+      // 数据库单独一行显示，不再把「库断了」算成「服务异常」，否则同一屏上
+      // 「HTTP 服务：连接异常」与「整体状态：ok」互相矛盾。
+      setHealthy(status.status === 'ok')
       setError('')
     } else {
+      // 请求失败时清掉上一次的结果：留着它会出现「错误提示 + 数据库：已连接」并排。
+      setHealth(null)
       setHealthy(false)
       setError(healthResult.reason instanceof Error ? healthResult.reason.message : '健康检查失败')
     }
@@ -104,10 +109,14 @@ export function DashboardPage() {
   useEffect(() => {
     mountedRef.current = true
     void load(false)
-    const timer = window.setInterval(() => { void load(false) }, REFRESH_INTERVAL_MS)
+    // 标签页在后台时不轮询：Extension 状态每次都会真实探测对端（签名请求 + /readyz）。
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void load(false) }, REFRESH_INTERVAL_MS)
+    const onVisible = () => { if (document.visibilityState === 'visible') void load(false) }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       mountedRef.current = false
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [load])
 
@@ -119,33 +128,25 @@ export function DashboardPage() {
   }, [])
 
   const dbTone = health?.db === 'ok' ? 'ok' : health?.db ? 'error' : 'idle'
-  const serviceTone = healthy === null ? 'idle' : healthy ? 'ok' : 'error'
-  const dbLabel = health?.db === 'ok' ? '已连接' : health?.db ?? '—'
-  const serviceLabel = healthy === null ? '检查中' : healthy ? '运行正常' : '连接异常'
+  const dbLabel = health?.db === 'ok' ? '已连接' : health?.db === 'unreachable' ? '无法连接' : health?.db ?? '—'
+  const serviceLabel = healthy === null ? '检查中' : healthy ? '运行正常' : '无法访问'
+  // 综合判定：服务与数据库都正常才算正常；只坏数据库时是「降级」，提示用户去看日志。
+  const overall: { label: string; tone: 'ok' | 'warn' | 'error' | 'idle' } = healthy === null
+    ? { label: '检查中', tone: 'idle' }
+    : !healthy
+      ? { label: '服务不可用', tone: 'error' }
+      : health?.db && health.db !== 'ok'
+        ? { label: '降级：数据库不可用', tone: 'warn' }
+        : { label: '正常', tone: 'ok' }
   const okTargets = balances.filter(item => item.status === 'ok').length
-  // Extension 的四层状态压成一句话：仪表盘上不该给五盏灯。
-  const extensionLabel = !extension || !extension.enabled
-    ? '未启用'
-    : !extension.authenticated
-      ? (extension.error_code === 'config' ? '配置不完整' : '签名未通过')
-      : extension.ready === false
-        ? '依赖未就绪'
-        : extension.rss_available
-          ? `已连接 · ${extension.subscription_count} 条订阅`
-          : '已连接'
-  const extensionTone: 'ok' | 'error' | 'warn' | 'idle' = !extension || !extension.enabled
-    ? 'idle'
-    : !extension.authenticated
-      ? 'error'
-      : extension.ready === false
-        ? 'warn'
-        : 'ok'
+  // Extension 的多层状态压成一句话，与设置页同一套措辞。
+  const { label: extensionLabel, tone: extensionTone } = hubSummary(extension)
   const readyLabel = extension?.ready === true ? '就绪' : extension?.ready === false ? '未就绪' : '未探测到'
   const failedTargets = balances.filter(item => item.status === 'error').length
 
   return <div className="dashboard">
     <section className="dash-stats" aria-label="系统概况">
-      <StatTile label="系统状态" value={serviceLabel} dot={serviceTone} note={health?.status ? `health: ${health.status}` : undefined} />
+      <StatTile label="系统状态" value={overall.label} dot={overall.tone} note={health?.timestamp ? `检查于 ${relativeTime(health.timestamp) || '刚刚'}` : undefined} />
       <StatTile label="数据库" value={dbLabel} dot={dbTone} note="PostgreSQL" />
       <StatTile label="Extension" value={extensionLabel} dot={extensionTone} note={extension?.enabled ? extension.base_url : '未配置'} />
       <StatTile label="运行时长" value={formatUptime(health?.uptime_seconds)} note="自上次启动以来" />
@@ -167,9 +168,9 @@ export function DashboardPage() {
         {error
           ? <p className="dash-error" role="alert">{error}</p>
           : <>
-            <MetricRow label="HTTP 服务" hint="health endpoint" value={serviceLabel} tone={toneOf(healthy ? 'ok' : healthy === false ? 'error' : 'idle')} />
+            <MetricRow label="HTTP 服务" hint="/api/v1/health" value={serviceLabel} tone={toneOf(healthy ? 'ok' : healthy === false ? 'error' : 'idle')} />
             <MetricRow label="数据库" hint="连接与查询" value={dbLabel} tone={toneOf(health?.db)} />
-            <MetricRow label="整体状态" hint="综合判定" value={health?.status ?? '—'} tone={toneOf(health?.status)} />
+            <MetricRow label="整体状态" hint="服务 + 数据库" value={overall.label} tone={toneOf(overall.tone)} />
             <MetricRow label="启动时长" hint="进程运行时间" value={formatUptime(health?.uptime_seconds)} />
             {extension?.enabled && <MetricRow
               label="Extension 依赖"
