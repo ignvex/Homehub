@@ -394,3 +394,28 @@ func TestTodoWriteGateIsMember(t *testing.T) {
 		t.Errorf("/users/directory 未登录时状态码 = %d，期望 401", w.Code)
 	}
 }
+
+// TestBackgroundReadIsLoginOnly 锁住背景配置的读写门槛：读需登录，写需 3 级。
+//
+// 防的回归：GET /background 曾和 PUT 一起挂在 contentWrite 下，4、5 级
+// 用户打开外观页时请求被 403，整页显示「无法读取背景配置」——而这份
+// 配置本来就会在公开首页上呈现，对登录用户隐藏它没有意义。
+func TestBackgroundReadIsLoginOnly(t *testing.T) {
+	src, err := os.ReadFile("routes.go")
+	if err != nil {
+		t.Fatalf("读取 routes.go 失败: %v", err)
+	}
+	if !strings.Contains(string(src), `authRequired.GET("/background", handler.BackgroundGet)`) {
+		t.Error("GET /background 应挂在 authRequired（登录即可）")
+	}
+	if !strings.Contains(string(src), `contentWrite.PUT("/background", handler.BackgroundUpdate)`) {
+		t.Error("PUT /background 应挂在 contentWrite（3 级）")
+	}
+
+	r := newTestEngine()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/background", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /background 未登录时状态码 = %d，期望 401", w.Code)
+	}
+}

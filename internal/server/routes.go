@@ -203,12 +203,9 @@ func registerRoutes(r *gin.Engine) {
 			mediaWrite.DELETE("/:id", handler.MediaDelete)
 		}
 
-		// 背景设置（内容配置，3 级）
-		bgCfg := contentWrite.Group("/background")
-		{
-			bgCfg.GET("", handler.BackgroundGet)
-			bgCfg.PUT("", handler.BackgroundUpdate)
-		}
+		// 背景设置：读需登录（这份配置本就在公开首页上呈现），改需 3 级。
+		authRequired.GET("/background", handler.BackgroundGet)
+		contentWrite.PUT("/background", handler.BackgroundUpdate)
 
 		// RSS 订阅：读操作只需登录，写操作要求 3 级
 		rssRead := authRequired.Group("/rss")
