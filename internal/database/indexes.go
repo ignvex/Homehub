@@ -58,11 +58,18 @@ var searchIndexes = []struct {
 		name: "idx_log_entries_message_trgm",
 		sql:  `CREATE INDEX IF NOT EXISTS idx_log_entries_message_trgm ON log_entries USING GIN (message gin_trgm_ops)`,
 	},
+	{
+		// 全局搜索对剪贴板匹配 `content ILIKE '%词%'`（见 service.searchPastes）。
+		// pastes 由 model.CreatePastesTable 手工建表，启动顺序保证它先于
+		// EnsureSearchIndexes 执行（见 app.go）。
+		name: "idx_pastes_content_trgm",
+		sql:  `CREATE INDEX IF NOT EXISTS idx_pastes_content_trgm ON pastes USING GIN (content gin_trgm_ops)`,
+	},
 }
 
 // EnsureSearchIndexes 创建 pg_trgm 扩展与模糊搜索索引。
 //
-// 调用时机：必须在 AutoMigrate 之后（表需已存在）。
+// 调用时机：必须在 AutoMigrate 与 model.CreatePastesTable 之后（表需已存在）。
 //
 // 整个流程是尽力而为：扩展不可用（账号无权限、托管 PG 未预装）或
 // 单个索引创建失败时只记录警告，服务照常启动，搜索退化为全表扫描。

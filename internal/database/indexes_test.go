@@ -98,6 +98,7 @@ func TestSearchIndexesCoverSearchedColumns(t *testing.T) {
 		"idx_todos_title_trgm":         "todos USING GIN (title ",
 		"idx_todos_description_trgm":   "todos USING GIN (description ",
 		"idx_log_entries_message_trgm": "log_entries USING GIN (message ",
+		"idx_pastes_content_trgm":      "pastes USING GIN (content ",
 	}
 	got := map[string]string{}
 	for _, idx := range searchIndexes {
