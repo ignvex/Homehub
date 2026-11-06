@@ -210,7 +210,7 @@ type UpdateConfigRequest struct {
 	Database *DatabaseUpdate        `json:"database,omitempty"`
 	Auth     *AuthUpdate            `json:"auth,omitempty"`
 	Log      *LogUpdate             `json:"log,omitempty"`
-	WebUI    *config.WebUIConfig    `json:"webui,omitempty"`
+	WebUI    *WebUIUpdate           `json:"webui,omitempty"`
 	Proxy    *config.ProxyConfig    `json:"proxy,omitempty"`
 	Gravatar *config.GravatarConfig `json:"gravatar,omitempty"`
 	Bookmark *config.BookmarkConfig `json:"bookmark,omitempty"`
@@ -334,7 +334,7 @@ func (s *ConfigService) Update(req UpdateConfigRequest) error {
 			}
 		}
 		if req.WebUI != nil {
-			raw["webui"] = structToMap(*req.WebUI)
+			mergeWebUI(raw, *req.WebUI)
 		}
 		if req.Proxy != nil {
 			raw["proxy"] = mergeProxyConfig(raw["proxy"], *req.Proxy)
@@ -448,6 +448,30 @@ func mergeProxies(existing any, incoming []config.ProxyEntry) []any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// WebUIUpdate 按页面分开更新：nil 的页面完全不动。
+//
+// 旧实现用 config.WebUIConfig 整段替换 raw["webui"]：设置页只提交
+// home.background，login 段随之变成零值（layout=""、interval=0）。
+type WebUIUpdate struct {
+	Home  *config.HomeWebUIConfig  `json:"home,omitempty"`
+	Login *config.LoginWebUIConfig `json:"login,omitempty"`
+}
+
+// mergeWebUI 只替换请求里出现的页面，保留另一页与未知键。
+func mergeWebUI(raw map[string]any, update WebUIUpdate) {
+	section, ok := raw["webui"].(map[string]any)
+	if !ok {
+		section = map[string]any{}
+		raw["webui"] = section
+	}
+	if update.Home != nil {
+		replaceSection(section, "home", update.Home)
+	}
+	if update.Login != nil {
+		replaceSection(section, "login", update.Login)
+	}
 }
 
 // mergeExtension 合并 Extension 连接字段，逐字段覆盖。

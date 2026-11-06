@@ -548,3 +548,36 @@ func TestUpdatePersistsExtensionFeaturesAndReturnsThem(t *testing.T) {
 		t.Fatalf("GET /config 应下发已保存的 features，实际 %+v", safe.Extension.Features)
 	}
 }
+
+// TestUpdateHomeBackgroundKeepsLoginPage 防的是设置页「背景与外观」保存后
+// 登录页配置被抹掉。前端只提交 webui.home.background，后端曾用整段替换
+// raw["webui"]：login.layout 与 login.background 变成零值（mode=""、
+// interval=0），配置随即校验失败或登录页布局被重置。
+func TestUpdateHomeBackgroundKeepsLoginPage(t *testing.T) {
+	body := strings.Replace(settingsBaseConfig, `"gravatar": {`, `"webui": {
+		"home": {"background": {"mode": "single", "interval_seconds": 30, "transition_effect": "fade", "fade_duration_ms": 1000, "selected_asset_ids": []}},
+		"login": {"layout": "left", "background": {"mode": "random", "interval_seconds": 45, "transition_effect": "slide", "fade_duration_ms": 800, "selected_asset_ids": [7]}}
+	},
+	"gravatar": {`, 1)
+	path := loadSettingsConfig(t, strings.Replace(body, "%s", strings.Repeat("a", 32), 1))
+
+	var req UpdateConfigRequest
+	if err := json.Unmarshal([]byte(`{"webui":{"home":{"background":{"mode":"carousel","interval_seconds":10,"transition_effect":"fade","fade_duration_ms":500,"selected_asset_ids":[1,2]}}}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewConfigService().Update(req); err != nil {
+		t.Fatalf("只改首页背景不应失败: %v", err)
+	}
+
+	webui := readConfigJSON(t, path)["webui"].(map[string]any)
+	login := webui["login"].(map[string]any)
+	if login["layout"] != "left" {
+		t.Fatalf("login.layout 被改成 %v", login["layout"])
+	}
+	if bg := login["background"].(map[string]any); bg["mode"] != "random" || bg["interval_seconds"] != float64(45) {
+		t.Fatalf("login.background 被改动: %v", bg)
+	}
+	if home := webui["home"].(map[string]any)["background"].(map[string]any); home["mode"] != "carousel" {
+		t.Fatalf("home.background 未写入: %v", home)
+	}
+}

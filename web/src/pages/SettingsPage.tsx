@@ -186,7 +186,11 @@ export function SettingsPage() {
     setJsonError('')
     try {
       const parsed = parseConfigJSON(jsonText)
-      await settingsApi.update(parsed as unknown as Record<string, unknown>)
+      // 编辑器里是前端形状（background、private_key_set…），不能原样 PUT：
+      // 后端不认识 background，会把背景改动静默丢掉。按模块转换成后端形状再合并。
+      const merged: SafeConfig = draft ? { ...draft, ...parsed } : parsed
+      const payload = Object.assign({}, ...allSections.map(section => buildPayload(section, merged, emptySecrets)))
+      await settingsApi.update(payload)
       const refreshed = await settingsApi.get()
       setConfig(refreshed)
       setDraft(structuredClone(refreshed))
@@ -230,8 +234,14 @@ export function SettingsPage() {
     }
   }
 
+  /**
+   * 「还原」本身就是明确的放弃操作，不再弹 window.confirm：浏览器会静默拦截
+   * 原生对话框（用户勾过「阻止此页面创建更多对话框」后尤其如此），表现为
+   * 「点了还原没反应」。还原只影响本模块的草稿，提示一下即可。
+   */
   function confirmDiscard(action: () => void) {
-    if (window.confirm('放弃这里未保存的更改？')) action()
+    action()
+    notice.info('已还原为当前生效的配置')
   }
 
   if (loading && !config) return <PageState kind="loading" title="正在读取系统配置" />
