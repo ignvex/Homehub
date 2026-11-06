@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ignvex/HomeHub/internal/handler"
@@ -240,15 +242,7 @@ func TestStaticAssetsCachePolicy(t *testing.T) {
 // 只测纯函数不够：头部是否真的写进了响应，取决于 serveSPA 有没有调用
 // 它。这条用真实请求验证，避免「函数改了但没接上」。
 func TestIndexHTMLIsNotLongCached(t *testing.T) {
-	// serveSPA 用的是相对工作目录的 "web/dist/index.html"，而 go test
-	// 在包目录下运行。切到仓库根，否则这里会因为找不到文件而 404，
-	// 掩盖掉真正要验证的头部逻辑。
-	t.Chdir("../..")
-
-	// 没有构建产物时跳过，避免干净检出上假失败。
-	if _, err := os.Stat("web/dist/index.html"); err != nil {
-		t.Skip("web/dist 不存在，跳过静态资源断言")
-	}
+	useFrontend(t, fstest.MapFS{"index.html": {Data: []byte("<!doctype html><div id=root></div>")}})
 
 	r := newTestEngine()
 	w := httptest.NewRecorder()
@@ -259,6 +253,82 @@ func TestIndexHTMLIsNotLongCached(t *testing.T) {
 	}
 	if got := w.Header().Get("Cache-Control"); got != htmlCacheControl {
 		t.Errorf("GET / 的 Cache-Control = %q，期望 %q", got, htmlCacheControl)
+	}
+}
+
+// useFrontend 在测试期间替换前端文件系统，结束后还原。
+func useFrontend(t *testing.T, fsys fs.FS) {
+	t.Helper()
+	prev := frontend
+	frontend = fsys
+	t.Cleanup(func() { frontend = prev })
+}
+
+// TestFrontendServedWithoutWorkingDirectory 是嵌入改造的核心断言：前端必须
+// 从进程内的文件系统读取，而不是相对工作目录的 web/dist。切到一个空的
+// 临时目录后，入口、哈希资源与 SPA 深链都仍然能返回，且 Content-Type 正确。
+func TestFrontendServedWithoutWorkingDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	useFrontend(t, fstest.MapFS{
+		"index.html":           {Data: []byte("<!doctype html><title>HomeHub</title>")},
+		"assets/index-abc.js":  {Data: []byte("console.log(1)")},
+		"assets/index-abc.css": {Data: []byte("body{}")},
+		"sw.js":                {Data: []byte("self.x=1")},
+	})
+	r := newTestEngine()
+
+	cases := []struct {
+		path, wantType, wantCache, wantBody string
+	}{
+		{"/", "text/html", htmlCacheControl, "<title>HomeHub</title>"},
+		{"/rss/feeds", "text/html", htmlCacheControl, "<title>HomeHub</title>"},
+		{"/assets/index-abc.js", "javascript", assetsCacheControl, "console.log(1)"},
+		{"/assets/index-abc.css", "text/css", assetsCacheControl, "body{}"},
+		{"/sw.js", "javascript", htmlCacheControl, "self.x=1"},
+	}
+	for _, c := range cases {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, c.path, nil))
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: 状态码 %d，期望 200", c.path, w.Code)
+			continue
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, c.wantType) {
+			t.Errorf("%s: Content-Type = %q，期望包含 %q", c.path, ct, c.wantType)
+		}
+		if got := w.Header().Get("Cache-Control"); got != c.wantCache {
+			t.Errorf("%s: Cache-Control = %q，期望 %q", c.path, got, c.wantCache)
+		}
+		if !strings.Contains(w.Body.String(), c.wantBody) {
+			t.Errorf("%s: 响应体 %q 不含 %q", c.path, w.Body.String(), c.wantBody)
+		}
+	}
+}
+
+// TestMissingAssetIs404NotIndex 防的是「旧 JS 被删后返回 index.html」：
+// 浏览器会把 HTML 当脚本执行，报语法错误后白屏，比 404 更难排查。
+// 路径穿越同样不能读到嵌入文件系统之外的东西。
+func TestMissingAssetIs404NotIndex(t *testing.T) {
+	useFrontend(t, fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}})
+	r := newTestEngine()
+	for _, path := range []string{"/assets/gone-123.js", "/../../go.mod", "/assets/../../etc/passwd.js"} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: 状态码 %d，期望 404", path, w.Code)
+		}
+	}
+}
+
+// TestUnbuiltFrontendExplainsHowToBuild 覆盖干净检出直接 go build 的情况：
+// 嵌入目录里只有占位文件时，不能返回空白页或 500，要告诉人去 pnpm build。
+func TestUnbuiltFrontendExplainsHowToBuild(t *testing.T) {
+	useFrontend(t, fstest.MapFS{".gitkeep": {Data: nil}})
+	r := newTestEngine()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "pnpm build") {
+		t.Fatalf("期望 503 并提示 pnpm build，得到 %d %q", w.Code, w.Body.String())
 	}
 }
 

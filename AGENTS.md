@@ -55,6 +55,10 @@ pnpm dev        # :5173，代理 /api 与 /static 到 :8080
 pnpm build      # tsc -b + vite build
 pnpm lint       # oxlint，目标 0 error
 
+# 发布构建：先 pnpm build 再 go build，web/dist 经 go:embed 嵌入二进制
+scripts/build.sh
+# 调试前端时跳过重编 Go：HOMEHUB_WEB_DIR=web/dist go run ./cmd/homehub
+
 # 文档（新增路由后必须重跑）
 swag init -g cmd/homehub/main.go --parseDependency --parseInternal -o docs
 ```

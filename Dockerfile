@@ -5,9 +5,8 @@
 # 不需要在镜像里安装 Go 或 Node.js。
 #
 # 构建前准备：
-#   1. 前端：cd web && pnpm install && pnpm build
-#   2. 后端：CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o homehub ./cmd/homehub
-#   3. 镜像：docker build -t homehub .
+#   1. 二进制：scripts/build.sh（先构建前端，再 go build 把 web/dist 嵌入二进制）
+#   2. 镜像：docker build -t homehub .
 #
 # 配置文件不打包进镜像（避免凭据泄露），运行时通过挂载提供：
 #   docker run -d -p 8080:8080 \
@@ -40,9 +39,6 @@ WORKDIR /app
 
 # 复制预编译的 Go 二进制（本地交叉编译好了，不用在 Docker 里装 Go）
 COPY homehub .
-
-# 复制前端构建产物
-COPY web/dist ./web/dist
 
 # 复制静态资源目录
 COPY web/static ./web/static

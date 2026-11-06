@@ -12,7 +12,7 @@
 #   docker compose down     # 停止并移除容器
 #
 # 升级（本镜像只打包、不编译，见 Dockerfile 头部说明）:
-#   替换 homehub 二进制（必要时同时替换 web/dist）后执行
+#   替换 homehub 二进制（前端已嵌入其中）后执行
 #   docker compose up -d --build
 #
 # Unraid 用户注意:

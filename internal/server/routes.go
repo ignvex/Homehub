@@ -1,8 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"io"
+	"io/fs"
 	"net/http"
-	"path/filepath"
+	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -10,13 +14,14 @@ import (
 	"github.com/ignvex/HomeHub/internal/handler"
 	"github.com/ignvex/HomeHub/internal/middleware"
 	"github.com/ignvex/HomeHub/internal/model"
+	"github.com/ignvex/HomeHub/web"
 )
 
 // 静态资源的缓存策略。
 //
 // 两档，依据是文件名是否带内容哈希：
 //
-//   - `web/dist/assets/*` 由 vite 产出，文件名里含内容哈希（如
+//   - `assets/*` 由 vite 产出（嵌入自 web/dist），文件名里含内容哈希（如
 //     `index-D3emB2dI.js`），内容一变文件名就变。它们可以永久缓存——
 //     旧文件即使不再被引用也无害，因为新页面指向的是新名字。
 //   - `index.html` 引用这些名字，**它自己绝不能被长期缓存**。
@@ -48,22 +53,86 @@ func staticCacheControl(path string) string {
 	return htmlCacheControl
 }
 
+// frontend 是前端构建产物的文件系统，根目录即 vite 的 dist/。
+//
+// 默认取嵌入二进制的那份（见 web/embed.go），部署时不再需要同步 web/dist。
+// 设置 HOMEHUB_WEB_DIR 时改为从该磁盘目录读取：本地调试改完前端只需
+// pnpm build，不用重新编译 Go。测试里直接替换这个变量。
+var frontend = frontendFS()
+
+func frontendFS() fs.FS {
+	if dir := os.Getenv("HOMEHUB_WEB_DIR"); dir != "" {
+		return os.DirFS(dir)
+	}
+	return web.Dist()
+}
+
+// unbuiltFrontendPage 在嵌入目录只有占位文件时返回。
+//
+// 干净检出后直接 go build 是合法的（CI 只跑后端测试时就是这样），
+// 但运行起来访问首页会是空白——这里把原因直接写在页面上。
+const unbuiltFrontendPage = `<!doctype html><meta charset="utf-8"><title>HomeHub</title>
+<p>前端尚未构建：这个二进制编译时 web/dist 里没有产物。</p>
+<p>在仓库里执行 <code>cd web &amp;&amp; pnpm install &amp;&amp; pnpm build</code>，然后重新 <code>go build ./cmd/homehub</code>。</p>`
+
+// serveFrontendFile 从 frontend 返回一个文件。name 是 fs.FS 路径（不带前导 /）。
+//
+// 不用 c.FileFromFS / http.FileServer：它们对目录与 index.html 有自动重定向，
+// 而这里的路由规则（深链回落、缺失资源 404）需要自己决定。
+func serveFrontendFile(c *gin.Context, name string) bool {
+	f, err := frontend.Open(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return false
+		}
+		rs = bytes.NewReader(data)
+	}
+	// embed.FS 的 ModTime 恒为零值，ServeContent 因此不发 Last-Modified；
+	// 带哈希的资源靠 immutable，index.html 靠 no-cache 每次重新取，体积很小。
+	http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), rs)
+	return true
+}
+
 func serveSPA(c *gin.Context) {
 	c.Header("Cache-Control", htmlCacheControl)
-	c.File("web/dist/index.html")
+	if !serveFrontendFile(c, "index.html") {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusServiceUnavailable, unbuiltFrontendPage)
+	}
 }
 
 func registerSPAFallback(r *gin.Engine) {
 	r.NoRoute(func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if c.Request.Method != http.MethodGet || strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/swagger/") {
+		urlPath := c.Request.URL.Path
+		if (c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead) ||
+			strings.HasPrefix(urlPath, "/api/") || strings.HasPrefix(urlPath, "/swagger/") {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		// SPA 静态资源：带扩展名的请求从 dist 目录返回（JS/CSS/图片/favicon 等）
-		if filepath.Ext(path) != "" {
-			c.Header("Cache-Control", staticCacheControl(path))
-			c.File("web/dist" + path)
+		// SPA 静态资源：带扩展名的请求返回构建产物（JS/CSS/图片/favicon 等）。
+		// 找不到就是 404，绝不回落到 index.html：浏览器会把 HTML 当脚本执行。
+		if path.Ext(urlPath) != "" {
+			// path.Clean 去掉 ..，再去前导 /；fs.FS 本身也拒绝越出根目录的路径。
+			name := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
+			if !fs.ValidPath(name) {
+				c.Status(http.StatusNotFound)
+				return
+			}
+			c.Header("Cache-Control", staticCacheControl(urlPath))
+			if !serveFrontendFile(c, name) {
+				c.Header("Cache-Control", "no-store")
+				c.Status(http.StatusNotFound)
+			}
 			return
 		}
 		serveSPA(c)

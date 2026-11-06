@@ -97,7 +97,7 @@
 cd web
 pnpm install      # 安装依赖
 pnpm dev          # 启动开发服务器 → http://localhost:5173
-pnpm build        # 生产构建 → dist/
+pnpm build        # 生产构建 → web/dist/（随后 go build 会把它嵌入二进制）
 ```
 
 > pnpm 10+ 首次安装若提示 `Ignored build scripts: esbuild`，执行 `pnpm approve-builds` 并勾选 esbuild，然后重新 `pnpm install`。
@@ -168,7 +168,11 @@ web/
                     └── /static/* ──▶ Go :8080 (代理)
 ```
 
-**生产构建后**：Go 后端通过 `r.Static("/static", "./web/static")` 提供静态资源；未匹配的 GET 请求回退到 `web/dist/index.html`，带扩展名的请求返回 `web/dist` 下的对应文件。
+**生产构建后**：`web/dist` 在 `go build` 时通过 `go:embed` 嵌入二进制（见 `web/embed.go`），运行时不读磁盘上的 `web/dist`。未匹配的 GET 请求回退到 `index.html`，带扩展名的请求返回构建产物里的对应文件，找不到就 404。上传目录仍由 `r.Static("/static", "./web/static")` 从磁盘提供。
+
+- 构建顺序必须是先 `pnpm build` 再 `go build`，用 `scripts/build.sh` 可以一步完成
+- 本地调试想改完前端不重编 Go：`HOMEHUB_WEB_DIR=web/dist go run ./cmd/homehub`，此时从该目录读取
+- 干净检出直接 `go build` 也能编译（`web/dist/.gitkeep` 是占位文件），但访问首页会提示先构建前端
 
 ### 常用命令
 
@@ -205,18 +209,15 @@ cp config.example.json config.json
 #   auth.session_secret   至少 32 字符，可用 openssl rand -hex 32 生成
 #   balance_monitor.targets[].api_key  必填（每个 target 都要填，与 enabled 无关）
 
-# 3. 构建前端（需 Node.js ≥ 20 + pnpm）
-cd web && pnpm install && pnpm build && cd ..
+# 3. 构建前端并编译后端，前端会嵌入二进制（需 Node.js ≥ 20 + pnpm + Go）
+scripts/build.sh
+# ARM NAS 请改用 GOARCH=arm64 scripts/build.sh
 
-# 4. 交叉编译后端（Dockerfile 只打包，不在容器内编译）
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o homehub ./cmd/homehub
-# ARM NAS 请改用 GOARCH=arm64
-
-# 5. 构建镜像并启动
+# 4. 构建镜像并启动
 docker compose build
 docker compose up -d
 
-# 6. 验证
+# 5. 验证
 curl http://localhost:8080/api/v1/health
 # 浏览器访问 http://localhost:8080
 ```
@@ -227,7 +228,7 @@ curl http://localhost:8080/api/v1/health
 
 | 端口 | 用途 |
 |------|------|
-| `8080` | HTTP 服务（API + SPA 前端 + `/static`） |
+| `8080` | HTTP 服务（API + 嵌入的 SPA 前端 + `/static`） |
 
 | 挂载路径 | 用途 | 要求 |
 |----------|------|------|
@@ -249,13 +250,11 @@ curl http://localhost:8080/api/v1/health
 镜像只负责打包运行，不含 Go / Node.js 工具链（基础镜像 `debian:trixie-slim`）。因此升级不需要重新克隆仓库，也不会动到 `config.json` 与 `uploads/`：
 
 ```bash
-# 1. 在开发机上重新编译（改动仅涉前端时也要重新 pnpm build）
-cd web && pnpm install && pnpm build && cd ..
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o homehub ./cmd/homehub
+# 1. 在开发机上重新编译（前端已嵌入，改动仅涉前端时也要重新编译）
+scripts/build.sh
 
-# 2. 同步两个产物（首次部署才需要整份源码，因为要有 Dockerfile）
+# 2. 只需同步这一个文件（首次部署才需要整份源码，因为要有 Dockerfile）
 scp homehub root@nas:/mnt/user/appdata/homehub/
-scp -r web/dist root@nas:/mnt/user/appdata/homehub/web/
 
 # 3. 在部署目录重建并重启
 docker compose up -d --build
@@ -274,15 +273,14 @@ docker compose up -d --build
      - /mnt/user/appdata/homehub/uploads:/app/web/static/uploads
    ```
 4. 若容器无法连接 NAS 上的数据库，在 `docker-compose.yml` 中启用 `network_mode: host`
-5. Unraid 通常不装 Node.js/Go：在开发机上构建 `web/dist` 和 `homehub` 二进制后同步过去。首次部署需要整份源码（Dockerfile 与 compose 文件）：
+5. Unraid 通常不装 Node.js/Go：在开发机上构建 `homehub` 二进制（已嵌入前端）后同步过去。首次部署需要整份源码（Dockerfile 与 compose 文件）：
    ```bash
    # 在开发机上
-   cd web && pnpm install && pnpm build && cd ..
-   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o homehub ./cmd/homehub
-   # 复制整个项目到 Unraid（web/dist/ 与 homehub 会一起过去）
+   scripts/build.sh
+   # 复制整个项目到 Unraid（homehub 会一起过去）
    scp -r ../HomeHub root@unraid:/mnt/user/appdata/homehub/
    ```
-   后续升级只同步 `homehub` 和 `web/dist` 即可（见上一节）。
+   后续升级只同步 `homehub` 一个文件即可（见上一节）。
 6. Unraid 终端执行：
    ```bash
    cd /mnt/user/appdata/homehub
@@ -295,6 +293,7 @@ docker compose up -d --build
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `HOMEHUB_CONFIG` | 配置文件路径 | `config.json`（容器内工作目录为 `/app`） |
+| `HOMEHUB_WEB_DIR` | 从该磁盘目录读取前端，覆盖嵌入的版本（调试用） | 未设置，使用嵌入的前端 |
 
 > Web 端配置更新（含背景设置）与首次启动的密码清除都会写回 `HOMEHUB_CONFIG` 指向的文件。
 
