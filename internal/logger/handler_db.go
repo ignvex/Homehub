@@ -27,6 +27,12 @@ type dbHandler struct {
 	ch        chan *model.LogEntry
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// mu 保护 closed 与 ch 的关闭：Handle 持读锁检查 closed 并发送，
+	// Close 持写锁置位后再 close(ch)。关停时仍有不受 WaitGroup 管辖的
+	// goroutine 在写日志，没有这把锁就会向已关闭的 channel 发送而 panic。
+	mu     sync.RWMutex
+	closed bool
 }
 
 const (
@@ -134,11 +140,16 @@ func (h *dbHandler) Handle(_ context.Context, r slog.Record) error {
 		entry.Fields = string(data)
 	}
 
-	select {
-	case h.ch <- entry:
-	default:
-		// 缓冲区满，丢弃（不阻塞主流程）
+	h.mu.RLock()
+	if !h.closed {
+		select {
+		case h.ch <- entry:
+		default:
+			// 缓冲区满，丢弃（不阻塞主流程）
+		}
 	}
+	// 已关闭：数据库写入器已退出，直接丢弃；广播照常进行。
+	h.mu.RUnlock()
 
 	// 推送到实时广播（SSE/WebSocket）
 	broadcastLog(entry)
@@ -222,7 +233,12 @@ func (h *dbHandler) WithGroup(name string) slog.Handler {
 // Close 关闭 DB handler，等待后台写入完成。
 func (h *dbHandler) Close() {
 	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		h.closed = true
 		close(h.ch)
+		h.mu.Unlock()
+		// 等待在锁外进行：刷盘期间的日志调用拿读锁后看到 closed 直接丢弃，
+		// 不会被阻塞到写入器退出。
 		<-h.done
 	})
 }
