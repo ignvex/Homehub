@@ -33,12 +33,20 @@ const (
 	defaultImportGroup = "导入的书签"
 	// bookmarkFolderSep 拼接嵌套文件夹名（书签分组只有一级）。
 	bookmarkFolderSep = "/"
+	// maxBookmarkFolderDepth 是文件夹嵌套层数上限（不带标题的 <DL> 也算一层）。
+	// 浏览器里真实的收藏夹很少超过十层；不设上限时，构造的深层文件
+	// 能让解析阶段分配到 GB 级内存。
+	maxBookmarkFolderDepth = 32
+	// bookmarkGroupNameMaxRunes 与 model.BookmarkGroup.Name 的 size 一致，
+	// 由 TestBookmarkGroupNameMaxMatchesColumn 锁住。
+	bookmarkGroupNameMaxRunes = 100
 )
 
 // 书签导入的调用方错误，handler 据此回 400。
 var (
 	ErrBookmarkImportTooLarge = fmt.Errorf("书签文件不能超过 %d MB", MaxBookmarkImportBytes>>20)
 	ErrBookmarkImportTooMany  = fmt.Errorf("书签文件中的书签超过 %d 个", maxBookmarkImport)
+	ErrBookmarkImportTooDeep  = fmt.Errorf("书签文件夹嵌套超过 %d 层", maxBookmarkFolderDepth)
 )
 
 // ExportBookmarksHTML 导出全部书签为 Netscape Bookmark File。
@@ -82,10 +90,14 @@ type parsedBookmark struct {
 // 文件夹层级靠 <DL> 的开闭维护：遇到 <H3> 记下名字，紧随其后的 <DL>
 // 把它压栈，对应的 </DL> 弹栈。缺了闭合标签也只是让后面的书签归到
 // 更深一层，不会解析失败——浏览器导出的文件经常不完全规整。
+//
+// 栈里存的是每一层拍平后的完整分组名，压栈时增量拼接并立即截断到列宽；
+// 嵌套超过 maxBookmarkFolderDepth 层返回 ErrBookmarkImportTooDeep。
+// 两者一起保证解析内存与文件大小同阶，不随「层数 × 书签数」膨胀。
 func parseNetscapeBookmarks(r io.Reader) ([]parsedBookmark, error) {
 	z := html.NewTokenizer(r)
 	var (
-		stack      []string // 当前所在的文件夹路径
+		stack      []string // 每层拍平并截断后的分组名，栈顶即当前分组
 		pending    *string  // 刚读到、尚未遇到 <DL> 的 H3 名称
 		inH3, inA  bool
 		text       strings.Builder
@@ -105,16 +117,22 @@ func parseNetscapeBookmarks(r io.Reader) ([]parsedBookmark, error) {
 			name, hasAttr := z.TagName()
 			switch atom.Lookup(name) {
 			case atom.Dl:
-				if pending != nil {
-					stack = append(stack, *pending)
-					pending = nil
-				} else if !rootOpened {
+				if pending == nil && !rootOpened {
 					// 最外层 <DL> 是根，不算文件夹。
 					rootOpened = true
-				} else {
-					// 没有标题的嵌套列表：沿用上一级的名字，保持开闭配对。
-					stack = append(stack, "")
+					break
 				}
+				// 没有标题的嵌套列表同样压栈（沿用上一级的名字，保持开闭配对），
+				// 也同样计入深度——否则只写 <DL> 就能绕过上限。
+				if len(stack) >= maxBookmarkFolderDepth {
+					return nil, ErrBookmarkImportTooDeep
+				}
+				seg := ""
+				if pending != nil {
+					seg = *pending
+					pending = nil
+				}
+				stack = append(stack, childFolderName(currentFolder(stack), seg))
 			case atom.H3:
 				inH3 = true
 				text.Reset()
@@ -151,7 +169,7 @@ func parseNetscapeBookmarks(r io.Reader) ([]parsedBookmark, error) {
 						return nil, ErrBookmarkImportTooMany
 					}
 					out = append(out, parsedBookmark{
-						group: folderName(stack),
+						group: currentFolder(stack),
 						title: strings.TrimSpace(text.String()),
 						url:   strings.TrimSpace(href),
 					})
@@ -165,15 +183,29 @@ func parseNetscapeBookmarks(r io.Reader) ([]parsedBookmark, error) {
 	}
 }
 
-// folderName 把文件夹路径拍平成「父/子」，空段跳过。
-func folderName(stack []string) string {
-	parts := make([]string, 0, len(stack))
-	for _, p := range stack {
-		if p != "" {
-			parts = append(parts, p)
-		}
+// currentFolder 返回当前所在的分组名，不在任何文件夹里时为空。
+func currentFolder(stack []string) string {
+	if len(stack) == 0 {
+		return ""
 	}
-	return strings.Join(parts, bookmarkFolderSep)
+	return stack[len(stack)-1]
+}
+
+// childFolderName 把子文件夹名接到父分组名后（「父/子」，空段跳过），
+// 并截断到分组名列宽。
+//
+// 父名已经截断过，先截断子段再拼接，结果与「整条路径拼好再截断」一致，
+// 但单次分配不超过两倍列宽。
+func childFolderName(parent, seg string) string {
+	seg = model.TruncateRunes(seg, bookmarkGroupNameMaxRunes)
+	switch {
+	case seg == "":
+		return parent
+	case parent == "":
+		return seg
+	default:
+		return model.TruncateRunes(parent+bookmarkFolderSep+seg, bookmarkGroupNameMaxRunes)
+	}
 }
 
 // BookmarkImportResult 是书签导入的汇总。
@@ -255,7 +287,7 @@ func (s *BookmarkService) ImportBookmarksHTML(r io.Reader) (*BookmarkImportResul
 			if name == "" {
 				name = defaultImportGroup
 			}
-			name = model.TruncateRunes(name, 100)
+			name = model.TruncateRunes(name, bookmarkGroupNameMaxRunes)
 
 			gid, ok := groupIDs[name]
 			if !ok {

@@ -56,7 +56,8 @@ func BookmarkImport(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrBookmarkImportTooLarge):
 			Fail(c, http.StatusBadRequest, CodeFileTooLarge, err.Error())
-		case errors.Is(err, service.ErrBookmarkImportTooMany):
+		case errors.Is(err, service.ErrBookmarkImportTooMany),
+			errors.Is(err, service.ErrBookmarkImportTooDeep):
 			FailBadRequest(c, err.Error())
 		default:
 			FailInternal(c, "导入书签失败")

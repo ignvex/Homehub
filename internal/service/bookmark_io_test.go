@@ -3,12 +3,14 @@ package service
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ignvex/HomeHub/internal/model"
 	"github.com/ignvex/HomeHub/internal/testutil"
+	"gorm.io/gorm/schema"
 )
 
 // Chrome 导出的真实形态：<p> 与 <DT> 不闭合、文件夹多层嵌套、
@@ -158,5 +160,76 @@ func TestIntegrationBookmarkExportImportRoundTrip(t *testing.T) {
 	db.Model(&model.BookmarkGroup{}).Where("name = ?", want).Count(&n)
 	if n != 1 {
 		t.Fatalf("应存在截断到 100 rune 的分组 %q", want)
+	}
+}
+
+// TestParseNetscapeBookmarksRejectsDeepNesting 防的是构造文件耗尽内存。
+//
+// 文件夹栈曾没有深度上限，且每条书签都把整条路径重新拼一遍、最后才截断：
+// 几十万层不闭合的 <H3>a</H3><DL> 加上两万个链接就能分配十几 GB。
+// 不带标题的 <DL> 同样压栈，必须一起计入深度，否则换个写法就绕过了。
+func TestParseNetscapeBookmarksRejectsDeepNesting(t *testing.T) {
+	cases := map[string]string{
+		"titled":   "<DL><p>" + strings.Repeat("<DT><H3>a</H3><DL><p>", maxBookmarkFolderDepth+1),
+		"untitled": "<DL><p>" + strings.Repeat("<DL><p>", maxBookmarkFolderDepth+1),
+	}
+	for name, folders := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := folders + `<DT><A HREF="https://e.example/">x</A>`
+			_, err := parseNetscapeBookmarks(strings.NewReader(src))
+			if !errors.Is(err, ErrBookmarkImportTooDeep) {
+				t.Fatalf("期望 ErrBookmarkImportTooDeep，got %v", err)
+			}
+		})
+	}
+}
+
+// TestParseNetscapeBookmarksAllowsMaxDepth 确认上限本身是可用的，
+// 正常的深层收藏夹不会被误拒。
+func TestParseNetscapeBookmarksAllowsMaxDepth(t *testing.T) {
+	src := "<DL><p>" + strings.Repeat("<DT><H3>a</H3><DL><p>", maxBookmarkFolderDepth) +
+		`<DT><A HREF="https://e.example/">x</A>`
+	got, err := parseNetscapeBookmarks(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("恰好 %d 层不应失败: %v", maxBookmarkFolderDepth, err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d 条", len(got))
+	}
+}
+
+// TestParseNetscapeBookmarksTruncatesGroupNameToColumn 确认分组名在解析阶段
+// 就截断到列宽，且与「先拼全路径再截断」的结果一致。
+//
+// 截断提前到压栈时做，单条书签的分组名就不会随层数和名字长度膨胀。
+func TestParseNetscapeBookmarksTruncatesGroupNameToColumn(t *testing.T) {
+	long := strings.Repeat("文", 60)
+	src := "<DL><p>" + strings.Repeat("<DT><H3>"+long+"</H3><DL><p>", 5) +
+		`<DT><A HREF="https://e.example/">x</A></DL><p><DT><A HREF="https://f.example/">y</A>`
+	got, err := parseNetscapeBookmarks(strings.NewReader(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := strings.Join([]string{long, long, long, long, long}, bookmarkFolderSep)
+	if want := model.TruncateRunes(full, bookmarkGroupNameMaxRunes); got[0].group != want {
+		t.Errorf("5 层分组名 = %q，期望 %q", got[0].group, want)
+	}
+	// 弹栈后回到上一层，名字也必须回退，而不是沿用截断后的深层名字。
+	full4 := strings.Join([]string{long, long, long, long}, bookmarkFolderSep)
+	if want := model.TruncateRunes(full4, bookmarkGroupNameMaxRunes); got[1].group != want {
+		t.Errorf("弹栈后分组名 = %q，期望 %q", got[1].group, want)
+	}
+}
+
+// TestBookmarkGroupNameMaxMatchesColumn 锁住常量与 GORM 列宽一致；
+// 改了列宽而忘了常量，导入要么截得过短，要么被 PostgreSQL 拒收。
+func TestBookmarkGroupNameMaxMatchesColumn(t *testing.T) {
+	sch, err := schema.Parse(&model.BookmarkGroup{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := sch.LookUpField("Name")
+	if f == nil || f.Size != bookmarkGroupNameMaxRunes {
+		t.Fatalf("BookmarkGroup.Name size = %v，常量 = %d", f, bookmarkGroupNameMaxRunes)
 	}
 }
