@@ -391,6 +391,11 @@ func applyBackgroundDefaults(background *BackgroundConfig) {
 	if background.FadeDurationMs == 0 {
 		background.FadeDurationMs = 1000
 	}
+	// 缺字段或写成 null 时 Go 得到 nil 切片，会序列化成 null；前端按数组用它，
+	// 遇到 null 直接抛错导致首页白屏。这里统一归一成空数组。
+	if background.SelectedAssetIDs == nil {
+		background.SelectedAssetIDs = []uint64{}
+	}
 }
 
 // validProxyAddr 判断 s 是否为合法的 IP 或 CIDR。

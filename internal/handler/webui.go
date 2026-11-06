@@ -39,12 +39,8 @@ func WebUIConfig(c *gin.Context) {
 	}
 
 	build := func(background config.BackgroundConfig, layout string) (publicPage, error) {
-		// 配置里 SelectedAssetIDs 为 nil 时归一成空切片，避免前端拿到 null 后直接 .map 崩溃
-		ids := background.SelectedAssetIDs
-		if ids == nil {
-			ids = []uint64{}
-		}
-		resolved, err := svc.Media.ListBackgroundAssets(ids)
+		// selected_asset_ids 的 null 已在 config.applyBackgroundDefaults 归一成 []。
+		resolved, err := svc.Media.ListBackgroundAssets(background.SelectedAssetIDs)
 		if err != nil {
 			return publicPage{}, err
 		}

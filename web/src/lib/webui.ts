@@ -17,4 +17,14 @@ export interface WebUIConfig {
   login: LoginWebUIConfig
 }
 
+/** 旧后端在 config.json 缺字段时会下发 null；首页与登录页都按数组用它。 */
+function normalizePage<T extends HomeWebUIConfig>(page: T): T {
+  return {
+    ...page,
+    assets: page.assets ?? [],
+    background: { ...page.background, selected_asset_ids: page.background?.selected_asset_ids ?? [] },
+  }
+}
+
 export const getWebUIConfig = () => api.get<WebUIConfig>('/webui')
+  .then(config => ({ home: normalizePage(config.home), login: normalizePage(config.login) }))

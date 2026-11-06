@@ -48,8 +48,10 @@ export function AppearancePage() {
     setLoadError('')
     Promise.all([settingsApi.getBackground(), mediaAssetsApi.list()])
       .then(([background, media]) => {
-        setLoaded(background)
-        setSettings(background)
+        // 旧后端在 config.json 缺字段时会下发 null；归一后下面所有 .length/.includes 才安全。
+        const normalized = { ...background, selected_asset_ids: background.selected_asset_ids ?? [] }
+        setLoaded(normalized)
+        setSettings(normalized)
         setAssets(media.filter(asset => asset.media_type === 'image' || asset.media_type === 'video'))
       })
       .catch(cause => setLoadError(errorMessage(cause, '无法读取外观配置')))

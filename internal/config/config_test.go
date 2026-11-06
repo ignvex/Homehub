@@ -462,3 +462,22 @@ func TestTrustedProxiesValidated(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyDefaults_SelectedAssetIDsNeverNull 防的是「登录后首页白屏」。
+// config.json 缺少 selected_asset_ids 或写成 null 时，Go 得到 nil 切片，
+// /webui 与 /background 序列化出 null，前端直接对它调用 .map/.length 就崩了。
+// 在加载阶段统一归一，所有读配置的接口都不会再下发 null。
+func TestApplyDefaults_SelectedAssetIDsNeverNull(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"webui":{"home":{"background":{"selected_asset_ids":null}}}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	applyDefaults(&cfg)
+
+	for name, bg := range map[string]BackgroundConfig{"home": cfg.WebUI.Home.Background, "login": cfg.WebUI.Login.Background} {
+		out, _ := json.Marshal(bg)
+		if !strings.Contains(string(out), `"selected_asset_ids":[]`) {
+			t.Errorf("%s: 期望序列化为 []，实际 %s", name, out)
+		}
+	}
+}
