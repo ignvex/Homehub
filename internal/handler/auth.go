@@ -325,7 +325,16 @@ func AuthUpdateProfile(c *gin.Context) {
 			Fail(c, http.StatusConflict, CodeUsernameExists, "用户名已存在")
 			return
 		}
-		FailInternal(c, "更新资料失败")
+		if errors.Is(err, service.ErrEmailExists) {
+			Fail(c, http.StatusConflict, CodeEmailExists, err.Error())
+			return
+		}
+		if errors.Is(err, service.ErrInvalidEmail) {
+			FailBadRequest(c, err.Error())
+			return
+		}
+		// 其余错误同样带上原因：笼统的「更新资料失败」让用户无从下手。
+		FailInternal(c, "更新资料失败："+err.Error())
 		return
 	}
 

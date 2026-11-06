@@ -31,6 +31,7 @@ const (
 	CodeUsernameExists   = 30002 // 用户名已存在
 	CodeUserNotFound     = 30003 // 用户不存在
 	CodeSelfOperation    = 30004 // 不能操作自己
+	CodeEmailExists      = 30005 // 邮箱已被使用
 
 	// Extension 对接（7 段）。上游的状态码不透传：
 	// 401 会让前端误以为自己的会话失效，404 会让前端误以为

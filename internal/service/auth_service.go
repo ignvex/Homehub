@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -335,13 +336,18 @@ func (s *AuthService) UpdateUser(targetID uint64, operator *model.User, req Upda
 	}
 
 	if req.Email != nil {
+		trimmed := strings.TrimSpace(*req.Email)
+		req.Email = &trimmed
+		if trimmed != "" && !validEmail(trimmed) {
+			return nil, ErrInvalidEmail
+		}
 		if *req.Email != user.Email {
 			// 检查邮箱冲突
 			if *req.Email != "" {
 				var dupCount int64
 				s.db.Model(&model.User{}).Where("email = ? AND id != ?", *req.Email, targetID).Count(&dupCount)
 				if dupCount > 0 {
-					return nil, errors.New("邮箱已被其他用户使用")
+					return nil, ErrEmailExists
 				}
 			}
 			updates["email"] = *req.Email
@@ -349,7 +355,9 @@ func (s *AuthService) UpdateUser(targetID uint64, operator *model.User, req Upda
 	}
 
 	// 等级变更：level 优先，缺省时回退到 role 字符串（兼容旧前端）。
-	if newLevel, ok := resolveLevel(req); ok {
+	// 值未变化的 level / is_active 视为没改：编辑表单总是回传完整字段，
+	// 若一律按「改了」处理，编辑自己的邮箱也会撞上 ErrSelfOperation。
+	if newLevel, ok := resolveLevel(req); ok && newLevel != user.Level {
 		if targetID == operator.ID {
 			return nil, ErrSelfOperation
 		}
@@ -360,7 +368,7 @@ func (s *AuthService) UpdateUser(targetID uint64, operator *model.User, req Upda
 		updates["level"] = newLevel
 	}
 
-	if req.IsActive != nil {
+	if req.IsActive != nil && *req.IsActive != user.IsActive {
 		if targetID == operator.ID {
 			return nil, ErrSelfOperation
 		}
@@ -538,6 +546,8 @@ var (
 	ErrUsernameExists  = errors.New("用户名已存在")
 	ErrUserNotFound    = errors.New("用户不存在")
 	ErrSelfOperation   = errors.New("不能操作自己的账号")
+	ErrEmailExists     = errors.New("邮箱已被其他用户使用")
+	ErrInvalidEmail    = errors.New("邮箱格式不正确")
 	// ErrForbidden 表示权限不足。与校验失败的 ErrAuthFailed 区分开：
 	// 前者是 403，后者是 401，前端处理方式不同。
 	ErrForbidden = errors.New("权限不足")
@@ -562,4 +572,14 @@ func resolveLevel(req UpdateUserRequest) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// validEmail 做最小的格式校验：只要求 local@domain 形式且不含空白。
+// 用 net/mail 会接受 "Name <a@b>" 这种显示名格式，写进库里就成了脏数据。
+func validEmail(email string) bool {
+	if len(email) > 255 || strings.ContainsAny(email, " \t\r\n<>") {
+		return false
+	}
+	at := strings.LastIndex(email, "@")
+	return at > 0 && at < len(email)-1 && !strings.Contains(email[at+1:], "@")
 }

@@ -36,7 +36,7 @@ export function ProfilePage() {
     if (!profile) return
     setSaving(true)
     try {
-      const updated = await profileApi.update({ username: profile.username.trim(), email: profile.email.trim() })
+      const updated = await profileApi.update({ username: profile.username.trim(), email: (profile.email ?? '').trim() })
       setProfile(updated); setRevision(Date.now()); notice.success('个人资料已保存')
       void refreshAuth()
     } catch (cause) { notice.error(errorMessage(cause, '保存失败')) }
@@ -78,7 +78,7 @@ export function ProfilePage() {
         <small>头像使用当前邮箱对应的 Gravatar；修改邮箱后会清除后端缓存并重新下载。</small>
       </section>
       <div className="settings-sections">
-        <section className="data-panel"><header className="data-panel-head"><div><h2>个人资料</h2><p>用户名变更会影响下次登录。</p></div></header><form className="data-panel-body form-grid" onSubmit={save}><label className="form-field">用户名<input value={profile.username} minLength={3} maxLength={100} onChange={event => setProfile({ ...profile, username: event.target.value })} required /></label><label className="form-field">邮箱<input type="email" value={profile.email} onChange={event => setProfile({ ...profile, email: event.target.value })} /></label><div className="form-actions form-field--wide"><button type="submit" className="button button--primary" disabled={saving}>{saving ? '保存中…' : '保存资料'}</button></div></form></section>
+        <section className="data-panel"><header className="data-panel-head"><div><h2>个人资料</h2><p>用户名变更会影响下次登录。邮箱可用于登录，并决定 Gravatar 头像。</p></div></header><form className="data-panel-body form-grid" onSubmit={save}><label className="form-field">用户名<input value={profile.username} minLength={3} maxLength={100} onChange={event => setProfile({ ...profile, username: event.target.value })} required /></label><label className="form-field">邮箱<input type="email" autoComplete="email" maxLength={255} placeholder="用于 Gravatar 头像与邮箱登录" value={profile.email ?? ''} onChange={event => setProfile({ ...profile, email: event.target.value })} /></label><div className="form-actions form-field--wide"><button type="submit" className="button button--primary" disabled={saving}>{saving ? '保存中…' : '保存资料'}</button></div></form></section>
         <section className="data-panel"><header className="data-panel-head"><div><h2>修改密码</h2><p>成功后全部会话失效，需要重新登录。</p></div></header><form className="data-panel-body form-grid" onSubmit={changePassword}><label className="form-field form-field--wide">当前密码<input name="old_password" type="password" autoComplete="current-password" required /></label><label className="form-field">新密码<input name="new_password" type="password" autoComplete="new-password" minLength={6} required /></label><label className="form-field">确认新密码<input name="confirm_password" type="password" autoComplete="new-password" minLength={6} required /></label><div className="form-actions form-field--wide"><button type="submit" className="button button--danger" disabled={changingPassword}>{changingPassword ? '修改中…' : '修改密码并退出'}</button></div></form></section>
       </div>
     </div>

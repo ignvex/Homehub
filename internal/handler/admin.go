@@ -197,7 +197,11 @@ func AdminUpdateUser(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, service.ErrSelfOperation) {
-			Fail(c, http.StatusForbidden, CodeSelfOperation, "不能修改自己的角色或状态")
+			Fail(c, http.StatusForbidden, CodeSelfOperation, "不能修改自己的等级或启用状态")
+			return
+		}
+		if errors.Is(err, service.ErrEmailExists) {
+			Fail(c, http.StatusConflict, CodeEmailExists, err.Error())
 			return
 		}
 		FailBadRequest(c, err.Error())
