@@ -150,18 +150,57 @@ func (s *BookmarkService) CreateBookmark(groupID uint64, title, url, icon string
 	return &bookmark, nil
 }
 
-// UpdateBookmarkWithPriority 更新书签信息（含优先级）。
-func (s *BookmarkService) UpdateBookmarkWithPriority(id uint64, title, url, icon string, priority *int) error {
+// BookmarkUpdate 是书签的部分更新：nil 表示不改该字段。
+//
+// Icon 用指针而不是空串表示「未提供」：旧签名把 icon 无条件写入，
+// 只改标题也会顺手清空已有图标。
+type BookmarkUpdate struct {
+	GroupID  *uint64
+	Title    *string
+	URL      *string
+	Icon     *string
+	Priority *int
+}
+
+// UpdateBookmark 按字段更新书签。
+//
+// URL 与创建时走同一套 scheme 校验；跨分组移动时追加到目标分组末尾。
+func (s *BookmarkService) UpdateBookmark(id uint64, req BookmarkUpdate) error {
 	updates := map[string]interface{}{}
-	if title != "" {
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if title == "" {
+			return fmt.Errorf("%w：标题不能为空", ErrInvalidBookmark)
+		}
 		updates["title"] = title
 	}
-	if url != "" {
-		updates["url"] = url
+	if req.URL != nil {
+		if err := validateBookmarkURL(*req.URL); err != nil {
+			return fmt.Errorf("%w：%s", ErrInvalidBookmark, err.Error())
+		}
+		updates["url"] = strings.TrimSpace(*req.URL)
 	}
-	updates["icon"] = icon
-	if priority != nil {
-		updates["priority"] = *priority
+	if req.Icon != nil {
+		updates["icon"] = strings.TrimSpace(*req.Icon)
+	}
+	if req.Priority != nil {
+		updates["priority"] = *req.Priority
+	}
+	if req.GroupID != nil {
+		var count int64
+		if err := s.db.Model(&model.BookmarkGroup{}).Where("id = ?", *req.GroupID).Count(&count).Error; err != nil {
+			return fmt.Errorf("查询分组失败: %w", err)
+		}
+		if count == 0 {
+			return ErrGroupNotFound
+		}
+		var maxOrder int
+		if err := s.db.Model(&model.Bookmark{}).Where("group_id = ?", *req.GroupID).
+			Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder).Error; err != nil {
+			return fmt.Errorf("查询书签排序失败: %w", err)
+		}
+		updates["group_id"] = *req.GroupID
+		updates["sort_order"] = maxOrder + 1
 	}
 
 	if len(updates) == 0 {
@@ -276,6 +315,9 @@ func validateBookmarkURL(rawURL string) error {
 var (
 	ErrGroupNotFound    = errors.New("分组不存在")
 	ErrBookmarkNotFound = errors.New("书签不存在")
+	// ErrInvalidBookmark 包裹所有输入校验失败（空标题、危险 URL），
+	// 让 handler 能区分 400 与存储层的 500。
+	ErrInvalidBookmark = errors.New("书签参数无效")
 )
 
 // maxReorderIDs 是单次排序请求的 id 数量上限。

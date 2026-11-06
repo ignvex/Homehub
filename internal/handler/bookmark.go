@@ -233,7 +233,7 @@ func BookmarkCreate(c *gin.Context) {
 	// 如果指定了优先级，设置优先级
 	if req.Priority > 0 {
 		p := req.Priority
-		_ = svc.Bookmark.UpdateBookmarkWithPriority(bookmark.ID, "", "", icon, &p)
+		_ = svc.Bookmark.UpdateBookmark(bookmark.ID, service.BookmarkUpdate{Priority: &p})
 		bookmark.Priority = p
 	}
 
@@ -242,6 +242,7 @@ func BookmarkCreate(c *gin.Context) {
 
 // updateBookmarkRequest 更新书签请求体。
 type updateBookmarkRequest struct {
+	GroupID  *uint64 `json:"group_id" form:"group_id"`
 	Title    *string `json:"title" form:"title"`
 	URL      *string `json:"url" form:"url"`
 	Icon     *string `json:"icon" form:"icon"`
@@ -273,22 +274,20 @@ func BookmarkUpdate(c *gin.Context) {
 		return
 	}
 
-	title := ""
-	if req.Title != nil {
-		title = *req.Title
-	}
-	url := ""
-	if req.URL != nil {
-		url = *req.URL
-	}
-	icon := ""
-	if req.Icon != nil {
-		icon = *req.Icon
-	}
-
-	if err := svc.Bookmark.UpdateBookmarkWithPriority(id, title, url, icon, req.Priority); err != nil {
+	err = svc.Bookmark.UpdateBookmark(id, service.BookmarkUpdate{
+		GroupID: req.GroupID, Title: req.Title, URL: req.URL, Icon: req.Icon, Priority: req.Priority,
+	})
+	if err != nil {
 		if errors.Is(err, service.ErrBookmarkNotFound) {
 			Fail(c, http.StatusNotFound, CodeBookmarkNotFound, "书签不存在")
+			return
+		}
+		if errors.Is(err, service.ErrGroupNotFound) {
+			Fail(c, http.StatusNotFound, CodeGroupNotFound, "分组不存在")
+			return
+		}
+		if errors.Is(err, service.ErrInvalidBookmark) {
+			FailBadRequest(c, err.Error())
 			return
 		}
 		FailInternal(c, "更新书签失败")

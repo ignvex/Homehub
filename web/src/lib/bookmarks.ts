@@ -39,7 +39,7 @@ export const bookmarksApi = {
   deleteGroup: (id: number) => api.delete<void>(`/bookmark-groups/${id}`),
   reorderGroups: (ids: number[]) => api.post<void>('/bookmark-groups/reorder', { ids }),
   create: (body: BookmarkInput) => api.post<Bookmark>('/bookmarks', body),
-  update: (id: number, body: Partial<Omit<BookmarkInput, 'group_id'>>) => api.put<void>(`/bookmarks/${id}`, body),
+  update: (id: number, body: Partial<BookmarkInput>) => api.put<void>(`/bookmarks/${id}`, body),
   delete: (id: number) => api.delete<void>(`/bookmarks/${id}`),
   reorder: (groupID: number, ids: number[]) => api.post<void>('/bookmarks/reorder', { group_id: groupID, ids }),
   /** 导入浏览器导出的书签 HTML（Netscape Bookmark File）。 */
