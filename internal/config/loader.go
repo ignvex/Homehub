@@ -153,10 +153,10 @@ func createDefaultConfig(path string) error {
 // 注意：Go 标准库 json 不支持 default tag，因此显式处理。
 func applyDefaults(cfg *Config) {
 	if cfg.Server.Host == "" {
-		cfg.Server.Host = "0.0.0.0"
+		cfg.Server.Host = DefaultServerHost
 	}
 	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
+		cfg.Server.Port = DefaultServerPort
 	}
 
 	if cfg.Database.Port == 0 {

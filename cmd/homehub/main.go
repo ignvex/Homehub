@@ -21,7 +21,16 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "配置文件路径（默认取 HOMEHUB_CONFIG，未设置时为 config.json）")
+	healthcheck := flag.Bool("healthcheck", false, "探测本机运行中的 HomeHub，健康时退出码为 0（供容器与编排系统的健康检查调用）")
 	flag.Parse()
+
+	if *healthcheck {
+		if err := app.Healthcheck(*configPath); err != nil {
+			println("homehub:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := app.Run(app.Options{ConfigPath: *configPath}); err != nil {
 		// 此时日志系统可能尚未初始化，直接写 stderr。

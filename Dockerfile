@@ -25,7 +25,7 @@ FROM debian:trixie-slim
 # 安装的运行时依赖：
 #   ca-certificates  Go 程序访问 HTTPS（Gravatar / LLM API / RSS 源）
 #   tzdata           配合 TZ 环境变量提供正确时区
-#   curl             HEALTHCHECK 探测 /api/v1/health
+#   curl             手工诊断用（健康检查由二进制自己完成，见下方 HEALTHCHECK）
 RUN set -eux; \
     for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
         if [ -f "$f" ]; then \
@@ -55,10 +55,11 @@ EXPOSE 8080
 ENV HOMEHUB_CONFIG=/app/config.json \
     TZ=Asia/Shanghai
 
-# 注意：端口需与 config.json 的 server.port 一致；改端口时这里和 compose 的
-# ports 映射要同步修改。endpoint 在数据库不可达时仍返回 200，因此该检查只反映
-# 进程存活，不反映数据库连通性。
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8080/api/v1/health || exit 1
+# 健康检查走二进制自身的 -healthcheck：它从 config.json 读 server.host /
+# server.port，改端口时这里无需同步，也不会探测错地址。endpoint 在数据库
+# 不可达时仍返回 200，因此该检查只反映进程存活，不反映数据库连通性。
+# start-period 覆盖启动时等待数据库的上限（60s）再加启动开销。
+HEALTHCHECK --interval=30s --timeout=10s --start-period=75s --retries=3 \
+    CMD ["/app/homehub", "-healthcheck"]
 
 ENTRYPOINT ["/app/homehub"]

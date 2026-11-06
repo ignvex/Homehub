@@ -14,9 +14,15 @@ import (
 )
 
 // ServerConfig 服务器监听配置。
+// 监听地址的默认值。healthcheck 也读这两个值，集中在这里避免两处漂移。
+const (
+	DefaultServerHost = "0.0.0.0"
+	DefaultServerPort = 8080
+)
+
 type ServerConfig struct {
-	Host string `json:"host"` // 监听地址，默认 "0.0.0.0"
-	Port int    `json:"port"` // 监听端口，默认 8080
+	Host string `json:"host"` // 监听地址，默认 DefaultServerHost
+	Port int    `json:"port"` // 监听端口，默认 DefaultServerPort
 
 	// TrustedProxies 可信反向代理的 IP 或 CIDR。
 	//
