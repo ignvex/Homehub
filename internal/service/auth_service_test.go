@@ -198,3 +198,78 @@ func TestDeleteUser_SelfProtection(t *testing.T) {
 		t.Fatalf("期望 ErrSelfOperation，得到: %v", err)
 	}
 }
+
+// disabledUserRows 返回一个已停用、密码为 password 的用户查询结果。
+func disabledUserRows(t *testing.T, password string) *sqlmock.Rows {
+	t.Helper()
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	user := testutil.CreateTestUser(t, "admin", "admin", "")
+	user.PasswordHash = string(hash)
+	user.IsActive = false
+	return sqlmock.NewRows(testutil.ColumnsForUser()).AddRow(testutil.UserToRow(user)...)
+}
+
+// TestLoginDisabledUserWithWrongPasswordIsAuthFailure 防的是借登录接口探测停用账号。
+//
+// 旧实现先判断 IsActive 再校验密码：随便填个密码就能区分「账号已停用」与
+// 「密码错误」，而且停用分支的失败不计入锁定次数，可以无限试。
+// 现在必须先过密码校验，错密码一律是 ErrAuthFailed。
+func TestLoginDisabledUserWithWrongPasswordIsAuthFailure(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`FROM "users" WHERE username`).WillReturnRows(disabledUserRows(t, "realpassword"))
+
+	if _, err := NewAuthService(db).Login("admin", "wrongpassword"); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("停用账号 + 错误密码应为 ErrAuthFailed，got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestLoginDisabledUserWithCorrectPasswordIsRejected 确认密码正确时仍拒绝停用账号，
+// 且不创建会话（未为 INSERT 设期望，执行了 sqlmock 会报错）。
+func TestLoginDisabledUserWithCorrectPasswordIsRejected(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	mock.ExpectQuery(`FROM "users" WHERE username`).WillReturnRows(disabledUserRows(t, "realpassword"))
+
+	if _, err := NewAuthService(db).Login("admin", "realpassword"); !errors.Is(err, ErrUserDisabled) {
+		t.Fatalf("停用账号 + 正确密码应为 ErrUserDisabled，got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestLoginUnknownUserStillComparesPassword 防的是靠响应耗时枚举用户名。
+//
+// 用户存在时要做一次 bcrypt 比较（约几十毫秒），不存在时若直接返回，
+// 两者耗时差一个数量级。不存在时也要对一个固定哈希比较一次。
+func TestLoginUnknownUserStillComparesPassword(t *testing.T) {
+	db, mock, cleanup := testutil.NewMockDB(t)
+	defer cleanup()
+
+	calls := 0
+	prev := comparePassword
+	comparePassword = func(hash, pw []byte) error {
+		calls++
+		if cost, err := bcrypt.Cost(hash); err != nil || cost != bcryptCost {
+			t.Errorf("假比较用的哈希 cost = %d (%v)，应与真实哈希一致（%d）", cost, err, bcryptCost)
+		}
+		return prev(hash, pw)
+	}
+	t.Cleanup(func() { comparePassword = prev })
+
+	mock.ExpectQuery(`FROM "users" WHERE username`).WillReturnError(gorm.ErrRecordNotFound)
+	mock.ExpectQuery(`FROM "users" WHERE \(email`).WillReturnError(gorm.ErrRecordNotFound)
+
+	if _, err := NewAuthService(db).Login("nobody", "x"); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("期望 ErrAuthFailed，got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("用户不存在时 bcrypt 比较次数 = %d，期望 1", calls)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ignvex/HomeHub/internal/logger"
@@ -21,6 +22,21 @@ const (
 	sessionDuration    = 7 * 24 * time.Hour // 会话有效期
 	bcryptCost         = bcrypt.DefaultCost // bcrypt 哈希强度
 )
+
+// comparePassword 校验密码哈希；包级变量便于测试观察调用次数。
+var comparePassword = bcrypt.CompareHashAndPassword
+
+// dummyPasswordHash 是用户不存在时用来做一次假比较的哈希，cost 与真实
+// 哈希一致，让「用户不存在」与「密码错误」的耗时相当，无法据此枚举用户名。
+// 首次登录失败时才生成，不拖慢启动。
+var dummyPasswordHash = sync.OnceValue(func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("homehub-dummy-password"), bcryptCost)
+	if err != nil {
+		// 只在随机源不可用时发生；返回非法哈希，比较仍会失败。
+		return nil
+	}
+	return h
+})
 
 // AuthService 认证与用户管理业务服务。
 type AuthService struct {
@@ -67,10 +83,14 @@ func (s *AuthService) CreateInitialUser(username, password string) error {
 // Login 验证用户名/邮箱和密码，成功时创建 session 并返回 token。
 //
 // 验证流程：
-//  1. 按 username 精确查找，找不到则按 email 查找
-//  2. 检查用户是否已启用（IsActive）
-//  3. 验证密码哈希
+//  1. 按 username 精确查找，找不到则按 email 查找；都找不到时仍对
+//     dummyPasswordHash 比较一次，保持耗时一致
+//  2. 验证密码哈希
+//  3. 检查用户是否已启用（IsActive）
 //  4. 创建 session
+//
+// 先验密码再查启用状态：反过来的话，不知道密码的人也能区分「已停用」
+// 与「密码错误」，且停用分支不计入登录失败锁定。
 func (s *AuthService) Login(login, password string) (string, error) {
 	var user model.User
 
@@ -82,17 +102,18 @@ func (s *AuthService) Login(login, password string) (string, error) {
 	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			_ = comparePassword(dummyPasswordHash(), []byte(password))
 			return "", ErrAuthFailed
 		}
 		return "", fmt.Errorf("查询用户失败: %w", err)
 	}
 
-	if !user.IsActive {
-		return "", ErrUserDisabled
+	if err := comparePassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return "", ErrAuthFailed
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", ErrAuthFailed
+	if !user.IsActive {
+		return "", ErrUserDisabled
 	}
 
 	token, err := generateToken()
