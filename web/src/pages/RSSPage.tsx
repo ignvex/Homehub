@@ -93,6 +93,8 @@ export function RSSPage() {
   // 未读计数：侧栏的每个源、每个分组与「全部条目」都从这一份读。
   const [unread, setUnread] = useState<UnreadCounts | null>(null)
   const countsSeq = useRef(0)
+  // 每个条目最近一次已读/星标操作的序号；旧请求失败时不回滚新状态。
+  const opSeq = useRef(new Map<string, number>())
   const countsTimer = useRef<number | undefined>(undefined)
   // 键盘选中的条目下标（-1 = 未选中）与已展开正文的条目。
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -224,6 +226,14 @@ export function RSSPage() {
     })
   }
 
+  /** nextOp 为某条目的已读/星标操作分配递增序号，用来判断失败回滚是否已过时。 */
+  function nextOp(kind: 'read' | 'star', id: number): number {
+    const key = `${kind}:${id}`
+    const seq = (opSeq.current.get(key) ?? 0) + 1
+    opSeq.current.set(key, seq)
+    return seq
+  }
+
   function patchEntry(id: number, patch: Partial<RSSEntry>) {
     setEntries(list => list.map(item => item.id === id ? { ...item, ...patch } : item))
   }
@@ -232,6 +242,7 @@ export function RSSPage() {
   async function setEntryRead(snapshot: RSSEntry, read: boolean) {
     const entry = latestEntries.current.find(item => item.id === snapshot.id) ?? snapshot
     if (isEntryRead(entry) === read) return
+    const seq = nextOp('read', entry.id)
     latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_read: read } : item)
     patchEntry(entry.id, { is_read: read })
     adjustCounts(entry, read ? -1 : 1)
@@ -239,8 +250,14 @@ export function RSSPage() {
       await rssApi.setRead(entry.id, read)
       scheduleCounts()
     } catch (cause) {
-      patchEntry(entry.id, { is_read: !read })
-      adjustCounts(entry, read ? 1 : -1)
+      // 只有这次仍是最后一次操作时才回滚，否则会盖掉之后的切换。
+      // 计数不在本地反向调整：本地值被 Math.max(0) 截过，反加回去可能多出 1，
+      // 直接以服务端为准。
+      if (opSeq.current.get(`read:${entry.id}`) === seq) {
+        latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_read: !read } : item)
+        patchEntry(entry.id, { is_read: !read })
+      }
+      void loadCounts()
       notice.error(errorMessage(cause, read ? '标记已读失败' : '标记未读失败'))
     }
   }
@@ -249,12 +266,16 @@ export function RSSPage() {
   async function toggleStar(snapshot: RSSEntry) {
     const entry = latestEntries.current.find(item => item.id === snapshot.id) ?? snapshot
     const next = !entry.is_starred
+    const seq = nextOp('star', entry.id)
     latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_starred: next } : item)
     patchEntry(entry.id, { is_starred: next })
     try {
       await rssApi.setStarred(entry.id, next)
     } catch (cause) {
-      patchEntry(entry.id, { is_starred: !next })
+      if (opSeq.current.get(`star:${entry.id}`) === seq) {
+        latestEntries.current = latestEntries.current.map(item => item.id === entry.id ? { ...item, is_starred: !next } : item)
+        patchEntry(entry.id, { is_starred: !next })
+      }
       notice.error(errorMessage(cause, next ? '加星标失败' : '取消星标失败'))
     }
   }
